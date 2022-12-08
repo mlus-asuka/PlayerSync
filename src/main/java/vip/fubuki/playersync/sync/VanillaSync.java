@@ -1,4 +1,4 @@
-package vip.fubuki.playersync;
+package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.client.Minecraft;
@@ -26,10 +26,10 @@ import java.sql.SQLException;
 import java.util.*;
 
 @Mod.EventBusSubscriber
-public class EventRegister {
+public class VanillaSync {
 
     @SubscribeEvent
-    public static void OnPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException, CommandSyntaxException {
+    public void OnPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException, CommandSyntaxException {
         String player_uuid = event.getEntity().getUUID().toString();
         ResultSet resultSet=JDBCsetUp.executeQuery("SELECT online FROM player_data WHERE uuid='"+player_uuid+"'");
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
@@ -63,8 +63,8 @@ public class EventRegister {
                     serverPlayer.getInventory().setItem(entry.getKey(),Deserialize(entry));
                 }
                 //Ender chest
-                Map<Integer,String> enderchest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
-                for (Map.Entry<Integer, String> entry : enderchest.entrySet()) {
+                Map<Integer,String> ender_chest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
+                for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
                     serverPlayer.getEnderChestInventory().setItem(entry.getKey(),Deserialize(entry));
                 }
                 //Effects
@@ -106,13 +106,13 @@ public class EventRegister {
         return ItemStack.of(compoundTag);
     }
     @SubscribeEvent
-    public static void OnPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    public void OnPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
     }
 
-    public static void Store(Player player, boolean init,boolean isServer) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    public void Store(Player player, boolean init,boolean isServer) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
         String player_uuid = player.getUUID().toString();
         //Easy part
         int XP = player.totalExperience;
@@ -134,10 +134,10 @@ public class EventRegister {
             inventoryMap.put(i,itemNBT.toString().replace(",","|"));
         }
         //EnderChest
-        Map<Integer, String> enderchest=new HashMap<>();
+        Map<Integer, String> ender_chest=new HashMap<>();
         for (int i=0;i< player.getEnderChestInventory().getContainerSize();i++) {
             CompoundTag itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
-            enderchest.put(i,itemNBT.toString().replace(",","|"));
+            ender_chest.put(i,itemNBT.toString().replace(",","|"));
         }
         //Effects
         Map<MobEffect,MobEffectInstance> effects= player.getActiveEffectsMap();
@@ -171,11 +171,11 @@ public class EventRegister {
 
         //SQL Operation
         if(init){
-            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+enderchest+"','"+advancements+"','"+effects+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true)");
-        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+enderchest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"'");
+            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effects+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true)");
+        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"'");
     }
 
-    private static File[] ScanAdvancementsFile(String player_uuid, File gameDir) {
+    private File[] ScanAdvancementsFile(String player_uuid, File gameDir) {
         File[] files = new File[JdbcConfig.SYNC_WORLD.get().size()];
         for (int i = 0; i < JdbcConfig.SYNC_WORLD.get().size(); i++) {
             File advanceFile=new File(gameDir, "saves/"+JdbcConfig.SYNC_WORLD.get().get(i)+"/advancements"+"/"+player_uuid+".json");

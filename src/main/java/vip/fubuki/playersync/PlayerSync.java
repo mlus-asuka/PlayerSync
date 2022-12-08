@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.config.ModConfig;
@@ -36,6 +37,9 @@ public class PlayerSync
         JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get());
         JDBCsetUp.executeUpdate("USE "+JdbcConfig.DATABASE_NAME.get());
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS player_data (uuid CHAR(36) NOT NULL,inventory BLOB,armor BLOB,advancements BLOB,enderchest BLOB,effects BLOB,xp int,food_level int,score int,health int,online boolean, PRIMARY KEY (uuid))");
+        if(ModList.get().isLoaded("curios")) {
+            JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid))");
+        }
         LOGGER.info("PlayerSync is ready!");
     }
 

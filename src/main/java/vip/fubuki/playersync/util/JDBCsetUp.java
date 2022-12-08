@@ -8,16 +8,14 @@ import java.util.Properties;
 
 public class JDBCsetUp {
 
-    private static final String url="jdbc:mysql://"+JdbcConfig.HOST.get()+":"+JdbcConfig.PORT.get()+"?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=UTC";
-    private static final String username= JdbcConfig.USERNAME.get();
-    private static final String password= JdbcConfig.PASSWORD.get();
+    private static final String url="jdbc:mysql://"+JdbcConfig.HOST.get()+":"+JdbcConfig.PORT.get()+"?useUnicode=true&characterEncoding=utf-8&useSSL="+JdbcConfig.USE_SSL.get()+"&serverTimezone=UTC&allowPublicKeyRetrieval=true";
 
     public static Connection getConnection() throws InstantiationException, IllegalAccessException, ClassNotFoundException, SQLException {
         Class clazz = Class.forName("com.mysql.cj.jdbc.Driver");
         Driver driver = (Driver) clazz.newInstance();
         Properties properties = new Properties();
-        properties.setProperty("user", username);
-        properties.setProperty("password", password);
+        properties.setProperty("user",JdbcConfig.USERNAME.get());
+        properties.setProperty("password",JdbcConfig.PASSWORD.get());
         return driver.connect(url,properties);
     }
 
