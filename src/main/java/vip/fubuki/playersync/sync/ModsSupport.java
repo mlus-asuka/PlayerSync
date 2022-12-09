@@ -5,8 +5,6 @@ import net.minecraft.nbt.NbtUtils;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.common.util.LazyOptional;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.items.IItemHandlerModifiable;
 import vip.fubuki.playersync.util.JDBCsetUp;
@@ -19,26 +17,28 @@ import java.util.Map;
 
 @SuppressWarnings({"InstantiationOfUtilityClass", "AccessStaticViaInstance"})
 public class ModsSupport {
-    @SubscribeEvent
-    public void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+
+    public void onPlayerJoin(Player player) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
         if (ModList.get().isLoaded("curios")) {
            //TODO curios support
             top.theillusivec4.curios.api.CuriosApi CuriosApi = new top.theillusivec4.curios.api.CuriosApi();
-            LazyOptional<IItemHandlerModifiable> itemHandler = CuriosApi.getCuriosHelper().getEquippedCurios(event.getEntity());
-            ResultSet resultSet = JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+event.getEntity().getUUID()+"'");
+            LazyOptional<IItemHandlerModifiable> itemHandler = CuriosApi.getCuriosHelper().getEquippedCurios(player);
+            ResultSet resultSet = JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
             if(resultSet.next()) {
-                Map<Integer, String> curios = LocalJsonUtil.StringToEntryMap(resultSet.getString("curios"));
+                Map<Integer, String> curios = LocalJsonUtil.StringToEntryMap(resultSet.getString("curios_item"));
                 itemHandler.ifPresent(handler -> {
                     for (int i = 0; i < handler.getSlots(); i++) {
                         try {
+                            if(curios.get(i)==null) continue;
                             handler.setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
                         } catch (CommandSyntaxException e) {
                             throw new RuntimeException(e);
                         }
                     }
                 });
+                resultSet.close();
             }else{
-                StoreCurios(event.getEntity(),true);
+                StoreCurios(player,true);
             }
         }
         if(ModList.get().isLoaded("sophisticatedbackpacks")) {
@@ -46,10 +46,9 @@ public class ModsSupport {
         }
     }
 
-    @SubscribeEvent
-    public void onPlayerLeave(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public void onPlayerLeave(Player player) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
         if (ModList.get().isLoaded("curios")) {
-           StoreCurios(event.getEntity(), false);
+           StoreCurios(player, false);
         }
         if(ModList.get().isLoaded("sophisticatedbackpacks")) {
             //TODO sophisticatedbackpacks support

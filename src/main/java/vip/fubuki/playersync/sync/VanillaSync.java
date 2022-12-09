@@ -68,16 +68,13 @@ public class VanillaSync {
                     serverPlayer.getEnderChestInventory().setItem(entry.getKey(),Deserialize(entry));
                 }
                 //Effects
-                if(!resultSet.getString("effects").equals("{}")) {
-                    Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(resultSet.getString("effects"));
-                    for (Map.Entry<Integer, String> entry : effects.entrySet()) {
-                        CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
-                        MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
-                        assert mobEffectInstance != null;
-                        serverPlayer.addEffect(mobEffectInstance);
-                    }
-                }else{
-                    serverPlayer.removeAllEffects();
+                serverPlayer.removeAllEffects();
+                Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(resultSet.getString("effects"));
+                for (Map.Entry<Integer, String> entry : effects.entrySet()) {
+                    CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
+                    MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
+                    assert mobEffectInstance != null;
+                    serverPlayer.addEffect(mobEffectInstance);
                 }
                 //Advancements
                 File gameDir = Minecraft.getInstance().gameDirectory;
@@ -91,13 +88,17 @@ public class VanillaSync {
                 }else{
                     File[] files= ScanAdvancementsFile(player_uuid, gameDir);
                     for (File file : files) {
-                        if(!file.exists()) continue;
+                        if(file==null) continue;
                         byte [] bytes=resultSet.getString("advancements").getBytes();
                         Files.write(file.toPath(),bytes);
                     }
                 }
             }
+            //Mod support
+            ModsSupport modsSupport = new ModsSupport();
+            modsSupport.onPlayerJoin(serverPlayer);
         }
+        resultSet.close();
     }
 
     private static ItemStack Deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
@@ -110,6 +111,9 @@ public class VanillaSync {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
+        //Mod support
+        ModsSupport modsSupport = new ModsSupport();
+        modsSupport.onPlayerLeave(event.getEntity());
     }
 
     public void Store(Player player, boolean init,boolean isServer) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
@@ -157,6 +161,7 @@ public class VanillaSync {
             //Get LastModified
             long latestModifiedDate = 0;
             for (File file : files) {
+                if(file==null) continue;
                 if (file.lastModified() > latestModifiedDate) {
                     latestModifiedDate = file.lastModified();
                     advancements = file;
@@ -171,7 +176,7 @@ public class VanillaSync {
 
         //SQL Operation
         if(init){
-            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effects+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true)");
+            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true)");
         }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"'");
     }
 
