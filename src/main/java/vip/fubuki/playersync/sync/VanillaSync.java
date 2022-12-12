@@ -97,6 +97,7 @@ public class VanillaSync {
             //Mod support
             ModsSupport modsSupport = new ModsSupport();
             modsSupport.onPlayerJoin(serverPlayer);
+            serverPlayer.addTag("player_synced");
         }
         resultSet.close();
     }
@@ -110,10 +111,12 @@ public class VanillaSync {
     public void OnPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
+        if(!event.getEntity().getTags().contains("player_synced")) return;
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
         ModsSupport modsSupport = new ModsSupport();
         modsSupport.onPlayerLeave(event.getEntity());
+        event.getEntity().removeTag("player_synced");
     }
 
     public void Store(Player player, boolean init,boolean isServer) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {

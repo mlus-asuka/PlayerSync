@@ -64,7 +64,3 @@ make multiserver players' data sync
     versionRange="[1.19.2,1.20)"
     ordering="NONE"
     side="BOTH"
-[[dependencies.playersync]]
-    modId="mysql_jdbc"
-    mandatory=true
-    versionRange="[8.0.27,)"
