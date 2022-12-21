@@ -28,8 +28,7 @@ public class JDBCsetUp {
 
     public static ResultSet executeQuery(String sql) throws SQLException, InstantiationException, IllegalAccessException, ClassNotFoundException {
         Statement statement= getConnection(false).createStatement();
-        ResultSet resultSet = statement.executeQuery(sql);
-        return resultSet;
+        return statement.executeQuery(sql);
     }
 
     public static void executeUpdate(String sql) throws SQLException, InstantiationException, IllegalAccessException, ClassNotFoundException {
