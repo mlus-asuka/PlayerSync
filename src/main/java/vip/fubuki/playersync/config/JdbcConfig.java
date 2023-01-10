@@ -17,6 +17,7 @@ public class JdbcConfig {
     public static ForgeConfigSpec.ConfigValue<String> PASSWORD;
     public static ForgeConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
     public static ForgeConfigSpec.BooleanValue USE_SSL;
+    public static ForgeConfigSpec.BooleanValue SYNC_CHAT;
 
 
     static {
@@ -29,6 +30,7 @@ public class JdbcConfig {
         USERNAME = COMMON_BUILDER.comment("username").define("user_name", "root");
         PASSWORD = COMMON_BUILDER.comment("password").define("password", "password");
         SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized.If running in server it is supposed to have only one").define("sync_world", new ArrayList<String>());
+        SYNC_CHAT= COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", true);
         COMMON_BUILDER.pop();
         COMMON_CONFIG = COMMON_BUILDER.build();
     }

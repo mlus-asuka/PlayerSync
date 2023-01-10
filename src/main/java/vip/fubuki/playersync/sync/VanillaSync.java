@@ -108,7 +108,7 @@ public class VanillaSync {
         return ItemStack.of(compoundTag);
     }
     @SubscribeEvent
-    public void OnPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    public static void OnPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
         if(!event.getEntity().getTags().contains("player_synced")) return;
@@ -119,7 +119,7 @@ public class VanillaSync {
         event.getEntity().removeTag("player_synced");
     }
 
-    public void Store(Player player, boolean init,boolean isServer) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    public static void Store(Player player, boolean init,boolean isServer) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
         String player_uuid = player.getUUID().toString();
         //Easy part
         int XP = player.totalExperience;
@@ -183,7 +183,7 @@ public class VanillaSync {
         }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"'");
     }
 
-    private File[] ScanAdvancementsFile(String player_uuid, File gameDir) {
+    private static File[] ScanAdvancementsFile(String player_uuid, File gameDir) {
         File[] files = new File[JdbcConfig.SYNC_WORLD.get().size()];
         for (int i = 0; i < JdbcConfig.SYNC_WORLD.get().size(); i++) {
             File advanceFile=new File(gameDir, "saves/"+JdbcConfig.SYNC_WORLD.get().get(i)+"/advancements"+"/"+player_uuid+".json");

@@ -10,23 +10,23 @@ import java.sql.SQLException;
 import java.util.Objects;
 
 public class ChatSync {
-    int tick = 0;
-    long current = System.currentTimeMillis();
+    static int tick = 0;
+    static long current = System.currentTimeMillis();
     @SubscribeEvent
-    public void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
         ReadMessage(Objects.requireNonNull(event.getPlayer().getServer()).getPlayerList());
         JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getMessage() + "', '" + current + "')");
     }
 
     @SubscribeEvent
-    public void Tick(net.minecraftforge.event.TickEvent.ServerTickEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void Tick(net.minecraftforge.event.TickEvent.ServerTickEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
         tick++;
         if(tick == 20) {
             ReadMessage(event.getServer().getPlayerList());
         }
     }
 
-    public void ReadMessage(PlayerList playerList) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void ReadMessage(PlayerList playerList) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
         ResultSet resultSet= JDBCsetUp.executeQuery("SELECT * FROM chat WHERE timestamp > " + current);
         current = System.currentTimeMillis();
         tick = 0;
@@ -36,5 +36,6 @@ public class ChatSync {
             Component textComponents = Component.literal(player+": "+message);
             playerList.broadcastSystemMessage(textComponents, true);
         }
+        resultSet.close();
     }
 }

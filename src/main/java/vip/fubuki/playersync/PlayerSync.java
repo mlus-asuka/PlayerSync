@@ -31,8 +31,9 @@ public class PlayerSync
         modEventBus.addListener(this::commonSetup);
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(new VanillaSync());
-        MinecraftForge.EVENT_BUS.register(new ChatSync());
-        
+        if(JdbcConfig.SYNC_CHAT.get()){
+            MinecraftForge.EVENT_BUS.register(new ChatSync());
+        }
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {}
