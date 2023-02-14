@@ -4,6 +4,8 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.client.Minecraft;
 import net.minecraft.nbt.*;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.dedicated.DedicatedServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -11,6 +13,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -154,12 +157,13 @@ public class VanillaSync {
             effectMap.put(MobEffect.getId(entry.getKey()),effectTag.toString().replace(",","|"));
         }
         //Advancements
-        File gameDir = Minecraft.getInstance().gameDirectory;
         //File root = serverPlayer.getServer().getServerDirectory();
         File advancements = null;
         if(isServer){
+            File gameDir = player.getServer().getServerDirectory();
             advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0)+"/advancements"+"/"+player_uuid+".json");
         }else{
+            File gameDir = Minecraft.getInstance().gameDirectory;
             File[] files=ScanAdvancementsFile(player_uuid, gameDir);
             //Get LastModified
             long latestModifiedDate = 0;
