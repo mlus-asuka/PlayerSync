@@ -41,17 +41,11 @@ public class ModsSupport {
                 StoreCurios(player,true);
             }
         }
-        if(ModList.get().isLoaded("sophisticatedbackpacks")) {
-            //TODO sophisticatedbackpacks support
-        }
     }
 
     public void onPlayerLeave(Player player) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
         if (ModList.get().isLoaded("curios")) {
            StoreCurios(player, false);
-        }
-        if(ModList.get().isLoaded("sophisticatedbackpacks")) {
-            //TODO sophisticatedbackpacks support
         }
     }
 
