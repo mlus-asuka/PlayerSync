@@ -32,9 +32,7 @@ public class JDBCsetUp {
     }
 
     public static void executeUpdate(String sql) throws SQLException, InstantiationException, IllegalAccessException, ClassNotFoundException {
-        Statement statement= getConnection(false).createStatement();
-        statement.executeUpdate(sql);
-        statement.close();
+        executeUpdate(sql,false);
     }
 
     public static void executeUpdate(String sql,boolean init) throws SQLException, InstantiationException, IllegalAccessException, ClassNotFoundException {

@@ -3,19 +3,19 @@ package vip.fubuki.playersync.sync;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.players.PlayerList;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Objects;
 
+@Mod.EventBusSubscriber
 public class ChatSync {
     static int tick = 0;
     static long current = System.currentTimeMillis();
     @SubscribeEvent
     public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
-        ReadMessage(Objects.requireNonNull(event.getPlayer().getServer()).getPlayerList());
-        JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getMessage() + "', '" + current + "')");
+        JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getRawText() + "', '" + current + "')");
     }
 
     @SubscribeEvent

@@ -1,7 +1,6 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import net.minecraft.client.Minecraft;
 import net.minecraft.nbt.*;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
@@ -14,7 +13,6 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
@@ -69,13 +67,16 @@ public class VanillaSync {
                     serverPlayer.getEnderChestInventory().setItem(entry.getKey(),Deserialize(entry));
                 }
                 //Effects
-                serverPlayer.removeAllEffects();
-                Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(resultSet.getString("effects"));
-                for (Map.Entry<Integer, String> entry : effects.entrySet()) {
-                    CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
-                    MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
-                    assert mobEffectInstance != null;
-                    serverPlayer.addEffect(mobEffectInstance);
+                String effectData=resultSet.getString("effects");
+                if(effectData.length()>2) {
+                    serverPlayer.removeAllEffects();
+                    Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
+                    for (Map.Entry<Integer, String> entry : effects.entrySet()) {
+                        CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
+                        MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
+                        assert mobEffectInstance != null;
+                        serverPlayer.addEffect(mobEffectInstance);
+                    }
                 }
                 //Advancements
                 File gameDir = serverPlayer.getServer().getServerDirectory();
