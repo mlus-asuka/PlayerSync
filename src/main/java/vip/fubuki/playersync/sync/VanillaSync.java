@@ -108,7 +108,7 @@ public class VanillaSync {
     }
 
     private static ItemStack Deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
-        String nbt= entry.getValue().replace("|",",");
+        String nbt= entry.getValue().replace("|",",").replace("^","\"");
         CompoundTag compoundTag = NbtUtils.snbtToStructure(nbt);
         return ItemStack.of(compoundTag);
     }
@@ -136,20 +136,20 @@ public class VanillaSync {
         for (int i = 0; i < player.getInventory().armor.size(); i++) {
             ItemStack itemStack = player.getInventory().armor.get(i);
             if(itemStack.isEmpty()) continue;
-            equipment.put(i,itemStack.serializeNBT().toString().replace(",","|"));
+            equipment.put(i,itemStack.serializeNBT().toString().replace(",","|").replace("\"","^"));
         }
         //inventory
         Inventory inventory = player.getInventory();
         Map<Integer,String> inventoryMap=new HashMap<>();
         for (int i = 0; i < inventory.items.size(); i++) {
             CompoundTag itemNBT = inventory.items.get(i).serializeNBT();
-            inventoryMap.put(i,itemNBT.toString().replace(",","|"));
+            inventoryMap.put(i,itemNBT.toString().replace(",","|").replace("\"","^"));
         }
         //EnderChest
         Map<Integer, String> ender_chest=new HashMap<>();
         for (int i=0;i< player.getEnderChestInventory().getContainerSize();i++) {
             CompoundTag itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
-            ender_chest.put(i,itemNBT.toString().replace(",","|"));
+            ender_chest.put(i,itemNBT.toString().replace(",","|").replace("\"","^"));
         }
         //Effects
         Map<MobEffect,MobEffectInstance> effects= player.getActiveEffectsMap();
