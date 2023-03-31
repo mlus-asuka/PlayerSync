@@ -52,9 +52,12 @@ public class VanillaSync {
                 serverPlayer.giveExperiencePoints(resultSet.getInt("xp"));
                 serverPlayer.setScore(resultSet.getInt("score"));
                 //Equipment
-                Map<Integer,String> equipment =LocalJsonUtil.StringToEntryMap(resultSet.getString("armor"));
-                for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                    serverPlayer.getInventory().armor.set(entry.getKey(), Deserialize(entry));
+                String armor_data=resultSet.getString("armor");
+                if(armor_data.length()>2) {
+                    Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
+                    for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
+                        serverPlayer.getInventory().armor.set(entry.getKey(), Deserialize(entry));
+                    }
                 }
                 //Inventory
                 Map<Integer,String> inventory = LocalJsonUtil.StringToEntryMap(resultSet.getString("inventory"));
