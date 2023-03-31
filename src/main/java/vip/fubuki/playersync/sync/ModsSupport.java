@@ -25,18 +25,21 @@ public class ModsSupport {
             LazyOptional<IItemHandlerModifiable> itemHandler = CuriosApi.getCuriosHelper().getEquippedCurios(player);
             ResultSet resultSet = JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
             if(resultSet.next()) {
-                Map<Integer, String> curios = LocalJsonUtil.StringToEntryMap(resultSet.getString("curios_item"));
-                itemHandler.ifPresent(handler -> {
-                    for (int i = 0; i < handler.getSlots(); i++) {
-                        try {
-                            if(curios.get(i)==null) continue;
-                            handler.setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
-                        } catch (CommandSyntaxException e) {
-                            throw new RuntimeException(e);
+                String curios_data=resultSet.getString("curios_item");
+                if(curios_data.length()>2) {
+                    Map<Integer, String> curios = LocalJsonUtil.StringToEntryMap(curios_data);
+                    itemHandler.ifPresent(handler -> {
+                        for (int i = 0; i < handler.getSlots(); i++) {
+                            try {
+                                if (curios.get(i) == null) continue;
+                                handler.setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                            } catch (CommandSyntaxException e) {
+                                throw new RuntimeException(e);
+                            }
                         }
-                    }
-                });
-                resultSet.close();
+                    });
+                }
+                    resultSet.close();
             }else{
                 StoreCurios(player,true);
             }
