@@ -1,15 +1,22 @@
 package vip.fubuki.playersync.sync;
 
+import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import net.minecraft.nbt.*;
+import com.mojang.brigadier.tree.LiteralCommandNode;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtUtils;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -17,12 +24,15 @@ import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
 @Mod.EventBusSubscriber
 public class VanillaSync {
@@ -102,13 +112,12 @@ public class VanillaSync {
             //Mod support
             ModsSupport modsSupport = new ModsSupport();
             modsSupport.onPlayerJoin(serverPlayer);
-            serverPlayer.addTag("player_synced");
         }
         resultSet.close();
     }
 
     private static ItemStack Deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
-        String nbt= entry.getValue().replace("|",",").replace("^","\"").replace("[","{").replace("]","}");
+        String nbt= entry.getValue().replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'");
         CompoundTag compoundTag = NbtUtils.snbtToStructure(nbt);
         return ItemStack.of(compoundTag);
     }
@@ -116,7 +125,6 @@ public class VanillaSync {
     public static void OnPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
-        if(!event.getEntity().getTags().contains("player_synced")) return;
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
         ModsSupport modsSupport = new ModsSupport();
@@ -136,20 +144,20 @@ public class VanillaSync {
         for (int i = 0; i < player.getInventory().armor.size(); i++) {
             ItemStack itemStack = player.getInventory().armor.get(i);
             if(itemStack.isEmpty()) continue;
-            equipment.put(i,itemStack.serializeNBT().toString().replace(",","|").replace("\"","^").replace("{","[").replace("}","]"));
+            equipment.put(i,itemStack.serializeNBT().toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
         }
         //inventory
         Inventory inventory = player.getInventory();
         Map<Integer,String> inventoryMap=new HashMap<>();
         for (int i = 0; i < inventory.items.size(); i++) {
             CompoundTag itemNBT = inventory.items.get(i).serializeNBT();
-            inventoryMap.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","[").replace("}","]"));
+            inventoryMap.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
         }
         //EnderChest
         Map<Integer, String> ender_chest=new HashMap<>();
         for (int i=0;i< player.getEnderChestInventory().getContainerSize();i++) {
             CompoundTag itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
-            ender_chest.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","[").replace("}","]"));
+            ender_chest.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
         }
         //Effects
         Map<MobEffect,MobEffectInstance> effects= player.getActiveEffectsMap();
@@ -198,5 +206,17 @@ public class VanillaSync {
         }
         return files;
     }
+
+// 测试NBT解析用
+//    @SubscribeEvent
+//    public void RegisterCommand(RegisterCommandsEvent event){
+//        CommandDispatcher<CommandSourceStack> dispatcher=event.getDispatcher();
+//        LiteralCommandNode<CommandSourceStack> cmd = dispatcher.register(
+//                Commands.literal("serializeNBT").executes(context -> {context.getSource().sendSuccess(Component.literal(context.getSource().getPlayer().getItemInHand(InteractionHand.MAIN_HAND).serializeNBT().toString()),true);
+//                    return 0;
+//                })
+//        );
+//    }
+
 }
 
