@@ -1,22 +1,16 @@
 package vip.fubuki.playersync.sync;
 
-import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import com.mojang.brigadier.tree.LiteralCommandNode;
-import net.minecraft.commands.CommandSourceStack;
-import net.minecraft.commands.Commands;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -49,7 +43,7 @@ public class VanillaSync {
         boolean online = resultSet.getBoolean("online");
         resultSet=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
         if(online) {
-            serverPlayer.connection.disconnect(Component.translatable("player_sync.already_online"));
+            serverPlayer.connection.disconnect(Component.translatable("playersync.already_online"));
         }else {
             JDBCsetUp.executeUpdate("UPDATE player_data SET online=true WHERE uuid='"+player_uuid+"'");
             if(resultSet.next()) {
@@ -207,7 +201,6 @@ public class VanillaSync {
         return files;
     }
 
-// 测试NBT解析用
 //    @SubscribeEvent
 //    public void RegisterCommand(RegisterCommandsEvent event){
 //        CommandDispatcher<CommandSourceStack> dispatcher=event.getDispatcher();
