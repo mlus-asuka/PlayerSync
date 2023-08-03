@@ -4,8 +4,8 @@ package vip.fubuki.playersync.config;
 import net.minecraftforge.common.ForgeConfigSpec;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 
 
 public class JdbcConfig {
@@ -19,6 +19,8 @@ public class JdbcConfig {
     public static ForgeConfigSpec.BooleanValue USE_SSL;
     public static ForgeConfigSpec.BooleanValue SYNC_CHAT;
 
+    public static ForgeConfigSpec.ConfigValue<Integer> SERVER_ID;
+
 
     static {
         ForgeConfigSpec.Builder COMMON_BUILDER = new ForgeConfigSpec.Builder();
@@ -29,7 +31,8 @@ public class JdbcConfig {
         USE_SSL = COMMON_BUILDER.comment("whether use SSL").define("use_ssl", false);
         USERNAME = COMMON_BUILDER.comment("username").define("user_name", "root");
         PASSWORD = COMMON_BUILDER.comment("password").define("password", "password");
-        SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized.If running in server it is supposed to have only one").define("sync_world", new ArrayList<String>());
+        SERVER_ID = COMMON_BUILDER.comment("the server id should be unique").define("Server_id", new Random().nextInt(1,Integer.MAX_VALUE-1));
+        SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized.If running in server it is supposed to have only one").define("sync_world", new ArrayList<>());
         SYNC_CHAT= COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", true);
         COMMON_BUILDER.pop();
         COMMON_CONFIG = COMMON_BUILDER.build();

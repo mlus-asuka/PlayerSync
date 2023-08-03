@@ -12,11 +12,13 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.entity.player.PlayerEvent;
+import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
+import vip.fubuki.playersync.util.PSThreadPoolFactory;
 
 import java.io.File;
 import java.io.IOException;
@@ -27,87 +29,123 @@ import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Mod.EventBusSubscriber
 public class VanillaSync {
 
-    @SubscribeEvent
-    public static void OnPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException, CommandSyntaxException {
+    public static void register(){}
+
+    static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
+
+    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, CommandSyntaxException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        ResultSet resultSet=JDBCsetUp.executeQuery("SELECT online FROM player_data WHERE uuid='"+player_uuid+"'");
+        ResultSet resultSet=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
         if(!resultSet.next()){
             Store(event.getEntity(),true,Dist.CLIENT.isDedicatedServer());
             return;
         }
         boolean online = resultSet.getBoolean("online");
+        int lastServer = resultSet.getInt("last_server");
         resultSet=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
         if(online) {
-            serverPlayer.connection.disconnect(Component.translatable("playersync.already_online"));
-        }else {
-            JDBCsetUp.executeUpdate("UPDATE player_data SET online=true WHERE uuid='"+player_uuid+"'");
-            if(resultSet.next()) {
-                //Easy Part
-                serverPlayer.setHealth(resultSet.getInt("health"));
-                serverPlayer.getFoodData().setFoodLevel(resultSet.getInt("food_level"));
-                serverPlayer.totalExperience=0;
-                serverPlayer.experienceLevel=0;
-                serverPlayer.experienceProgress=0;
-                serverPlayer.giveExperiencePoints(resultSet.getInt("xp"));
-                serverPlayer.setScore(resultSet.getInt("score"));
-                //Equipment
-                String armor_data=resultSet.getString("armor");
-                if(armor_data.length()>2) {
-                    Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
-                    for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                        serverPlayer.getInventory().armor.set(entry.getKey(), Deserialize(entry));
-                    }
+
+            ResultSet getServerInfo = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"'");
+            if(getServerInfo.next()){
+                long last_update = getServerInfo.getLong("last_update");
+                boolean enable = getServerInfo.getBoolean("enable");
+                if(enable && System.currentTimeMillis() < last_update + 300000.0){
+                    event.getEntity().removeTag("player_synced");
+                    serverPlayer.connection.disconnect(Component.translatable("playersync.already_online"));
+                    return;
                 }
-                //Inventory
-                Map<Integer,String> inventory = LocalJsonUtil.StringToEntryMap(resultSet.getString("inventory"));
-                for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
-                    serverPlayer.getInventory().setItem(entry.getKey(),Deserialize(entry));
-                }
-                //Ender chest
-                Map<Integer,String> ender_chest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
-                for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
-                    serverPlayer.getEnderChestInventory().setItem(entry.getKey(),Deserialize(entry));
-                }
-                //Effects
-                String effectData=resultSet.getString("effects");
-                if(effectData.length()>2) {
-                    serverPlayer.removeAllEffects();
-                    Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
-                    for (Map.Entry<Integer, String> entry : effects.entrySet()) {
-                        CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
-                        MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
-                        assert mobEffectInstance != null;
-                        serverPlayer.addEffect(mobEffectInstance);
-                    }
-                }
-                //Advancements
-                File gameDir = serverPlayer.getServer().getServerDirectory();
-                if(Dist.CLIENT.isDedicatedServer()){
-                    File advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0)+"/advancements"+"/"+player_uuid+".json");
-                    if (!advancements.exists()) {
-                        advancements.createNewFile();
-                    }
-                    byte [] bytes=resultSet.getString("advancements").getBytes();
-                    Files.write(advancements.toPath(),bytes);
-                }else{
-                    File[] files= ScanAdvancementsFile(player_uuid, gameDir);
-                    for (File file : files) {
-                        if(file==null) continue;
-                        byte [] bytes=resultSet.getString("advancements").getBytes();
-                        Files.write(file.toPath(),bytes);
-                    }
+                JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + lastServer);
+            }
+
+            getServerInfo.close();
+
+
+
+        }
+        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online=true,last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='"+player_uuid+"'");
+        if(resultSet.next()) {
+            //Easy Part
+            serverPlayer.setHealth(resultSet.getInt("health"));
+            serverPlayer.getFoodData().setFoodLevel(resultSet.getInt("food_level"));
+            serverPlayer.totalExperience=0;
+            serverPlayer.experienceLevel=0;
+            serverPlayer.experienceProgress=0;
+            serverPlayer.giveExperiencePoints(resultSet.getInt("xp"));
+            serverPlayer.setScore(resultSet.getInt("score"));
+            //Equipment
+            String armor_data=resultSet.getString("armor");
+            if(armor_data.length()>2) {
+                Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
+                for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
+                    serverPlayer.getInventory().armor.set(entry.getKey(), Deserialize(entry));
                 }
             }
-            //Mod support
-            ModsSupport modsSupport = new ModsSupport();
-            modsSupport.onPlayerJoin(serverPlayer);
+            //Inventory
+            Map<Integer,String> inventory = LocalJsonUtil.StringToEntryMap(resultSet.getString("inventory"));
+            for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
+                serverPlayer.getInventory().setItem(entry.getKey(),Deserialize(entry));
+            }
+            //Ender chest
+            Map<Integer,String> ender_chest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
+            for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
+                serverPlayer.getEnderChestInventory().setItem(entry.getKey(),Deserialize(entry));
+            }
+            //Effects
+            String effectData=resultSet.getString("effects");
+            if(effectData.length()>2) {
+                serverPlayer.removeAllEffects();
+                Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
+                for (Map.Entry<Integer, String> entry : effects.entrySet()) {
+                    CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
+                    MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
+                    assert mobEffectInstance != null;
+                    serverPlayer.addEffect(mobEffectInstance);
+                }
+            }
+            //Advancements
+            File gameDir = Objects.requireNonNull(serverPlayer.getServer()).getServerDirectory();
+            if(Dist.CLIENT.isDedicatedServer()){
+                File advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0)+"/advancements"+"/"+player_uuid+".json");
+                if (!advancements.exists()) {
+                    advancements.createNewFile();
+                }
+                byte [] bytes=resultSet.getString("advancements").getBytes();
+                Files.write(advancements.toPath(),bytes);
+            }else{
+                File[] files= ScanAdvancementsFile(player_uuid, gameDir);
+                for (File file : files) {
+                    if(file==null) continue;
+                    byte [] bytes=resultSet.getString("advancements").getBytes();
+                    Files.write(file.toPath(),bytes);
+                }
+            }
         }
+        //Mod support
+        ModsSupport modsSupport = new ModsSupport();
+        modsSupport.onPlayerJoin(serverPlayer);
+        serverPlayer.addTag("player_synced");
+
         resultSet.close();
+    }
+
+    @SubscribeEvent
+    public static void OnPlayerJoin(PlayerEvent.PlayerLoggedInEvent event){
+        executorService.submit(()->{
+            try {
+                doPlayerJoin(event);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+
     }
 
     private static ItemStack Deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
@@ -115,8 +153,34 @@ public class VanillaSync {
         CompoundTag compoundTag = NbtUtils.snbtToStructure(nbt);
         return ItemStack.of(compoundTag);
     }
+
+    public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+        if(!event.getEntity().getTags().contains("player_synced")) return;
+        Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
+        //Mod support
+        ModsSupport modsSupport = new ModsSupport();
+        modsSupport.onPlayerLeave(event.getEntity());
+    }
+
     @SubscribeEvent
-    public static void OnPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    public static void onPlayerSaveToFile(PlayerEvent.SaveToFile event) {
+        executorService.submit(()->{
+            try {
+                doPlayerSaveToFile(event);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    @SubscribeEvent
+    public static void onServerShutdown(ServerStoppedEvent event) throws SQLException {
+        JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + JdbcConfig.SERVER_ID.get());
+    }
+
+    public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+        if(!event.getEntity().getTags().contains("player_synced")) return;
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
@@ -126,7 +190,19 @@ public class VanillaSync {
         event.getEntity().removeTag("player_synced");
     }
 
-    public static void Store(Player player, boolean init,boolean isServer) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    @SubscribeEvent
+    public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
+        executorService.submit(()->{
+            try {
+                doPlayerLogout(event);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+
+    }
+
+    public static void Store(Player player, boolean init,boolean isServer) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
         //Easy part
         int XP = player.totalExperience;

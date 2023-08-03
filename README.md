@@ -4,6 +4,6 @@ Such as equipment,inventory,effects,experience,food level.Any other mods support
 Support version now:  
 1.19-1.19.3  
 1.18.2  
-1.16.5
+1.16.5  
 Current support Mod:
 curios

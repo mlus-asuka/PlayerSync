@@ -13,20 +13,23 @@ import java.sql.SQLException;
 public class ChatSync {
     static int tick = 0;
     static long current = System.currentTimeMillis();
+    
+    public static void register(){}
+
     @SubscribeEvent
-    public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException {
         JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getRawText() + "', '" + current + "')");
     }
 
     @SubscribeEvent
-    public static void Tick(net.minecraftforge.event.TickEvent.ServerTickEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void Tick(net.minecraftforge.event.TickEvent.ServerTickEvent event) throws SQLException {
         tick++;
         if(tick == 20) {
             ReadMessage(event.getServer().getPlayerList());
         }
     }
 
-    public static void ReadMessage(PlayerList playerList) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void ReadMessage(PlayerList playerList) throws SQLException {
         ResultSet resultSet= JDBCsetUp.executeQuery("SELECT * FROM chat WHERE timestamp > " + current);
         current = System.currentTimeMillis();
         tick = 0;
