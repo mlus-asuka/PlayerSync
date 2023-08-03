@@ -1,32 +1,49 @@
 package vip.fubuki.playersync.sync;
 
+import net.minecraft.network.chat.ChatType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.players.PlayerList;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Objects;
+import java.util.UUID;
 
 @Mod.EventBusSubscriber
 public class ChatSync {
     static int tick = 0;
     static long current = System.currentTimeMillis();
-    
-    public static void register(){}
+
+    static PlayerList playerList;
+
+    public static void register(){
+    }
 
     @SubscribeEvent
     public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getRawText() + "', '" + current + "')");
+        JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getMessage() + "', '" + current + "')");
     }
 
     @SubscribeEvent
     public static void Tick(net.minecraftforge.event.TickEvent.ServerTickEvent event) throws SQLException {
         tick++;
         if(tick == 20) {
-            ReadMessage(event.getServer().getPlayerList());
+            ReadMessage(playerList);
         }
+    }
+
+    @SubscribeEvent
+    public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event){
+        playerList= Objects.requireNonNull(event.getPlayer().getServer()).getPlayerList();
+    }
+
+    @SubscribeEvent
+    public static void onPlayerLeave(PlayerEvent.PlayerLoggedOutEvent event){
+        playerList= Objects.requireNonNull(event.getPlayer().getServer()).getPlayerList();
     }
 
     public static void ReadMessage(PlayerList playerList) throws SQLException {
@@ -36,8 +53,8 @@ public class ChatSync {
         while(resultSet.next()) {
             String player = resultSet.getString("player");
             String message = resultSet.getString("message");
-            Component textComponents = Component.literal(player+": "+message);
-            playerList.broadcastSystemMessage(textComponents, true);
+            Component textComponents = Component.nullToEmpty(player+": "+message);
+            playerList.broadcastMessage(textComponents, ChatType.CHAT, UUID.nameUUIDFromBytes(player.getBytes()));
         }
         resultSet.close();
     }

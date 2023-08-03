@@ -15,14 +15,15 @@ import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
 
-@SuppressWarnings({"InstantiationOfUtilityClass", "AccessStaticViaInstance"})
+
 public class ModsSupport {
 
-    public void onPlayerJoin(Player player) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public void onPlayerJoin(Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
-           //TODO curios support
-            top.theillusivec4.curios.api.CuriosApi CuriosApi = new top.theillusivec4.curios.api.CuriosApi();
-            LazyOptional<IItemHandlerModifiable> itemHandler = CuriosApi.getCuriosHelper().getEquippedCurios(player);
+            /*
+              Curios Support
+             */
+            LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
             ResultSet resultSet = JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
             if(resultSet.next()) {
                 String curios_data=resultSet.getString("curios_item");
@@ -46,15 +47,14 @@ public class ModsSupport {
         }
     }
 
-    public void onPlayerLeave(Player player) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public void onPlayerLeave(Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
            StoreCurios(player, false);
         }
     }
 
-    public void StoreCurios(Player player,boolean init) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
-        top.theillusivec4.curios.api.CuriosApi CuriosApi = new top.theillusivec4.curios.api.CuriosApi();
-        LazyOptional<IItemHandlerModifiable> itemHandler = CuriosApi.getCuriosHelper().getEquippedCurios(player);
+    public void StoreCurios(Player player,boolean init) throws SQLException {
+        LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
         Map<Integer, String> curios = new HashMap<>();
         itemHandler.ifPresent(handler -> {
             for (int i = 0; i < handler.getSlots(); i++) {

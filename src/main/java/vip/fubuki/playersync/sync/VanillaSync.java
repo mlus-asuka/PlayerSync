@@ -3,7 +3,7 @@ package vip.fubuki.playersync.sync;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
-import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.TranslatableComponent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -39,12 +39,12 @@ public class VanillaSync {
 
     static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
 
-    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, CommandSyntaxException, IOException {
+    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, CommandSyntaxException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         ResultSet resultSet=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
         if(!resultSet.next()){
-            Store(event.getEntity(),true,Dist.CLIENT.isDedicatedServer());
+            Store(event.getPlayer(),true,Dist.CLIENT.isDedicatedServer());
             return;
         }
         boolean online = resultSet.getBoolean("online");
@@ -58,7 +58,7 @@ public class VanillaSync {
                 boolean enable = getServerInfo.getBoolean("enable");
                 if(enable && System.currentTimeMillis() < last_update + 300000.0){
                     event.getEntity().removeTag("player_synced");
-                    serverPlayer.connection.disconnect(Component.translatable("playersync.already_online"));
+                    serverPlayer.connection.disconnect(new TranslatableComponent("playersync.already_online"));
                     return;
                 }
                 JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + lastServer);
@@ -154,13 +154,13 @@ public class VanillaSync {
         return ItemStack.of(compoundTag);
     }
 
-    public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
         JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
         if(!event.getEntity().getTags().contains("player_synced")) return;
-        Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
+        Store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
         ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerLeave(event.getEntity());
+        modsSupport.onPlayerLeave(event.getPlayer());
     }
 
     @SubscribeEvent
@@ -179,14 +179,14 @@ public class VanillaSync {
         JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + JdbcConfig.SERVER_ID.get());
     }
 
-    public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         if(!event.getEntity().getTags().contains("player_synced")) return;
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
-        Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
+        Store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
         ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerLeave(event.getEntity());
+        modsSupport.onPlayerLeave(event.getPlayer());
         event.getEntity().removeTag("player_synced");
     }
 
