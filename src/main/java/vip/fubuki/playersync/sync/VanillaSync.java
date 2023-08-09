@@ -39,9 +39,10 @@ public class VanillaSync {
 
     static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
 
-    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, CommandSyntaxException, IOException {
+    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, CommandSyntaxException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        ResultSet resultSet=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
+        JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
+        ResultSet resultSet=queryResult.getResultSet();
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
         if(!resultSet.next()){
             Store(event.getEntity(),true,Dist.CLIENT.isDedicatedServer());
@@ -49,10 +50,12 @@ public class VanillaSync {
         }
         boolean online = resultSet.getBoolean("online");
         int lastServer = resultSet.getInt("last_server");
-        resultSet=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
+        queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
+        resultSet= queryResult.getResultSet();
         if(online) {
 
-            ResultSet getServerInfo = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"'");
+            queryResult=JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"'");
+            ResultSet getServerInfo = queryResult.getResultSet();
             if(getServerInfo.next()){
                 long last_update = getServerInfo.getLong("last_update");
                 boolean enable = getServerInfo.getBoolean("enable");
@@ -65,7 +68,6 @@ public class VanillaSync {
             }
 
             getServerInfo.close();
-
 
 
         }
@@ -154,7 +156,7 @@ public class VanillaSync {
         return ItemStack.of(compoundTag);
     }
 
-    public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+    public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
         JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
         if(!event.getEntity().getTags().contains("player_synced")) return;
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
@@ -179,7 +181,7 @@ public class VanillaSync {
         JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + JdbcConfig.SERVER_ID.get());
     }
 
-    public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, ClassNotFoundException, InstantiationException, IllegalAccessException, IOException {
+    public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         if(!event.getEntity().getTags().contains("player_synced")) return;
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
