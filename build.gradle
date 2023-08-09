@@ -119,17 +119,12 @@ dependencies {
     minecraft 'net.minecraftforge:forge:1.18.2-40.1.0'
 
     jarJar("curse.maven:MySQL-561280:3685108") {
-        jarJar.ranged(it, '[1.0,)')
-    }
-
-    jarJar("com.zaxxer:HikariCP:3.4.5") {
-        jarJar.ranged(it, '[3.4.5,)')
+        jarJar.ranged(it, '[3685108,)')
     }
 
     runtimeOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.18.2-5.0.7.1")
     compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.18.2-5.0.7.1:api")
     implementation fg.deobf("curse.maven:MySQL-561280:3685108")
-    implementation group: 'com.zaxxer', name: 'HikariCP', version: '3.4.5'
 }
 
 // Example for how to get properties into the manifest for reading at runtime.

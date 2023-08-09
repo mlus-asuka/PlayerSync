@@ -47,7 +47,8 @@ public class ChatSync {
     }
 
     public static void ReadMessage(PlayerList playerList) throws SQLException {
-        ResultSet resultSet= JDBCsetUp.executeQuery("SELECT * FROM chat WHERE timestamp > " + current);
+        JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT * FROM chat WHERE timestamp > " + current);
+        ResultSet resultSet= queryResult.getResultSet();
         current = System.currentTimeMillis();
         tick = 0;
         while(resultSet.next()) {
@@ -57,5 +58,6 @@ public class ChatSync {
             playerList.broadcastMessage(textComponents, ChatType.CHAT, UUID.nameUUIDFromBytes(player.getBytes()));
         }
         resultSet.close();
+        queryResult.getConnection().close();
     }
 }

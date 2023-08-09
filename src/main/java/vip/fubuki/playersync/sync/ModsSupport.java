@@ -24,7 +24,8 @@ public class ModsSupport {
               Curios Support
              */
             LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
-            ResultSet resultSet = JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
+            JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
+            ResultSet resultSet = queryResult.getResultSet();
             if(resultSet.next()) {
                 String curios_data=resultSet.getString("curios_item");
                 if(curios_data.length()>2) {
@@ -41,6 +42,7 @@ public class ModsSupport {
                     });
                 }
                     resultSet.close();
+                    queryResult.getConnection().close();
             }else{
                 StoreCurios(player,true);
             }

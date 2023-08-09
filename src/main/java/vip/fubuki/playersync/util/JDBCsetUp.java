@@ -1,7 +1,5 @@
 package vip.fubuki.playersync.util;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
 import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
@@ -9,40 +7,51 @@ import java.sql.*;
 
 public class JDBCsetUp {
 
-    private static HikariDataSource dataSource;
-
-    public static void initDataSource() {
-        HikariConfig config = new HikariConfig();
-        config.setJdbcUrl("jdbc:mysql://"+JdbcConfig.HOST.get()+":"+JdbcConfig.PORT.get()+"?useUnicode=true&characterEncoding=utf-8&useSSL="+JdbcConfig.USE_SSL.get()+"&serverTimezone=UTC&allowPublicKeyRetrieval=true");
-        config.setUsername(JdbcConfig.USERNAME.get());
-        config.setPassword(JdbcConfig.PASSWORD.get());
-
-        dataSource = new HikariDataSource(config);
-    }
-
     public static Connection getConnection() throws SQLException {
-        if (dataSource == null) {
-            initDataSource();
+        String url= "jdbc:mysql://"+JdbcConfig.HOST.get()+":"+JdbcConfig.PORT.get()+"?useUnicode=true&characterEncoding=utf-8&useSSL="+JdbcConfig.USE_SSL.get()+"&serverTimezone=UTC&allowPublicKeyRetrieval=true";
+        return DriverManager.getConnection(url, JdbcConfig.USERNAME.get(), JdbcConfig.PASSWORD.get());
+    }
+
+    public static QueryResult executeQuery(String sql) throws SQLException{
+       Connection connection = getConnection();
+
+       PreparedStatement useStatement = connection.prepareStatement("USE " + JdbcConfig.DATABASE_NAME.get());
+       useStatement.executeUpdate();
+
+       PreparedStatement queryStatement = connection.prepareStatement(sql);
+       ResultSet resultSet =queryStatement.executeQuery();
+       return new QueryResult(connection,resultSet);
+    }
+
+    public static int executeUpdate(String sql) throws SQLException{
+        try (Connection connection = getConnection()) {
+
+            try (PreparedStatement useStatement = connection.prepareStatement("USE " + JdbcConfig.DATABASE_NAME.get())) {
+                useStatement.executeUpdate();
+            }
+
+
+            try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
+                return updateStatement.executeUpdate();
+            }
         }
-        return dataSource.getConnection();
     }
 
-    public static ResultSet executeQuery(String sql) throws SQLException{
-        try (Connection connection = getConnection();
-             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            return preparedStatement.executeQuery();
+    public static class QueryResult{
+        private final Connection connection;
+        private final ResultSet resultSet;
+
+        public QueryResult(Connection connection, ResultSet resultSet) {
+            this.connection = connection;
+            this.resultSet = resultSet;
         }
-    }
 
-    public static void executeUpdate(String sql) throws SQLException{
-        executeUpdate(sql,false);
-    }
+        public Connection getConnection() {
+            return connection;
+        }
 
-    public static void executeUpdate(String sql,boolean init) throws SQLException{
-        try (Connection connection = getConnection();
-             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
-            if(!init) preparedStatement.executeUpdate("USE "+JdbcConfig.DATABASE_NAME.get());
-            preparedStatement.executeUpdate();
+        public ResultSet getResultSet() {
+            return resultSet;
         }
     }
 }
