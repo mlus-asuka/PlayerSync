@@ -6,7 +6,6 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.common.util.LazyOptional;
 import net.minecraftforge.fml.ModList;
-import net.minecraftforge.items.IItemHandlerModifiable;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 
@@ -23,7 +22,7 @@ public class ModsSupport {
             /*
               Curios Support
              */
-            LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
+            LazyOptional<top.theillusivec4.curios.api.type.capability.ICuriosItemHandler> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosInventory(player);
             JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
             ResultSet resultSet = queryResult.getResultSet();
             if(resultSet.next()) {
@@ -34,7 +33,7 @@ public class ModsSupport {
                         for (int i = 0; i < handler.getSlots(); i++) {
                             try {
                                 if (curios.get(i) == null) continue;
-                                handler.setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                                handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
                             } catch (CommandSyntaxException e) {
                                 throw new RuntimeException(e);
                             }
@@ -56,12 +55,12 @@ public class ModsSupport {
     }
 
     public void StoreCurios(Player player,boolean init) throws SQLException {
-        LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
+        LazyOptional<top.theillusivec4.curios.api.type.capability.ICuriosItemHandler> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosInventory(player);
         Map<Integer, String> curios = new HashMap<>();
         itemHandler.ifPresent(handler -> {
             for (int i = 0; i < handler.getSlots(); i++) {
-                if (!handler.getStackInSlot(i).isEmpty()) {
-                    String sNBT= handler.getStackInSlot(i).serializeNBT().toString().replace(",", "|");
+                if (!handler.getEquippedCurios().getStackInSlot(i).isEmpty()) {
+                    String sNBT= handler.getEquippedCurios().getStackInSlot(i).serializeNBT().toString().replace(",", "|");
                     curios.put(i, sNBT);
                 }
             }
