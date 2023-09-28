@@ -1,9 +1,9 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import net.minecraft.nbt.NbtUtils;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.ItemStack;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.JsonToNBT;
 import net.minecraftforge.common.util.LazyOptional;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.items.IItemHandlerModifiable;
@@ -18,7 +18,7 @@ import java.util.Map;
 
 public class ModsSupport {
 
-    public void onPlayerJoin(Player player) throws SQLException {
+    public void onPlayerJoin(PlayerEntity player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
             /*
               Curios Support
@@ -34,7 +34,7 @@ public class ModsSupport {
                         for (int i = 0; i < handler.getSlots(); i++) {
                             try {
                                 if (curios.get(i) == null) continue;
-                                handler.setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                                handler.setStackInSlot(i, ItemStack.of(JsonToNBT.parseTag(curios.get(i).replace("|", ","))));
                             } catch (CommandSyntaxException e) {
                                 throw new RuntimeException(e);
                             }
@@ -49,13 +49,13 @@ public class ModsSupport {
         }
     }
 
-    public void onPlayerLeave(Player player) throws SQLException {
+    public void onPlayerLeave(PlayerEntity player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
            StoreCurios(player, false);
         }
     }
 
-    public void StoreCurios(Player player,boolean init) throws SQLException {
+    public void StoreCurios(PlayerEntity player,boolean init) throws SQLException {
         LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
         Map<Integer, String> curios = new HashMap<>();
         itemHandler.ifPresent(handler -> {

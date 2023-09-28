@@ -1,8 +1,6 @@
 package vip.fubuki.playersync;
 
-import com.mojang.logging.LogUtils;
 import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
@@ -10,8 +8,8 @@ import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.minecraftforge.fml.event.server.FMLServerStartingEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
-import org.slf4j.Logger;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.sync.ChatSync;
 import vip.fubuki.playersync.sync.VanillaSync;
@@ -23,7 +21,6 @@ import java.sql.SQLException;
 public class PlayerSync
 {
     public static final String MODID = "playersync";
-    public static final Logger LOGGER = LogUtils.getLogger();
     public PlayerSync()
     {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
@@ -40,7 +37,7 @@ public class PlayerSync
     }
 
     @SubscribeEvent
-    public void onServerStarting(ServerStartingEvent event) throws SQLException {
+    public void onServerStarting(FMLServerStartingEvent event) throws SQLException {
         JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get());
 
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS player_data (uuid CHAR(36) NOT NULL," +
@@ -63,7 +60,6 @@ public class PlayerSync
         if(ModList.get().isLoaded("curios")) {
             JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid))");
         }
-        LOGGER.info("PlayerSync is ready!");
     }
 
 }

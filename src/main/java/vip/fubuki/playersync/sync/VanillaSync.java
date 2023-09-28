@@ -1,20 +1,20 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.NbtUtils;
-import net.minecraft.network.chat.TranslatableComponent;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.effect.MobEffect;
-import net.minecraft.world.effect.MobEffectInstance;
-import net.minecraft.world.entity.player.Inventory;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.ItemStack;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.entity.player.ServerPlayerEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.CompoundNBT;
+import net.minecraft.nbt.JsonToNBT;
+import net.minecraft.potion.Effect;
+import net.minecraft.potion.EffectInstance;
+import net.minecraft.util.text.StringTextComponent;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.event.server.FMLServerStoppedEvent;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
@@ -43,7 +43,7 @@ public class VanillaSync {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
         ResultSet resultSet=queryResult.getResultSet();
-        ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
+        ServerPlayerEntity serverPlayer = (ServerPlayerEntity) event.getEntity();
         if(!resultSet.next()){
             Store(event.getPlayer(),true,Dist.CLIENT.isDedicatedServer());
             return;
@@ -61,7 +61,7 @@ public class VanillaSync {
                 boolean enable = getServerInfo.getBoolean("enable");
                 if(enable && System.currentTimeMillis() < last_update + 300000.0){
                     event.getEntity().removeTag("player_synced");
-                    serverPlayer.connection.disconnect(new TranslatableComponent("playersync.already_online"));
+                    serverPlayer.connection.disconnect(new StringTextComponent("playersync.already_online"));
                     return;
                 }
                 JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + lastServer);
@@ -87,13 +87,13 @@ public class VanillaSync {
             if(armor_data.length()>2) {
                 Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
                 for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                    serverPlayer.getInventory().armor.set(entry.getKey(), Deserialize(entry));
+                    serverPlayer.inventory.armor.set(entry.getKey(), Deserialize(entry));
                 }
             }
             //Inventory
             Map<Integer,String> inventory = LocalJsonUtil.StringToEntryMap(resultSet.getString("inventory"));
             for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
-                serverPlayer.getInventory().setItem(entry.getKey(),Deserialize(entry));
+                serverPlayer.inventory.setItem(entry.getKey(),Deserialize(entry));
             }
             //Ender chest
             Map<Integer,String> ender_chest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
@@ -106,9 +106,8 @@ public class VanillaSync {
                 serverPlayer.removeAllEffects();
                 Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
                 for (Map.Entry<Integer, String> entry : effects.entrySet()) {
-                    CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
-                    MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
-                    assert mobEffectInstance != null;
+                    CompoundNBT effectTag = JsonToNBT.parseTag(entry.getValue().replace("|", ","));
+                    EffectInstance mobEffectInstance = EffectInstance.load(effectTag);
                     serverPlayer.addEffect(mobEffectInstance);
                 }
             }
@@ -152,7 +151,7 @@ public class VanillaSync {
 
     private static ItemStack Deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
         String nbt= entry.getValue().replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'");
-        CompoundTag compoundTag = NbtUtils.snbtToStructure(nbt);
+        CompoundNBT compoundTag = JsonToNBT.parseTag(nbt);
         return ItemStack.of(compoundTag);
     }
 
@@ -177,7 +176,7 @@ public class VanillaSync {
     }
 
     @SubscribeEvent
-    public static void onServerShutdown(ServerStoppedEvent event) throws SQLException {
+    public static void onServerShutdown(FMLServerStoppedEvent event) throws SQLException {
         JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + JdbcConfig.SERVER_ID.get());
     }
 
@@ -204,7 +203,7 @@ public class VanillaSync {
 
     }
 
-    public static void Store(Player player, boolean init,boolean isServer) throws SQLException, IOException {
+    public static void Store(PlayerEntity player, boolean init, boolean isServer) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
         //Easy part
         int XP = player.totalExperience;
@@ -213,30 +212,30 @@ public class VanillaSync {
         int health=(int) player.getHealth();
         //Equipment
         Map<Integer,String> equipment =new HashMap<>() ;
-        for (int i = 0; i < player.getInventory().armor.size(); i++) {
-            ItemStack itemStack = player.getInventory().armor.get(i);
+        for (int i = 0; i < player.inventory.armor.size(); i++) {
+            ItemStack itemStack = player.inventory.armor.get(i);
             if(itemStack.isEmpty()) continue;
             equipment.put(i,itemStack.serializeNBT().toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
         }
         //inventory
-        Inventory inventory = player.getInventory();
+        PlayerInventory inventory = player.inventory;
         Map<Integer,String> inventoryMap=new HashMap<>();
         for (int i = 0; i < inventory.items.size(); i++) {
-            CompoundTag itemNBT = inventory.items.get(i).serializeNBT();
+            CompoundNBT itemNBT = inventory.items.get(i).serializeNBT();
             inventoryMap.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
         }
         //EnderChest
         Map<Integer, String> ender_chest=new HashMap<>();
         for (int i=0;i< player.getEnderChestInventory().getContainerSize();i++) {
-            CompoundTag itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
+            CompoundNBT itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
             ender_chest.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
         }
         //Effects
-        Map<MobEffect,MobEffectInstance> effects= player.getActiveEffectsMap();
+        Map<Effect, EffectInstance> effects= player.getActiveEffectsMap();
         Map<Integer,String> effectMap=new HashMap<>();
-        for (Map.Entry<MobEffect, MobEffectInstance> entry : effects.entrySet()) {
-            CompoundTag effectTag= entry.getValue().save(new CompoundTag());
-            effectMap.put(MobEffect.getId(entry.getKey()),effectTag.toString().replace(",","|"));
+        for (Map.Entry<Effect, EffectInstance> entry : effects.entrySet()) {
+            CompoundNBT effectTag= entry.getValue().save(new CompoundNBT());
+            effectMap.put(Effect.getId(entry.getKey()),effectTag.toString().replace(",","|"));
         }
         //Advancements
         //File root = serverPlayer.getServer().getServerDirectory();

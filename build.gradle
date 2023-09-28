@@ -13,7 +13,7 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
 minecraft {
 
-    mappings channel: 'official', version: '1.18.2'
+    mappings channel: 'official', version: '1.16.5'
 
     //accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg') // Currently, this location cannot be changed from the default.
 
@@ -116,14 +116,14 @@ repositories {
 }
 
 dependencies {
-    minecraft 'net.minecraftforge:forge:1.18.2-40.1.0'
+    minecraft 'net.minecraftforge:forge:1.16.5-36.2.0'
 
     jarJar("curse.maven:MySQL-561280:3685108") {
         jarJar.ranged(it, '[3685108,)')
     }
 
-    runtimeOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.18.2-5.0.7.1")
-    compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.18.2-5.0.7.1:api")
+    runtimeOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.16.5-4.1.0.1")
+    compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.16.5-4.1.0.1:api")
     implementation fg.deobf("curse.maven:MySQL-561280:3685108")
 }
 

@@ -1,8 +1,8 @@
 package vip.fubuki.playersync.sync;
 
-import net.minecraft.network.chat.ChatType;
-import net.minecraft.network.chat.Component;
-import net.minecraft.server.players.PlayerList;
+import net.minecraft.server.management.PlayerList;
+import net.minecraft.util.text.ChatType;
+import net.minecraft.util.text.ITextComponent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -54,7 +54,7 @@ public class ChatSync {
         while(resultSet.next()) {
             String player = resultSet.getString("player");
             String message = resultSet.getString("message");
-            Component textComponents = Component.nullToEmpty(player+": "+message);
+            ITextComponent textComponents = ITextComponent.nullToEmpty(player+": "+message);
             playerList.broadcastMessage(textComponents, ChatType.CHAT, UUID.nameUUIDFromBytes(player.getBytes()));
         }
         resultSet.close();
