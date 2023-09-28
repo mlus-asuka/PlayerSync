@@ -31,7 +31,7 @@ public class JdbcConfig {
         USE_SSL = COMMON_BUILDER.comment("whether use SSL").define("use_ssl", false);
         USERNAME = COMMON_BUILDER.comment("username").define("user_name", "root");
         PASSWORD = COMMON_BUILDER.comment("password").define("password", "password");
-        SERVER_ID = COMMON_BUILDER.comment("the server id should be unique").define("Server_id", new Random().nextInt(1,Integer.MAX_VALUE-1));
+        SERVER_ID = COMMON_BUILDER.comment("the server id should be unique").define("Server_id", (int) (Math.random()*Integer.MAX_VALUE));
         SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized.If running in server it is supposed to have only one").define("sync_world", new ArrayList<>());
         SYNC_CHAT= COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", true);
         COMMON_BUILDER.pop();
