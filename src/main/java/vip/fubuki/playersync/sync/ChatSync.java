@@ -25,7 +25,7 @@ public class ChatSync {
 
     @SubscribeEvent
     public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getMessage() + "', '" + current + "')");
+        JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getMessage() + "', '" + current + "');");
     }
 
     @SubscribeEvent
@@ -47,7 +47,7 @@ public class ChatSync {
     }
 
     public static void ReadMessage(PlayerList playerList) throws SQLException {
-        JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT * FROM chat WHERE timestamp > " + current);
+        JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT * FROM chat WHERE timestamp > " + current+";");
         ResultSet resultSet= queryResult.getResultSet();
         current = System.currentTimeMillis();
         tick = 0;

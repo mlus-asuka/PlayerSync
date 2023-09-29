@@ -24,7 +24,7 @@ public class ModsSupport {
               Curios Support
              */
             LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
-            JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
+            JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"';");
             ResultSet resultSet = queryResult.getResultSet();
             if(resultSet.next()) {
                 String curios_data=resultSet.getString("curios_item");
@@ -67,9 +67,9 @@ public class ModsSupport {
             }
         });
         if(init) {
-            JDBCsetUp.executeUpdate("INSERT INTO curios (uuid,curios_item) VALUES ('"+player.getUUID()+"','"+ curios+"')");
+            JDBCsetUp.executeUpdate("INSERT INTO curios (uuid,curios_item) VALUES ('"+player.getUUID()+"','"+ curios+"');");
         } else {
-            JDBCsetUp.executeUpdate("UPDATE curios SET curios_item = '"+ curios+"' WHERE uuid = '"+player.getUUID()+"'");
+            JDBCsetUp.executeUpdate("UPDATE curios SET curios_item = '"+ curios+"' WHERE uuid = '"+player.getUUID()+"';");
         }
     }
 }

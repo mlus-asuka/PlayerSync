@@ -41,7 +41,7 @@ public class VanillaSync {
 
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, CommandSyntaxException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
+        JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"';");
         ResultSet resultSet=queryResult.getResultSet();
         ServerPlayerEntity serverPlayer = (ServerPlayerEntity) event.getEntity();
         if(!resultSet.next()){
@@ -50,11 +50,11 @@ public class VanillaSync {
         }
         boolean online = resultSet.getBoolean("online");
         int lastServer = resultSet.getInt("last_server");
-        queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
+        queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"';");
         resultSet= queryResult.getResultSet();
         if(online) {
 
-            queryResult=JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"'");
+            queryResult=JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"';");
             ResultSet getServerInfo = queryResult.getResultSet();
             if(getServerInfo.next()){
                 long last_update = getServerInfo.getLong("last_update");
@@ -64,15 +64,15 @@ public class VanillaSync {
                     serverPlayer.connection.disconnect(new StringTextComponent("playersync.already_online"));
                     return;
                 }
-                JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + lastServer);
+                JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + lastServer+";");
             }
 
             getServerInfo.close();
 
 
         }
-        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online=true,last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='"+player_uuid+"'");
+        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get()+";");
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online=true,last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='"+player_uuid+"';");
         if(resultSet.next()) {
             //Easy Part
             serverPlayer.setHealth(resultSet.getInt("health"));
@@ -156,7 +156,7 @@ public class VanillaSync {
     }
 
     public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
-        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get()+";");
         if(!event.getEntity().getTags().contains("player_synced")) return;
         Store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
@@ -177,13 +177,13 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onServerShutdown(FMLServerStoppedEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= 'false' WHERE id=" + JdbcConfig.SERVER_ID.get());
+        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= false WHERE id=" + JdbcConfig.SERVER_ID.get()+";");
     }
 
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         if(!event.getEntity().getTags().contains("player_synced")) return;
         String player_uuid = event.getEntity().getUUID().toString();
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online= 'false' WHERE uuid='"+player_uuid+"'");
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= false WHERE uuid='"+player_uuid+"';");
         Store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
         ModsSupport modsSupport = new ModsSupport();
@@ -264,8 +264,8 @@ public class VanillaSync {
 
         //SQL Operation
         if(init){
-            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true)");
-        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"'");
+            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true);");
+        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"';");
     }
 
     private static File[] ScanAdvancementsFile(String player_uuid, File gameDir) {

@@ -38,13 +38,13 @@ public class PlayerSync
 
     @SubscribeEvent
     public void onServerStarting(FMLServerStartingEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get(),1);
+        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get()+";",1);
 
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS player_data (uuid CHAR(36) NOT NULL," +
                 "inventory MEDIUMBLOB,armor BLOB,advancements BLOB,enderchest MEDIUMBLOB,effects BLOB," +
-                "xp int,food_level int,score int,health int,online boolean, last_server int, PRIMARY KEY (uuid))");
+                "xp int,food_level int,score int,health int,online boolean, last_server int, PRIMARY KEY (uuid));");
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS chat (player CHAR(36) NOT NULL,message TEXT," +
-                "timestamp BIGINT)");
+                "timestamp BIGINT);");
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS server_info (`id` INT NOT NULL,`enable` boolean NOT NULL,`last_update` BIGINT NOT NULL,PRIMARY KEY (`id`));");
         long current = System.currentTimeMillis();
         JDBCsetUp.executeUpdate("INSERT INTO server_info(id,enable,last_update) " +
@@ -53,7 +53,7 @@ public class PlayerSync
                 "last_update=" + current + ";");
 
         if(ModList.get().isLoaded("curios")) {
-            JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid))");
+            JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid));");
         }
     }
 

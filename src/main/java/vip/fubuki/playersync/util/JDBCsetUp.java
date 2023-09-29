@@ -1,6 +1,5 @@
 package vip.fubuki.playersync.util;
 
-import org.lwjgl.system.CallbackI;
 import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
