@@ -178,13 +178,13 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onServerShutdown(ServerStoppedEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + JdbcConfig.SERVER_ID.get());
+        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= 'false' WHERE id=" + JdbcConfig.SERVER_ID.get());
     }
 
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         if(!event.getEntity().getTags().contains("player_synced")) return;
         String player_uuid = event.getEntity().getUUID().toString();
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online=false WHERE uuid='"+player_uuid+"'");
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= 'false' WHERE uuid='"+player_uuid+"'");
         Store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
         ModsSupport modsSupport = new ModsSupport();
