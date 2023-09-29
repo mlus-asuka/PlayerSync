@@ -24,12 +24,15 @@ public class JDBCsetUp {
     }
 
     public static int executeUpdate(String sql) throws SQLException{
+        return executeUpdate(sql,0);
+    }
+
+    public static int executeUpdate(String sql,int init) throws SQLException{
         try (Connection connection = getConnection()) {
 
-            try (PreparedStatement useStatement = connection.prepareStatement("USE " + JdbcConfig.DATABASE_NAME.get())) {
-                useStatement.executeUpdate();
+            if(init==0){
+                sql="USE " + JdbcConfig.DATABASE_NAME.get() +";" + sql;
             }
-
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 return updateStatement.executeUpdate();
