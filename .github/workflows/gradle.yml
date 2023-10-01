@@ -26,7 +26,12 @@ jobs:
       id: build
       uses: gradle/gradle-build-action@v2
       with:
-        arguments: build
+        arguments: checkLicenses build publish
+      env:
+        SNAPSHOT: true
+        ORG_GRADLE_PROJECT_mavenUsername: ${{ secrets.NEXUS_USER }}
+        ORG_GRADLE_PROJECT_mavenPassword: ${{ secrets.NEXUS_PASSWORD }}    
+        
         
     - name: Build Artifact
       uses: actions/upload-artifact@v3
