@@ -13,6 +13,10 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
+    - name: Make Gradle Wrapper Executable
+      run: chmod +x ./gradlew
+      working-directory: ${{ github.workspace }}
+
     - name: Validate Gradle Wrapper
       uses: gradle/wrapper-validation-action@v1
     
@@ -29,9 +33,6 @@ jobs:
         arguments: checkLicenses build publish
       env:
         SNAPSHOT: true
-        ORG_GRADLE_PROJECT_mavenUsername: ${{ secrets.NEXUS_USER }}
-        ORG_GRADLE_PROJECT_mavenPassword: ${{ secrets.NEXUS_PASSWORD }}    
-        
         
     - name: Build Artifact
       uses: actions/upload-artifact@v3
