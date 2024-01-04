@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "package": "vip.fubuki.playersync.mixin",
+  "compatibilityLevel": "JAVA_8",
+  "refmap": "thirst.refmap.json",
+  "mixins": [
+    "MixinPlayerProgress",
+    "MixinServerQuestFile"
+  ],
+  "client": [
+  ],
+  "minVersion": "0.8"
+}

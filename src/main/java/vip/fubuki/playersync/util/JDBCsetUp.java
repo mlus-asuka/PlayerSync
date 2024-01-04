@@ -1,8 +1,10 @@
 package vip.fubuki.playersync.util;
 
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
+import java.util.Map;
 
 
 public class JDBCsetUp {
@@ -15,7 +17,7 @@ public class JDBCsetUp {
     public static QueryResult executeQuery(String sql) throws SQLException{
        Connection connection = getConnection();
 
-       PreparedStatement useStatement = connection.prepareStatement("USE " + JdbcConfig.DATABASE_NAME.get());
+       PreparedStatement useStatement = connection.prepareStatement("USE playersync");
        useStatement.executeUpdate();
 
        PreparedStatement queryStatement = connection.prepareStatement(sql);
@@ -31,7 +33,7 @@ public class JDBCsetUp {
         try (Connection connection = getConnection()) {
 
             if(init==0){
-                sql="USE " + JdbcConfig.DATABASE_NAME.get() +";" + sql;
+                sql="USE playersync;" + sql;
             }
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {

@@ -1,8 +1,22 @@
+buildscript{
+    repositories{
+        mavenCentral()
+        maven { url = 'https://maven.minecraftforge.net' }
+        maven { url='https://repo.spongepowered.org/repository/maven-public' }
+    }
+    dependencies {
+        classpath group: 'org.spongepowered', name: 'mixingradle', version: '0.7-SNAPSHOT'
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '5.1.+', changing: true
+    }
+}
+
 plugins {
     id 'eclipse'
     id 'maven-publish'
     id 'net.minecraftforge.gradle' version '5.1.+'
 }
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'org.spongepowered.mixin'
 
 version = mod_version
 group = 'vip.fubuki.playersync' // http://maven.apache.org/guides/mini/guide-naming-conventions.html
@@ -15,7 +29,7 @@ minecraft {
 
     mappings channel: 'official', version: '1.16.5'
 
-    //accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg') // Currently, this location cannot be changed from the default.
+    //accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
 
     runs {
         client {
@@ -122,10 +136,18 @@ dependencies {
         jarJar.ranged(it, '[3685108,)')
     }
 
-    runtimeOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.16.5-4.1.0.1")
-    compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:1.16.5-4.1.0.1:api")
+    implementation fg.deobf("curse.maven:architectury-api-419699:4521290")
+    implementation fg.deobf("curse.maven:astral-sorcery-241721:3813365")
+    implementation fg.deobf("curse.maven:ftb-library-forge-404465:3553840")
+    implementation fg.deobf("curse.maven:ftb-quests-forge-289412:4297999")
     implementation fg.deobf("curse.maven:MySQL-561280:3685108")
 }
+
+mixin {
+    add sourceSets.main, "playersync.refmap.json"
+    config 'playersync.mixin.json'
+}
+
 
 // Example for how to get properties into the manifest for reading at runtime.
 jar {
@@ -137,7 +159,8 @@ jar {
                 "Implementation-Title"    : project.name,
                 "Implementation-Version"  : project.jar.archiveVersion,
                 "Implementation-Vendor"   : "examplemodsareus",
-                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+                "Implementation-Timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                "MixinConfigs"            : "playersync.mixin.json"
         ])
     }
 }
