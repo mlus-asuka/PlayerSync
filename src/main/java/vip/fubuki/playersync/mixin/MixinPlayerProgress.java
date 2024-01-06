@@ -12,6 +12,7 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
@@ -24,7 +25,11 @@ public abstract class MixinPlayerProgress {
         tag.putBoolean("PlayerSync",false);
         String nbt = tag.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~");
         try {
-            JDBCsetUp.executeUpdate("INSERT INTO AstralSorcery(player,tag) VALUES('" + tag.getString("UUID") + "','" + nbt + "') ON DUPLICATE KEY UPDATE tag='" + tag + "';");
+            PreparedStatement preparedStatement= JDBCsetUp.getConnection().prepareStatement("INSERT INTO AstralSorcery(player,tag) VALUES(?,?) ON DUPLICATE KEY UPDATE player=?");
+            preparedStatement.setString(1,tag.getString("UUID"));
+            preparedStatement.setString(2,nbt);
+            preparedStatement.setString(3,tag.getString("UUID"));
+            preparedStatement.executeUpdate();
         } catch (SQLException throwable) {
             throwable.printStackTrace();
         }
@@ -34,12 +39,13 @@ public abstract class MixinPlayerProgress {
     @Inject(method = "load",at=@At(value="HEAD"), cancellable = true)
     private void load(CompoundNBT compound, CallbackInfo ci){
         if(compound.get("PlayerSync")==null || !compound.getBoolean("PlayerSync")){
-            compound.putBoolean("PlayerSync",true);
             try {
                 ResultSet result= JDBCsetUp.executeQuery("SELECT * FROM AstralSorcery WHERE player='" + compound.getString("UUID") + "';").getResultSet();
                 if(result.next()){
                     String nbt = result.getString("tag").replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'");
-                    load(JsonToNBT.parseTag(nbt));
+                    compound=JsonToNBT.parseTag(nbt);
+                    compound.putBoolean("PlayerSync",true);
+                    load(compound);
                 }
 
             }catch (SQLException e){

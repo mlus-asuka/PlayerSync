@@ -1,40 +1,26 @@
 package vip.fubuki.playersync.util;
 
-import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
-import java.util.Map;
 
 
 public class JDBCsetUp {
 
     public static Connection getConnection() throws SQLException {
-        String url= "jdbc:mysql://"+JdbcConfig.HOST.get()+":"+JdbcConfig.PORT.get()+"?useUnicode=true&characterEncoding=utf-8&useSSL="+JdbcConfig.USE_SSL.get()+"&serverTimezone=UTC&allowPublicKeyRetrieval=true";
+        String url= "jdbc:mysql://"+JdbcConfig.HOST.get()+":"+JdbcConfig.PORT.get()+"/playersync?useUnicode=true&characterEncoding=utf-8&useSSL="+JdbcConfig.USE_SSL.get()+"&serverTimezone=UTC&allowPublicKeyRetrieval=true";
         return DriverManager.getConnection(url, JdbcConfig.USERNAME.get(), JdbcConfig.PASSWORD.get());
     }
 
     public static QueryResult executeQuery(String sql) throws SQLException{
        Connection connection = getConnection();
-
-       PreparedStatement useStatement = connection.prepareStatement("USE playersync");
-       useStatement.executeUpdate();
-
        PreparedStatement queryStatement = connection.prepareStatement(sql);
-       ResultSet resultSet =queryStatement.executeQuery();
+       ResultSet resultSet = queryStatement.executeQuery();
        return new QueryResult(connection,resultSet);
     }
 
     public static int executeUpdate(String sql) throws SQLException{
-        return executeUpdate(sql,0);
-    }
-
-    public static int executeUpdate(String sql,int init) throws SQLException{
         try (Connection connection = getConnection()) {
-
-            if(init==0){
-                sql="USE playersync;" + sql;
-            }
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 return updateStatement.executeUpdate();
