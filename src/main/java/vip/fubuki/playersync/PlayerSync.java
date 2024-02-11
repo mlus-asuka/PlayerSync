@@ -35,10 +35,9 @@ public class PlayerSync
             if(!resultSet.next()){
                 JDBCsetUp.executeUpdate("INSERT INTO AstralSorcery(player,tag) VALUES('"+player_uuid+"','{}');");
             }
-
-            queryResult=JDBCsetUp.executeQuery("SELECT * FROM FTB WHERE player='" + player_uuid + "';");
-            resultSet=queryResult.getResultSet();
-            if(!resultSet.next()){
+            JDBCsetUp.QueryResult queryResult1=JDBCsetUp.executeQuery("SELECT * FROM FTB WHERE player='" + player_uuid + "';");
+            ResultSet resultSet1=queryResult1.getResultSet();
+            if(!resultSet1.next()){
                 JDBCsetUp.executeUpdate("INSERT INTO FTB(player,tag) VALUES('"+player_uuid+"','{}');");
             }
         }

@@ -4,9 +4,7 @@
   "compatibilityLevel": "JAVA_8",
   "refmap": "thirst.refmap.json",
   "mixins": [
-    "MixinPlayerProgress",
-    "MixinServerQuestFile",
-    "accessor.QuestFileAccessor"
+    "MixinPlayerProgress"
   ],
   "client": [
   ],
