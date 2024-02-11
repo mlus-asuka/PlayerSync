@@ -11,7 +11,6 @@ import java.util.Random;
 public class JdbcConfig {
     public static ForgeConfigSpec COMMON_CONFIG;
     public static ForgeConfigSpec.ConfigValue<String> HOST;
-    public static ForgeConfigSpec.ConfigValue<String> DATABASE_NAME;
     public static ForgeConfigSpec.IntValue PORT;
     public static ForgeConfigSpec.ConfigValue<String> USERNAME;
     public static ForgeConfigSpec.ConfigValue<String> PASSWORD;
@@ -26,7 +25,6 @@ public class JdbcConfig {
         ForgeConfigSpec.Builder COMMON_BUILDER = new ForgeConfigSpec.Builder();
         COMMON_BUILDER.comment("General settings").push("general");
         HOST=COMMON_BUILDER.comment("The host of the database").define("host", "localhost");
-        DATABASE_NAME= COMMON_BUILDER.comment("Database name").define("database_name", "playersync");
         PORT = COMMON_BUILDER.comment("database port").defineInRange("db_port", 3306, 0, 65535);
         USE_SSL = COMMON_BUILDER.comment("whether use SSL").define("use_ssl", false);
         USERNAME = COMMON_BUILDER.comment("username").define("user_name", "root");

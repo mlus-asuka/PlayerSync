@@ -38,7 +38,7 @@ public class PlayerSync
 
     @SubscribeEvent
     public void onServerStarting(FMLServerStartingEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get()+";",1);
+        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `playersync`;",1);
 
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS player_data (uuid CHAR(36) NOT NULL," +
                 "inventory MEDIUMBLOB,armor BLOB,advancements BLOB,enderchest MEDIUMBLOB,effects BLOB," +
@@ -53,7 +53,7 @@ public class PlayerSync
                 "last_update=" + current + ";");
 
         if(ModList.get().isLoaded("curios")) {
-            JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid));");
+            JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid))");
         }
     }
 
