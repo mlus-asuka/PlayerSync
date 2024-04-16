@@ -122,10 +122,9 @@ dependencies {
         jarJar.ranged(it, '[1.0,)')
     }
 
-    runtimeOnly fg.deobf("top.theillusivec4.curios:curios-forge:5.3.2+1.20.1")
-    compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:5.3.2+1.20.1:api")
+    runtimeOnly fg.deobf("top.theillusivec4.curios:curios-forge:5.7.2+1.20.1")
+    compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:5.7.2+1.20.1:api")
     implementation fg.deobf("curse.maven:MySQL-561280:3685108")
-    implementation group: 'com.zaxxer', name: 'HikariCP', version: '3.4.5'
 }
 
 // Example for how to get properties into the manifest for reading at runtime.
