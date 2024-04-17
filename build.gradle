@@ -33,6 +33,8 @@ minecraft {
             // Please read: https://stackoverflow.com/questions/2031163/when-to-use-the-different-log-levels
             property 'forge.logging.console.level', 'debug'
 
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${buildDir}/createSrgToMcp/output.srg"
             // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
             property 'forge.enabledGameTestNamespaces', 'playersync'
 
@@ -52,6 +54,8 @@ minecraft {
 
             property 'forge.enabledGameTestNamespaces', 'playersync'
 
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${buildDir}/createSrgToMcp/output.srg"
             mods {
                 playersync {
                     source sourceSets.main
@@ -116,14 +120,13 @@ repositories {
 }
 
 dependencies {
-    minecraft 'net.minecraftforge:forge:1.20.1-47.1.0'
+    minecraft 'net.minecraftforge:forge:1.20.1-47.2.17'
 
     jarJar("curse.maven:MySQL-561280:3685108") {
         jarJar.ranged(it, '[1.0,)')
     }
 
-    runtimeOnly fg.deobf("top.theillusivec4.curios:curios-forge:5.7.2+1.20.1")
-    compileOnly fg.deobf("top.theillusivec4.curios:curios-forge:5.7.2+1.20.1:api")
+    implementation fg.deobf("curse.maven:curios-309927:5266541")
     implementation fg.deobf("curse.maven:MySQL-561280:3685108")
 }
 

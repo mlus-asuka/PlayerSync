@@ -72,6 +72,7 @@ public class PlayerSync
                 "VALUES(" + JdbcConfig.SERVER_ID.get() + ",true," + current + ") " +
                 "ON DUPLICATE KEY UPDATE id= " + JdbcConfig.SERVER_ID.get() +",enable = 1," +
                 "last_update=" + current + ";");
+        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= 1 WHERE id= "+ JdbcConfig.SERVER_ID.get());
 
         if(ModList.get().isLoaded("curios")) {
             JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid))");
