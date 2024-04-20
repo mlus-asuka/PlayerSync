@@ -160,9 +160,6 @@ public class VanillaSync {
         JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
         if(!event.getEntity().getTags().contains("player_synced")) return;
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
-        //Mod support
-        ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerLeave(event.getEntity());
     }
 
     @SubscribeEvent
@@ -182,18 +179,17 @@ public class VanillaSync {
     }
 
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
-        if(!event.getEntity().getTags().contains("player_synced")) return;
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='"+player_uuid+"'");
         Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
-        //Mod support
-        ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerLeave(event.getEntity());
-        event.getEntity().removeTag("player_synced");
+
     }
 
     @SubscribeEvent
-    public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
+    public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException {
+        //Mod support
+        ModsSupport modsSupport = new ModsSupport();
+        modsSupport.onPlayerLeave(event.getEntity());
         executorService.submit(()->{
             try {
                 doPlayerLogout(event);
