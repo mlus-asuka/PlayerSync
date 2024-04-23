@@ -32,8 +32,12 @@ public class ModsSupport {
                     itemHandler.ifPresent(handler -> {
                         for (int i = 0; i < handler.getSlots(); i++) {
                             try {
-                                if (curios.get(i) == null) continue;
-                                handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                                if (curios.get(i) == null){
+                                    handler.getEquippedCurios().setStackInSlot(i,ItemStack.EMPTY);
+                                }else{
+                                    handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                                }
+
                             } catch (CommandSyntaxException e) {
                                 throw new RuntimeException(e);
                             }
