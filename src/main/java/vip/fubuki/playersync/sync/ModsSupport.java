@@ -30,11 +30,11 @@ public class ModsSupport {
                 if(curios_data.length()>2) {
                     Map<Integer, String> curios = LocalJsonUtil.StringToEntryMap(curios_data);
                     itemHandler.ifPresent(handler -> {
+                        handler.reset();
                         for (int i = 0; i < handler.getSlots(); i++) {
                             try {
-                                if (curios.get(i) == null){
-                                    handler.getEquippedCurios().setStackInSlot(i,ItemStack.EMPTY);
-                                }else{
+                                handler.getEquippedCurios().setStackInSlot(i,ItemStack.EMPTY);
+                                if (curios.get(i) != null){
                                     handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
                                 }
 
