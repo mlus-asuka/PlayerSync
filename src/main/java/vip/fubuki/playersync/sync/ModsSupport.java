@@ -43,6 +43,12 @@ public class ModsSupport {
                             }
                         }
                     });
+                }else {
+                    itemHandler.ifPresent(handler ->{
+                    for (int i = 0; i < handler.getSlots(); i++) {
+                        handler.getEquippedCurios().setStackInSlot(i,ItemStack.EMPTY);
+                    }
+                    });
                 }
                     resultSet.close();
                     queryResult.getConnection().close();
