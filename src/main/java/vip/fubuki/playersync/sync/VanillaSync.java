@@ -13,6 +13,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
+import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import vip.fubuki.playersync.config.JdbcConfig;
@@ -52,7 +53,7 @@ public class VanillaSync {
         int lastServer = resultSet.getInt("last_server");
         queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
         resultSet= queryResult.getResultSet();
-        if(online) {
+        if(online && lastServer != JdbcConfig.SERVER_ID.get()) {
 
             queryResult=JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"'");
             ResultSet getServerInfo = queryResult.getResultSet();
@@ -275,15 +276,17 @@ public class VanillaSync {
         return files;
     }
 
-//    @SubscribeEvent
-//    public void RegisterCommand(RegisterCommandsEvent event){
-//        CommandDispatcher<CommandSourceStack> dispatcher=event.getDispatcher();
-//        LiteralCommandNode<CommandSourceStack> cmd = dispatcher.register(
-//                Commands.literal("serializeNBT").executes(context -> {context.getSource().sendSuccess(Component.literal(context.getSource().getPlayer().getItemInHand(InteractionHand.MAIN_HAND).serializeNBT().toString()),true);
-//                    return 0;
-//                })
-//        );
-//    }
+    static int tick = 0;
+
+    @SubscribeEvent
+    public static void onUpdate(Event event) throws SQLException {
+        tick++;
+        if(tick == 1200) {
+            tick=0;
+            long current = System.currentTimeMillis();
+            JDBCsetUp.executeUpdate("UPDATE server_info SET last_update ="+current+" WHERE id= "+ JdbcConfig.SERVER_ID.get());
+        }
+    }
 
 }
 

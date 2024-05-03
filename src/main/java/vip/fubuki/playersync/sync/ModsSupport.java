@@ -27,29 +27,27 @@ public class ModsSupport {
             ResultSet resultSet = queryResult.getResultSet();
             if(resultSet.next()) {
                 String curios_data=resultSet.getString("curios_item");
-                if(curios_data.length()>2) {
-                    Map<Integer, String> curios = LocalJsonUtil.StringToEntryMap(curios_data);
-                    itemHandler.ifPresent(handler -> {
-                        handler.reset();
-                        for (int i = 0; i < handler.getSlots(); i++) {
-                            try {
-                                handler.getEquippedCurios().setStackInSlot(i,ItemStack.EMPTY);
-                                if (curios.get(i) != null){
-                                    handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
-                                }
-
-                            } catch (CommandSyntaxException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                    });
-                }else {
-                    itemHandler.ifPresent(handler ->{
+                itemHandler.ifPresent(handler ->{
                     for (int i = 0; i < handler.getSlots(); i++) {
                         handler.getEquippedCurios().setStackInSlot(i,ItemStack.EMPTY);
                     }
+                });
+
+                Map<Integer, String> curios = LocalJsonUtil.StringToEntryMap(curios_data);
+                itemHandler.ifPresent(handler -> {
+                    handler.reset();
+                    for (int i = 0; i < handler.getSlots(); i++) {
+                        try {
+                            if (curios.get(i) != null){
+                                handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                            }
+
+                        } catch (CommandSyntaxException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
                     });
-                }
+
                     resultSet.close();
                     queryResult.getConnection().close();
             }else{
