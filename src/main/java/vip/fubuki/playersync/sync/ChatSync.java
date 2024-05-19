@@ -6,6 +6,8 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
@@ -18,7 +20,14 @@ public class ChatSync {
 
     @SubscribeEvent
     public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("INSERT INTO chat (player, message, timestamp) VALUES ('" + event.getUsername() + "', '" + event.getRawText() + "', '" + current + "')");
+        String sql = "INSERT INTO chat (player, message, timestamp) VALUES (?, ?, ?)";
+        try (Connection connection = JDBCsetUp.getConnection();
+             PreparedStatement preparedStatement = connection.prepareStatement(sql)) {
+                preparedStatement.setString(1, event.getUsername());
+                preparedStatement.setString(2, event.getRawText());
+                preparedStatement.setLong(3, current);
+                preparedStatement.executeUpdate();
+        }
     }
 
     @SubscribeEvent
