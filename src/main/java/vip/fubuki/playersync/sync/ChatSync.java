@@ -3,9 +3,9 @@ package vip.fubuki.playersync.sync;
 import net.minecraft.network.chat.ChatType;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.players.PlayerList;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
 import java.sql.Connection;
@@ -15,7 +15,6 @@ import java.sql.SQLException;
 import java.util.Objects;
 import java.util.UUID;
 
-@Mod.EventBusSubscriber
 public class ChatSync {
     static int tick = 0;
     static long current = System.currentTimeMillis();
@@ -23,6 +22,7 @@ public class ChatSync {
     static PlayerList playerList;
 
     public static void register(){
+        MinecraftForge.EVENT_BUS.register(ChatSync.class);
     }
 
     @SubscribeEvent
