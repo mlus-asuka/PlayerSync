@@ -41,7 +41,7 @@ public class PlayerSync
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `playersync`",1);
+        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get(),1);
 
         JDBCsetUp.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS `player_data` (
