@@ -14,7 +14,8 @@ public class JDBCsetUp {
 
     public static QueryResult executeQuery(String sql) throws SQLException{
        Connection connection = getConnection();
-        PreparedStatement useStatement = connection.prepareStatement("USE "+JdbcConfig.DATABASE_NAME.get());
+        PreparedStatement useStatement = connection.prepareStatement("USE ?");
+        useStatement.setString(1, JdbcConfig.DATABASE_NAME.get());
         useStatement.executeUpdate();
 
         PreparedStatement queryStatement = connection.prepareStatement(sql);
@@ -25,7 +26,8 @@ public class JDBCsetUp {
     public static int executeUpdate(String sql) throws SQLException{
         try (Connection connection = getConnection()) {
 
-            PreparedStatement useStatement = connection.prepareStatement("USE "+JdbcConfig.DATABASE_NAME.get());
+            PreparedStatement useStatement = connection.prepareStatement("USE ?");
+            useStatement.setString(1, JdbcConfig.DATABASE_NAME.get());
             useStatement.executeUpdate();
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
