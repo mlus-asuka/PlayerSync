@@ -41,7 +41,7 @@ public class PlayerSync
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `playersync`",1);
+        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get(),1);
 
         JDBCsetUp.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS `player_data` (
@@ -59,8 +59,6 @@ public class PlayerSync
                   `last_server` int DEFAULT NULL,
                   PRIMARY KEY (`uuid`)
                 );""");
-        JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS chat (player CHAR(36) NOT NULL,message TEXT," +
-                "timestamp BIGINT)");
         JDBCsetUp.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS server_info (
                   `id` INT NOT NULL,
