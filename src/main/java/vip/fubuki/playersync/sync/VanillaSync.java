@@ -11,6 +11,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.Event;
@@ -279,9 +280,9 @@ public class VanillaSync {
     static int tick = 0;
 
     @SubscribeEvent
-    public static void onUpdate(Event event) throws SQLException {
+    public static void onUpdate(TickEvent.LevelTickEvent event) throws SQLException {
         tick++;
-        if(tick == 1200) {
+        if(tick == 1800) {
             tick=0;
             long current = System.currentTimeMillis();
             JDBCsetUp.executeUpdate("UPDATE server_info SET last_update ="+current+" WHERE id= "+ JdbcConfig.SERVER_ID.get());
