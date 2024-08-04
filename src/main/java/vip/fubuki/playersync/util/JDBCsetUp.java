@@ -14,10 +14,10 @@ public class JDBCsetUp {
 
     public static QueryResult executeQuery(String sql) throws SQLException{
         Connection connection = getConnection();
-        PreparedStatement useStatement = connection.prepareStatement("USE ?");
-        useStatement.setString(1, JdbcConfig.DATABASE_NAME.get());
-        useStatement.executeUpdate();
 
+        try (Statement useStatement = connection.createStatement()) {
+            useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
+        }
         PreparedStatement queryStatement = connection.prepareStatement(sql);
         ResultSet resultSet = queryStatement.executeQuery();
        return new QueryResult(connection,resultSet);
@@ -39,9 +39,9 @@ public class JDBCsetUp {
     public static void Update(String sql, String... argument) throws SQLException{
        Connection connection = getConnection();
 
-       PreparedStatement useStatement = connection.prepareStatement("USE ?");
-       useStatement.setString(1, JdbcConfig.DATABASE_NAME.get());
-       useStatement.executeUpdate();
+        try (Statement useStatement = connection.createStatement()) {
+            useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
+        }
 
        PreparedStatement updateStatement = connection.prepareStatement(sql);
        for (int i = 1; i <= argument.length; i++) {
