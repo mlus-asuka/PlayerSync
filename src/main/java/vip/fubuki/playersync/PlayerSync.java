@@ -59,8 +59,6 @@ public class PlayerSync
                   `last_server` int DEFAULT NULL,
                   PRIMARY KEY (`uuid`)
                 );""");
-        JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS chat (player CHAR(36) NOT NULL,message TEXT," +
-                "timestamp BIGINT)");
         JDBCsetUp.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS server_info (
                   `id` INT NOT NULL,

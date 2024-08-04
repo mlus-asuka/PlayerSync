@@ -42,7 +42,7 @@ public class VanillaSync {
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, CommandSyntaxException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
-        ResultSet resultSet=queryResult.getResultSet();
+        ResultSet resultSet=queryResult.resultSet();
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
         if(!resultSet.next()){
             Store(event.getPlayer(),true,Dist.CLIENT.isDedicatedServer());
@@ -51,11 +51,11 @@ public class VanillaSync {
         boolean online = resultSet.getBoolean("online");
         int lastServer = resultSet.getInt("last_server");
         queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
-        resultSet= queryResult.getResultSet();
+        resultSet= queryResult.resultSet();
         if(online) {
 
             queryResult=JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"'");
-            ResultSet getServerInfo = queryResult.getResultSet();
+            ResultSet getServerInfo = queryResult.resultSet();
             if(getServerInfo.next()){
                 long last_update = getServerInfo.getLong("last_update");
                 boolean enable = getServerInfo.getBoolean("enable");

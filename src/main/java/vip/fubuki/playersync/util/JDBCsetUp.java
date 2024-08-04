@@ -1,5 +1,9 @@
 package vip.fubuki.playersync.util;
 
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.TranslatableComponent;
+import org.lwjgl.system.CallbackI;
 import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
@@ -13,7 +17,7 @@ public class JDBCsetUp {
     }
 
     public static QueryResult executeQuery(String sql) throws SQLException{
-       Connection connection = getConnection();
+        Connection connection = getConnection();
         PreparedStatement useStatement = connection.prepareStatement("USE ?");
         useStatement.setString(1, JdbcConfig.DATABASE_NAME.get());
         useStatement.executeUpdate();
@@ -23,7 +27,7 @@ public class JDBCsetUp {
        return new QueryResult(connection,resultSet);
     }
 
-    public static int executeUpdate(String sql) throws SQLException{
+    public static void executeUpdate(String sql) throws SQLException{
         try (Connection connection = getConnection()) {
 
             PreparedStatement useStatement = connection.prepareStatement("USE ?");
@@ -31,35 +35,34 @@ public class JDBCsetUp {
             useStatement.executeUpdate();
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
-                return updateStatement.executeUpdate();
+                updateStatement.executeUpdate();
             }
         }
     }
 
-    public static int executeUpdate(String sql,int i) throws SQLException{
+    public static void Update(String sql, String... argument) throws SQLException{
+       Connection connection = getConnection();
+
+       PreparedStatement useStatement = connection.prepareStatement("USE ?");
+       useStatement.setString(1, JdbcConfig.DATABASE_NAME.get());
+       useStatement.executeUpdate();
+
+       PreparedStatement updateStatement = connection.prepareStatement(sql);
+       for (int i = 1; i <= argument.length; i++) {
+           updateStatement.setString(i,argument[i]);
+       }
+       updateStatement.executeUpdate();
+    }
+
+    public static void executeUpdate(String sql, int i) throws SQLException{
         try (Connection connection = getConnection()) {
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
-                return updateStatement.executeUpdate();
+                updateStatement.executeUpdate();
             }
         }
     }
 
-    public static class QueryResult{
-        private final Connection connection;
-        private final ResultSet resultSet;
-
-        public QueryResult(Connection connection, ResultSet resultSet) {
-            this.connection = connection;
-            this.resultSet = resultSet;
-        }
-
-        public Connection getConnection() {
-            return connection;
-        }
-
-        public ResultSet getResultSet() {
-            return resultSet;
-        }
+    public record QueryResult(Connection connection, ResultSet resultSet) {
     }
 }
