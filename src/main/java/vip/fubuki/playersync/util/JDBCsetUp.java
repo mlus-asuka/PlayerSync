@@ -26,9 +26,9 @@ public class JDBCsetUp {
     public static void executeUpdate(String sql) throws SQLException{
         try (Connection connection = getConnection()) {
 
-            PreparedStatement useStatement = connection.prepareStatement("USE ?");
-            useStatement.setString(1, JdbcConfig.DATABASE_NAME.get());
-            useStatement.executeUpdate();
+            try (Statement useStatement = connection.createStatement()) {
+                useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
+            }
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 updateStatement.executeUpdate();
