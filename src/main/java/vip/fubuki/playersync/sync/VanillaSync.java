@@ -64,15 +64,15 @@ public class VanillaSync {
                     serverPlayer.connection.disconnect(new StringTextComponent("playersync.already_online"));
                     return;
                 }
-                JDBCsetUp.executeUpdate("UPDATE server_info SET enable=false WHERE id=" + lastServer+";");
+                JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + lastServer);
             }
 
             getServerInfo.close();
 
 
         }
-        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get()+";");
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online=true,last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='"+player_uuid+"';");
+        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='"+player_uuid+"'");
         if(resultSet.next()) {
             //Easy Part
             serverPlayer.setHealth(resultSet.getInt("health"));

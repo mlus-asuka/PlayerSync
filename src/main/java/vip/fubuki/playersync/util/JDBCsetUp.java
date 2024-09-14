@@ -13,32 +13,48 @@ public class JDBCsetUp {
     }
 
     public static QueryResult executeQuery(String sql) throws SQLException{
-       Connection connection = getConnection();
-        PreparedStatement useStatement = connection.prepareStatement("USE `playersync`");
-        useStatement.executeUpdate();
+        Connection connection = getConnection();
 
+        try (Statement useStatement = connection.createStatement()) {
+            useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
+        }
         PreparedStatement queryStatement = connection.prepareStatement(sql);
         ResultSet resultSet = queryStatement.executeQuery();
        return new QueryResult(connection,resultSet);
     }
 
-    public static int executeUpdate(String sql) throws SQLException{
+    public static void executeUpdate(String sql) throws SQLException{
         try (Connection connection = getConnection()) {
 
-            PreparedStatement useStatement = connection.prepareStatement("USE `playersync`");
-            useStatement.executeUpdate();
+            try (Statement useStatement = connection.createStatement()) {
+                useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
+            }
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
-                return updateStatement.executeUpdate();
+                updateStatement.executeUpdate();
             }
         }
     }
 
-    public static int executeUpdate(String sql,int i) throws SQLException{
+    public static void Update(String sql, String... argument) throws SQLException{
+       Connection connection = getConnection();
+
+        try (Statement useStatement = connection.createStatement()) {
+            useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
+        }
+
+       PreparedStatement updateStatement = connection.prepareStatement(sql);
+       for (int i = 1; i <= argument.length; i++) {
+           updateStatement.setString(i,argument[i]);
+       }
+       updateStatement.executeUpdate();
+    }
+
+    public static void executeUpdate(String sql, int i) throws SQLException{
         try (Connection connection = getConnection()) {
 
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
-                return updateStatement.executeUpdate();
+                updateStatement.executeUpdate();
             }
         }
     }
