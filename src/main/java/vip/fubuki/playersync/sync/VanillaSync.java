@@ -14,7 +14,6 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
-import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import vip.fubuki.playersync.config.JdbcConfig;
@@ -47,7 +46,7 @@ public class VanillaSync {
         ResultSet resultSet=queryResult.resultSet();
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
         if(!resultSet.next()){
-            Store(event.getEntity(),true,Dist.CLIENT.isDedicatedServer());
+            store(event.getEntity(),true,Dist.CLIENT.isDedicatedServer());
             return;
         }
         boolean online = resultSet.getBoolean("online");
@@ -89,18 +88,18 @@ public class VanillaSync {
             if(armor_data.length()>2) {
                 Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
                 for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                    serverPlayer.getInventory().armor.set(entry.getKey(), Deserialize(entry));
+                    serverPlayer.getInventory().armor.set(entry.getKey(), deserialize(entry));
                 }
             }
             //Inventory
             Map<Integer,String> inventory = LocalJsonUtil.StringToEntryMap(resultSet.getString("inventory"));
             for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
-                serverPlayer.getInventory().setItem(entry.getKey(),Deserialize(entry));
+                serverPlayer.getInventory().setItem(entry.getKey(), deserialize(entry));
             }
             //Ender chest
             Map<Integer,String> ender_chest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
             for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
-                serverPlayer.getEnderChestInventory().setItem(entry.getKey(),Deserialize(entry));
+                serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserialize(entry));
             }
             //Effects
             String effectData=resultSet.getString("effects");
@@ -124,7 +123,7 @@ public class VanillaSync {
                 byte [] bytes=resultSet.getString("advancements").getBytes();
                 Files.write(advancements.toPath(),bytes);
             }else{
-                File[] files= ScanAdvancementsFile(player_uuid, gameDir);
+                File[] files= scanAdvancementsFile(player_uuid, gameDir);
                 for (File file : files) {
                     if(file==null) continue;
                     byte [] bytes=resultSet.getString("advancements").getBytes();
@@ -141,7 +140,7 @@ public class VanillaSync {
     }
 
     @SubscribeEvent
-    public static void OnPlayerJoin(PlayerEvent.PlayerLoggedInEvent event){
+    public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event){
         executorService.submit(()->{
             try {
                 doPlayerJoin(event);
@@ -152,16 +151,20 @@ public class VanillaSync {
 
     }
 
-    private static ItemStack Deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
+    public static ItemStack deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
         String nbt= entry.getValue().replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'");
         CompoundTag compoundTag = NbtUtils.snbtToStructure(nbt);
         return ItemStack.of(compoundTag);
     }
 
+    public static String serialize(String object){
+        return object.replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~");
+    }
+
     public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
         JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
         if(!event.getEntity().getTags().contains("player_synced")) return;
-        Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
+        store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
     }
 
     @SubscribeEvent
@@ -183,7 +186,7 @@ public class VanillaSync {
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='"+player_uuid+"'");
-        Store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
+        store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
 
     }
 
@@ -202,7 +205,7 @@ public class VanillaSync {
 
     }
 
-    public static void Store(Player player, boolean init,boolean isServer) throws SQLException, IOException {
+    public static void store(Player player, boolean init, boolean isServer) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
         //Easy part
         int XP = player.totalExperience;
@@ -214,20 +217,20 @@ public class VanillaSync {
         for (int i = 0; i < player.getInventory().armor.size(); i++) {
             ItemStack itemStack = player.getInventory().armor.get(i);
             if(itemStack.isEmpty()) continue;
-            equipment.put(i,itemStack.serializeNBT().toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
+            equipment.put(i,serialize(itemStack.serializeNBT().toString()));
         }
         //inventory
         Inventory inventory = player.getInventory();
-        Map<Integer,String> inventoryMap=new HashMap<>();
+        Map<Integer,String> inventoryMap = new HashMap<>();
         for (int i = 0; i < inventory.items.size(); i++) {
             CompoundTag itemNBT = inventory.items.get(i).serializeNBT();
-            inventoryMap.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
+            inventoryMap.put(i,serialize(itemNBT.toString()));
         }
         //EnderChest
-        Map<Integer, String> ender_chest=new HashMap<>();
+        Map<Integer, String> ender_chest = new HashMap<>();
         for (int i=0;i< player.getEnderChestInventory().getContainerSize();i++) {
             CompoundTag itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
-            ender_chest.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
+            ender_chest.put(i,serialize(itemNBT.toString()));
         }
         //Effects
         Map<MobEffect,MobEffectInstance> effects= player.getActiveEffectsMap();
@@ -244,7 +247,7 @@ public class VanillaSync {
             advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0)+"/advancements"+"/"+player_uuid+".json");
         }else{
 //            File gameDir = Minecraft.getInstance().gameDirectory;
-            File[] files=ScanAdvancementsFile(player_uuid, gameDir);
+            File[] files= scanAdvancementsFile(player_uuid, gameDir);
             //Get LastModified
             long latestModifiedDate = 0;
             for (File file : files) {
@@ -267,7 +270,7 @@ public class VanillaSync {
         }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"'");
     }
 
-    private static File[] ScanAdvancementsFile(String player_uuid, File gameDir) {
+    private static File[] scanAdvancementsFile(String player_uuid, File gameDir) {
         File[] files = new File[JdbcConfig.SYNC_WORLD.get().size()];
         for (int i = 0; i < JdbcConfig.SYNC_WORLD.get().size(); i++) {
             File advanceFile=new File(gameDir, "saves/"+JdbcConfig.SYNC_WORLD.get().get(i)+"/advancements"+"/"+player_uuid+".json");

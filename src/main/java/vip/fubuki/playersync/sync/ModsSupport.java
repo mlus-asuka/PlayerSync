@@ -39,7 +39,7 @@ public class ModsSupport {
                     for (int i = 0; i < handler.getSlots(); i++) {
                         try {
                             if (curios.get(i) != null){
-                                handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                                handler.getEquippedCurios().setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
                             }
 
                         } catch (CommandSyntaxException e) {
@@ -68,7 +68,7 @@ public class ModsSupport {
         itemHandler.ifPresent(handler -> {
             for (int i = 0; i < handler.getSlots(); i++) {
                 if (!handler.getEquippedCurios().getStackInSlot(i).isEmpty()) {
-                    String sNBT= handler.getEquippedCurios().getStackInSlot(i).serializeNBT().toString().replace(",", "|");
+                    String sNBT= VanillaSync.serialize(handler.getEquippedCurios().getStackInSlot(i).serializeNBT().toString());
                     curios.put(i, sNBT);
                 }
             }
