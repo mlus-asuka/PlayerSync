@@ -27,6 +27,8 @@ public class ModsSupport {
             ResultSet resultSet = queryResult.resultSet();
             if(resultSet.next()) {
                 String curios_data=resultSet.getString("curios_item");
+                if(curios_data.isEmpty())
+                    return;
                 itemHandler.ifPresent(handler ->{
                     for (int i = 0; i < handler.getSlots(); i++) {
                         handler.getEquippedCurios().setStackInSlot(i,ItemStack.EMPTY);
