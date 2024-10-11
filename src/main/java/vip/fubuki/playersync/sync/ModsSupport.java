@@ -25,7 +25,7 @@ public class ModsSupport {
              */
             LazyOptional<IItemHandlerModifiable> itemHandler = top.theillusivec4.curios.api.CuriosApi.getCuriosHelper().getEquippedCurios(player);
             JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '"+player.getUUID()+"'");
-            ResultSet resultSet = queryResult.getResultSet();
+            ResultSet resultSet = queryResult.resultSet();
             if(resultSet.next()) {
                 String curios_data=resultSet.getString("curios_item");
                 if(curios_data.length()>2) {
@@ -34,7 +34,7 @@ public class ModsSupport {
                         for (int i = 0; i < handler.getSlots(); i++) {
                             try {
                                 if (curios.get(i) == null) continue;
-                                handler.setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ","))));
+                                handler.setStackInSlot(i, ItemStack.of(NbtUtils.snbtToStructure(curios.get(i).replace("|", ",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
                             } catch (CommandSyntaxException e) {
                                 throw new RuntimeException(e);
                             }
@@ -42,7 +42,7 @@ public class ModsSupport {
                     });
                 }
                     resultSet.close();
-                    queryResult.getConnection().close();
+                    queryResult.connection().close();
             }else{
                 StoreCurios(player,true);
             }
@@ -61,7 +61,7 @@ public class ModsSupport {
         itemHandler.ifPresent(handler -> {
             for (int i = 0; i < handler.getSlots(); i++) {
                 if (!handler.getStackInSlot(i).isEmpty()) {
-                    String sNBT= handler.getStackInSlot(i).serializeNBT().toString().replace(",", "|");
+                    String sNBT= VanillaSync.serialize(handler.getStackInSlot(i).serializeNBT().toString());
                     curios.put(i, sNBT);
                 }
             }

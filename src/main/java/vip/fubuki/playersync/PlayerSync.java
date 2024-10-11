@@ -17,6 +17,7 @@ import vip.fubuki.playersync.sync.ChatSync;
 import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
+import java.sql.ResultSet;
 import java.sql.SQLException;
 
 @Mod(PlayerSync.MODID)
@@ -41,7 +42,7 @@ public class PlayerSync
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `playersync`",1);
+        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get(),1);
 
         JDBCsetUp.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS `player_data` (
@@ -51,6 +52,8 @@ public class PlayerSync
                   `advancements` blob,
                   `enderchest` mediumblob,
                   `effects` blob,
+                  `left_hand` blob,
+                  `cursors` blob,
                   `xp` int DEFAULT NULL,
                   `food_level` int DEFAULT NULL,
                   `score` int DEFAULT NULL,
@@ -59,8 +62,27 @@ public class PlayerSync
                   `last_server` int DEFAULT NULL,
                   PRIMARY KEY (`uuid`)
                 );""");
-        JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS chat (player CHAR(36) NOT NULL,message TEXT," +
-                "timestamp BIGINT)");
+
+        JDBCsetUp.QueryResult queryResult = JDBCsetUp.executeQuery("""
+                SELECT COUNT(*) AS column_count
+                FROM INFORMATION_SCHEMA.COLUMNS
+                 WHERE TABLE_NAME = 'player_data';
+                """);
+
+        ResultSet resultSet = queryResult.resultSet();
+        int columnCount = 0;
+        if(resultSet.next()) {
+            columnCount = resultSet.getInt("column_count");
+        }
+
+        if(columnCount<14){
+            JDBCsetUp.executeUpdate("""
+                    ALTER TABLE player_data
+                    ADD COLUMN left_hand blob,
+                    ADD COLUMN cursors blob;
+                    """);
+        }
+
         JDBCsetUp.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS server_info (
                   `id` INT NOT NULL,
@@ -72,6 +94,7 @@ public class PlayerSync
                 "VALUES(" + JdbcConfig.SERVER_ID.get() + ",true," + current + ") " +
                 "ON DUPLICATE KEY UPDATE id= " + JdbcConfig.SERVER_ID.get() +",enable = 1," +
                 "last_update=" + current + ";");
+        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= 1 WHERE id= "+ JdbcConfig.SERVER_ID.get());
 
         if(ModList.get().isLoaded("curios")) {
             JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS curios (uuid CHAR(36) NOT NULL,curios_item BLOB, PRIMARY KEY (uuid))");
