@@ -5,6 +5,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.player.Inventory;
@@ -83,6 +84,10 @@ public class VanillaSync {
             serverPlayer.experienceProgress=0;
             serverPlayer.giveExperiencePoints(resultSet.getInt("xp"));
             serverPlayer.setScore(resultSet.getInt("score"));
+            //Left Hand
+            serverPlayer.setItemInHand(InteractionHand.OFF_HAND,ItemStack.of(NbtUtils.snbtToStructure(resultSet.getString("left_hand").replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
+            //Cursor
+            serverPlayer.containerMenu.setCarried(ItemStack.of(NbtUtils.snbtToStructure(resultSet.getString("cursors").replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
             //Equipment
             String armor_data=resultSet.getString("armor");
             if(armor_data.length()>2) {
@@ -212,6 +217,10 @@ public class VanillaSync {
         int score=player.getScore();
         int food_level=player.getFoodData().getFoodLevel();
         int health=(int) player.getHealth();
+        //Left hand
+        String left_hand = serialize(player.getItemInHand(InteractionHand.OFF_HAND).serializeNBT().toString());
+        //Cursor
+        String cursors = serialize(player.containerMenu.getCarried().serializeNBT().toString());
         //Equipment
         Map<Integer,String> equipment =new HashMap<>() ;
         for (int i = 0; i < player.getInventory().armor.size(); i++) {
@@ -266,8 +275,8 @@ public class VanillaSync {
 
         //SQL Operation
         if(init){
-            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true)");
-        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"'");
+            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,left_hand,cursors,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"','"+left_hand+"','"+cursors+"',online=true)");
+        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"',left_hand='"+left_hand+"',cursors='"+cursors+"' WHERE uuid = '"+player_uuid+"'");
     }
 
     private static File[] scanAdvancementsFile(String player_uuid, File gameDir) {
