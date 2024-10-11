@@ -52,7 +52,7 @@ public class PlayerSync
                   `advancements` blob,
                   `enderchest` mediumblob,
                   `effects` blob,
-                  `left_hands` blob,
+                  `left_hand` blob,
                   `cursors` blob,
                   `xp` int DEFAULT NULL,
                   `food_level` int DEFAULT NULL,
