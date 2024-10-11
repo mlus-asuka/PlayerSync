@@ -36,7 +36,7 @@ public class JDBCsetUp {
         }
     }
 
-    public static void Update(String sql, String... argument) throws SQLException{
+    public static void update(String sql, String... argument) throws SQLException{
        Connection connection = getConnection();
 
         try (Statement useStatement = connection.createStatement()) {

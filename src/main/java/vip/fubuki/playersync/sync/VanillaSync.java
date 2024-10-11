@@ -9,8 +9,10 @@ import net.minecraft.nbt.CompoundNBT;
 import net.minecraft.nbt.JsonToNBT;
 import net.minecraft.potion.Effect;
 import net.minecraft.potion.EffectInstance;
+import net.minecraft.util.Hand;
 import net.minecraft.util.text.StringTextComponent;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -45,14 +47,14 @@ public class VanillaSync {
         ResultSet resultSet=queryResult.getResultSet();
         ServerPlayerEntity serverPlayer = (ServerPlayerEntity) event.getEntity();
         if(!resultSet.next()){
-            Store(event.getPlayer(),true,Dist.CLIENT.isDedicatedServer());
+            store(event.getPlayer(),true,Dist.CLIENT.isDedicatedServer());
             return;
         }
         boolean online = resultSet.getBoolean("online");
         int lastServer = resultSet.getInt("last_server");
-        queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"';");
+        queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
         resultSet= queryResult.getResultSet();
-        if(online) {
+        if(online && lastServer != JdbcConfig.SERVER_ID.get()) {
 
             queryResult=JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"';");
             ResultSet getServerInfo = queryResult.getResultSet();
@@ -82,23 +84,27 @@ public class VanillaSync {
             serverPlayer.experienceProgress=0;
             serverPlayer.giveExperiencePoints(resultSet.getInt("xp"));
             serverPlayer.setScore(resultSet.getInt("score"));
+            //Left Hand
+            serverPlayer.setItemInHand(Hand.OFF_HAND,ItemStack.of(JsonToNBT.parseTag(resultSet.getString("left_hand").replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
+            //Cursor
+            serverPlayer.inventory.setCarried(ItemStack.of(JsonToNBT.parseTag(resultSet.getString("cursors").replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
             //Equipment
             String armor_data=resultSet.getString("armor");
             if(armor_data.length()>2) {
                 Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
                 for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                    serverPlayer.inventory.armor.set(entry.getKey(), Deserialize(entry));
+                    serverPlayer.inventory.armor.set(entry.getKey(), deserialize(entry));
                 }
             }
             //Inventory
             Map<Integer,String> inventory = LocalJsonUtil.StringToEntryMap(resultSet.getString("inventory"));
             for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
-                serverPlayer.inventory.setItem(entry.getKey(),Deserialize(entry));
+                serverPlayer.inventory.setItem(entry.getKey(),deserialize(entry));
             }
             //Ender chest
             Map<Integer,String> ender_chest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
             for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
-                serverPlayer.getEnderChestInventory().setItem(entry.getKey(),Deserialize(entry));
+                serverPlayer.getEnderChestInventory().setItem(entry.getKey(),deserialize(entry));
             }
             //Effects
             String effectData=resultSet.getString("effects");
@@ -121,7 +127,7 @@ public class VanillaSync {
                 byte [] bytes=resultSet.getString("advancements").getBytes();
                 Files.write(advancements.toPath(),bytes);
             }else{
-                File[] files= ScanAdvancementsFile(player_uuid, gameDir);
+                File[] files= scanAdvancementsFile(player_uuid, gameDir);
                 for (File file : files) {
                     if(file==null) continue;
                     byte [] bytes=resultSet.getString("advancements").getBytes();
@@ -138,7 +144,7 @@ public class VanillaSync {
     }
 
     @SubscribeEvent
-    public static void OnPlayerJoin(PlayerEvent.PlayerLoggedInEvent event){
+    public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event){
         executorService.submit(()->{
             try {
                 doPlayerJoin(event);
@@ -149,19 +155,20 @@ public class VanillaSync {
 
     }
 
-    private static ItemStack Deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
+    public static ItemStack deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
         String nbt= entry.getValue().replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'");
         CompoundNBT compoundTag = JsonToNBT.parseTag(nbt);
         return ItemStack.of(compoundTag);
     }
 
+    public static String serialize(String object){
+        return object.replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~");
+    }
+
     public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
-        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get()+";");
+        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
         if(!event.getEntity().getTags().contains("player_synced")) return;
-        Store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
-        //Mod support
-        ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerLeave(event.getPlayer());
+        store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
     }
 
     @SubscribeEvent
@@ -177,18 +184,17 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onServerShutdown(FMLServerStoppedEvent event) throws SQLException {
-        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= false WHERE id=" + JdbcConfig.SERVER_ID.get()+";");
+        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + JdbcConfig.SERVER_ID.get()+";");
     }
 
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         if(!event.getEntity().getTags().contains("player_synced")) return;
         String player_uuid = event.getEntity().getUUID().toString();
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online= false WHERE uuid='"+player_uuid+"';");
-        Store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='"+player_uuid+"';");
+        store(event.getPlayer(),false,Dist.CLIENT.isDedicatedServer());
         //Mod support
         ModsSupport modsSupport = new ModsSupport();
         modsSupport.onPlayerLeave(event.getPlayer());
-        event.getEntity().removeTag("player_synced");
     }
 
     @SubscribeEvent
@@ -203,32 +209,36 @@ public class VanillaSync {
 
     }
 
-    public static void Store(PlayerEntity player, boolean init, boolean isServer) throws SQLException, IOException {
+    public static void store(PlayerEntity player, boolean init, boolean isServer) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
         //Easy part
         int XP = player.totalExperience;
         int score=player.getScore();
         int food_level=player.getFoodData().getFoodLevel();
         int health=(int) player.getHealth();
+        //Left hand
+        String left_hand = serialize(player.getItemInHand(Hand.OFF_HAND).serializeNBT().toString());
+        //Cursor
+        String cursors = serialize(player.inventory.getCarried().serializeNBT().toString());
         //Equipment
         Map<Integer,String> equipment =new HashMap<>() ;
         for (int i = 0; i < player.inventory.armor.size(); i++) {
             ItemStack itemStack = player.inventory.armor.get(i);
             if(itemStack.isEmpty()) continue;
-            equipment.put(i,itemStack.serializeNBT().toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
+            equipment.put(i,serialize(itemStack.serializeNBT().toString()));
         }
         //inventory
         PlayerInventory inventory = player.inventory;
-        Map<Integer,String> inventoryMap=new HashMap<>();
+        Map<Integer,String> inventoryMap = new HashMap<>();
         for (int i = 0; i < inventory.items.size(); i++) {
             CompoundNBT itemNBT = inventory.items.get(i).serializeNBT();
-            inventoryMap.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
+            inventoryMap.put(i,serialize(itemNBT.toString()));
         }
         //EnderChest
-        Map<Integer, String> ender_chest=new HashMap<>();
+        Map<Integer, String> ender_chest = new HashMap<>();
         for (int i=0;i< player.getEnderChestInventory().getContainerSize();i++) {
             CompoundNBT itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
-            ender_chest.put(i,itemNBT.toString().replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~"));
+            ender_chest.put(i,serialize(itemNBT.toString()));
         }
         //Effects
         Map<Effect, EffectInstance> effects= player.getActiveEffectsMap();
@@ -245,7 +255,7 @@ public class VanillaSync {
             advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0)+"/advancements"+"/"+player_uuid+".json");
         }else{
 //            File gameDir = Minecraft.getInstance().gameDirectory;
-            File[] files=ScanAdvancementsFile(player_uuid, gameDir);
+            File[] files= scanAdvancementsFile(player_uuid, gameDir);
             //Get LastModified
             long latestModifiedDate = 0;
             for (File file : files) {
@@ -264,11 +274,11 @@ public class VanillaSync {
 
         //SQL Operation
         if(init){
-            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"',online=true);");
-        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"' WHERE uuid = '"+player_uuid+"';");
+            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,left_hand,cursors,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"','"+left_hand+"','"+cursors+"',online=true)");
+        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"',left_hand='"+left_hand+"',cursors='"+cursors+"' WHERE uuid = '"+player_uuid+"'");
     }
 
-    private static File[] ScanAdvancementsFile(String player_uuid, File gameDir) {
+    private static File[] scanAdvancementsFile(String player_uuid, File gameDir) {
         File[] files = new File[JdbcConfig.SYNC_WORLD.get().size()];
         for (int i = 0; i < JdbcConfig.SYNC_WORLD.get().size(); i++) {
             File advanceFile=new File(gameDir, "saves/"+JdbcConfig.SYNC_WORLD.get().get(i)+"/advancements"+"/"+player_uuid+".json");
@@ -278,15 +288,17 @@ public class VanillaSync {
         return files;
     }
 
-//    @SubscribeEvent
-//    public void RegisterCommand(RegisterCommandsEvent event){
-//        CommandDispatcher<CommandSourceStack> dispatcher=event.getDispatcher();
-//        LiteralCommandNode<CommandSourceStack> cmd = dispatcher.register(
-//                Commands.literal("serializeNBT").executes(context -> {context.getSource().sendSuccess(Component.literal(context.getSource().getPlayer().getItemInHand(InteractionHand.MAIN_HAND).serializeNBT().toString()),true);
-//                    return 0;
-//                })
-//        );
-//    }
+    static int tick = 0;
+
+    @SubscribeEvent
+    public static void onUpdate(TickEvent.ServerTickEvent event) throws SQLException {
+        tick++;
+        if(tick == 1800) {
+            tick=0;
+            long current = System.currentTimeMillis();
+            JDBCsetUp.executeUpdate("UPDATE server_info SET last_update ="+current+" WHERE id= "+ JdbcConfig.SERVER_ID.get());
+        }
+    }
 
 }
 

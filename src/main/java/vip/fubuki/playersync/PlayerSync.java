@@ -15,6 +15,7 @@ import vip.fubuki.playersync.sync.ChatSync;
 import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
+import java.sql.ResultSet;
 import java.sql.SQLException;
 
 @Mod(PlayerSync.MODID)
@@ -41,10 +42,23 @@ public class PlayerSync
         JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS "+JdbcConfig.DATABASE_NAME.get(),1);
 
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS player_data (uuid CHAR(36) NOT NULL," +
-                "inventory MEDIUMBLOB,armor BLOB,advancements BLOB,enderchest MEDIUMBLOB,effects BLOB," +
+                "inventory MEDIUMBLOB,armor BLOB,advancements BLOB,enderchest MEDIUMBLOB,effects BLOB,left_hand BLOB,cursors BLOB" +
                 "xp int,food_level int,score int,health int,online boolean, last_server int, PRIMARY KEY (uuid));");
-        JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS chat (player CHAR(36) NOT NULL,message TEXT," +
-                "timestamp BIGINT);");
+
+
+        JDBCsetUp.QueryResult queryResult = JDBCsetUp.executeQuery("SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'player_data';");
+
+        ResultSet resultSet = queryResult.getResultSet();
+        int columnCount = 0;
+        if(resultSet.next()) {
+            columnCount = resultSet.getInt("column_count");
+        }
+
+        if(columnCount<14){
+            JDBCsetUp.executeUpdate(" ALTER TABLE player_data ADD COLUMN left_hand blob, ADD COLUMN cursors blob; ");
+        }
+
+
         JDBCsetUp.executeUpdate("CREATE TABLE IF NOT EXISTS server_info (`id` INT NOT NULL,`enable` boolean NOT NULL,`last_update` BIGINT NOT NULL,PRIMARY KEY (`id`));");
         long current = System.currentTimeMillis();
         JDBCsetUp.executeUpdate("INSERT INTO server_info(id,enable,last_update) " +
