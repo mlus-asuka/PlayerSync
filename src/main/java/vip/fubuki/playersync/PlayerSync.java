@@ -79,7 +79,7 @@ public class PlayerSync
             JDBCsetUp.executeUpdate("""
                     ALTER TABLE player_data
                     ADD COLUMN left_hand blob,
-                    ADD COLUMN cursor blob;
+                    ADD COLUMN cursors blob;
                     """);
         }
 
