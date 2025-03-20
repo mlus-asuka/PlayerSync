@@ -4,58 +4,81 @@ import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
 
-
 public class JDBCsetUp {
 
-    public static Connection getConnection() throws SQLException {
-        String url= "jdbc:mysql://"+JdbcConfig.HOST.get()+":"+JdbcConfig.PORT.get()+"?useUnicode=true&characterEncoding=utf-8&useSSL="+JdbcConfig.USE_SSL.get()+"&serverTimezone=UTC&allowPublicKeyRetrieval=true";
-        return DriverManager.getConnection(url, JdbcConfig.USERNAME.get(), JdbcConfig.PASSWORD.get());
+    /**
+     * Returns a connection to the MySQL server.
+     * @param selectDatabase if true, the returned URL includes the configured database name.
+     * @return a Connection object with the database explicitly selected.
+     * @throws SQLException if a database access error occurs.
+     */
+    public static Connection getConnection(boolean selectDatabase) throws SQLException {
+        String dbName = JdbcConfig.DATABASE_NAME.get();
+        // Build the base URL
+        String url = "jdbc:mysql://" + JdbcConfig.HOST.get() + ":" + JdbcConfig.PORT.get();
+        if (selectDatabase && dbName != null && !dbName.isEmpty()) {
+            url += "/" + dbName;
+        }
+        url += "?useUnicode=true&characterEncoding=utf-8&useSSL=" + JdbcConfig.USE_SSL.get()
+                + "&serverTimezone=UTC&allowPublicKeyRetrieval=true";
+        Connection conn = DriverManager.getConnection(url, JdbcConfig.USERNAME.get(), JdbcConfig.PASSWORD.get());
+        // Ensure that the connection uses the desired database by explicitly issuing "USE dbName"
+        if (selectDatabase && dbName != null && !dbName.isEmpty()) {
+            try (Statement st = conn.createStatement()) {
+                st.execute("USE " + dbName);
+            }
+        }
+        return conn;
     }
 
-    public static QueryResult executeQuery(String sql) throws SQLException{
-        Connection connection = getConnection();
+    // Default connection always includes the database.
+    public static Connection getConnection() throws SQLException {
+        return getConnection(true);
+    }
 
-        try (Statement useStatement = connection.createStatement()) {
-            useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
-        }
+    /**
+     * Executes a query using a connection that includes the database.
+     */
+    public static QueryResult executeQuery(String sql) throws SQLException {
+        Connection connection = getConnection();  // With database selected (and "USE" already run)
         PreparedStatement queryStatement = connection.prepareStatement(sql);
         ResultSet resultSet = queryStatement.executeQuery();
-       return new QueryResult(connection,resultSet);
+        return new QueryResult(connection, resultSet);
     }
 
-    public static void executeUpdate(String sql) throws SQLException{
-        try (Connection connection = getConnection()) {
-
-            try (Statement useStatement = connection.createStatement()) {
-                useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
-            }
-
+    /**
+     * Executes an update using a connection that includes the database.
+     */
+    public static void executeUpdate(String sql) throws SQLException {
+        try (Connection connection = getConnection()) {  // With database selected
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 updateStatement.executeUpdate();
             }
         }
     }
 
-    public static void update(String sql, String... argument) throws SQLException{
-       Connection connection = getConnection();
-
-        try (Statement useStatement = connection.createStatement()) {
-            useStatement.execute("USE " + JdbcConfig.DATABASE_NAME.get());
-        }
-
-       PreparedStatement updateStatement = connection.prepareStatement(sql);
-       for (int i = 1; i <= argument.length; i++) {
-           updateStatement.setString(i,argument[i]);
-       }
-       updateStatement.executeUpdate();
-    }
-
-    public static void executeUpdate(String sql, int i) throws SQLException{
-        try (Connection connection = getConnection()) {
-
+    /**
+     * Executes an update using a connection that does NOT include a default database.
+     * This method is used for commands like "CREATE DATABASE IF NOT EXISTS ..."
+     */
+    public static void executeUpdate(String sql, int dummy) throws SQLException {
+        try (Connection connection = getConnection(false)) {  // Without default database
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 updateStatement.executeUpdate();
             }
+        }
+    }
+
+    /**
+     * A helper method for updates with parameters.
+     */
+    public static void update(String sql, String... argument) throws SQLException {
+        try (Connection connection = getConnection()) {  // With database selected
+            PreparedStatement updateStatement = connection.prepareStatement(sql);
+            for (int i = 0; i < argument.length; i++) {
+                updateStatement.setString(i + 1, argument[i]);
+            }
+            updateStatement.executeUpdate();
         }
     }
 
