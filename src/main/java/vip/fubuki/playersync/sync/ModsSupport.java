@@ -48,10 +48,10 @@ public class ModsSupport {
                             throw new RuntimeException(e);
                         }
                     }
-                    });
+                });
 
-                    resultSet.close();
-                    queryResult.connection().close();
+                resultSet.close();
+                queryResult.connection().close();
             }else{
                 StoreCurios(player,true);
             }
@@ -60,7 +60,7 @@ public class ModsSupport {
 
     public void onPlayerLeave(Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
-           StoreCurios(player, false);
+            StoreCurios(player, false);
         }
     }
 

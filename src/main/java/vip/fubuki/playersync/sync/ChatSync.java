@@ -103,7 +103,7 @@ public class ChatSync {
     }
 
     private static void reconnectClient() {
-       //TODO
+        //TODO
     }
 
     @SubscribeEvent

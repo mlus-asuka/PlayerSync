@@ -1,6 +1,20 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.network.chat.Component;
@@ -17,164 +31,227 @@ import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
+import vip.fubuki.playersync.sync.ModsSupport;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 import vip.fubuki.playersync.util.PSThreadPoolFactory;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
 @Mod.EventBusSubscriber
 public class VanillaSync {
 
-    public static void register(){}
+    public static void register() {}
 
     static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
 
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, CommandSyntaxException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='"+player_uuid+"'");
-        ResultSet resultSet=queryResult.resultSet();
+        PlayerSync.LOGGER.info("Starting synchronization for player " + player_uuid);
+
+        // First query: check basic player data
+        JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
+        ResultSet rs1 = qr1.resultSet();
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
-        if(!resultSet.next()){
-            store(event.getEntity(),true,Dist.CLIENT.isDedicatedServer());
+        if (!rs1.next()){
+            store(event.getEntity(), true, Dist.CLIENT.isDedicatedServer());
             return;
         }
-        boolean online = resultSet.getBoolean("online");
-        int lastServer = resultSet.getInt("last_server");
-        queryResult=JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='"+player_uuid+"'");
-        resultSet= queryResult.resultSet();
-        if(online && lastServer != JdbcConfig.SERVER_ID.get()) {
+        boolean online = rs1.getBoolean("online");
+        int lastServer = rs1.getInt("last_server");
 
-            queryResult=JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='"+lastServer+"'");
-            ResultSet getServerInfo = queryResult.resultSet();
-            if(getServerInfo.next()){
-                long last_update = getServerInfo.getLong("last_update");
-                boolean enable = getServerInfo.getBoolean("enable");
-                if(enable && System.currentTimeMillis() < last_update + 300000.0){
+        // Second query: retrieve full player data
+        JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='" + player_uuid + "'");
+        ResultSet rs2 = qr2.resultSet();
+
+        // Check if player is already online on another server
+        if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
+            JDBCsetUp.QueryResult qr3 = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='" + lastServer + "'");
+            ResultSet rs3 = qr3.resultSet();
+            if (rs3.next()){
+                long last_update = rs3.getLong("last_update");
+                boolean enable = rs3.getBoolean("enable");
+                if (enable && System.currentTimeMillis() < last_update + 300000.0){
                     event.getEntity().removeTag("player_synced");
                     serverPlayer.connection.disconnect(Component.translatable("playersync.already_online"));
                     return;
                 }
                 JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + lastServer);
             }
-
-            getServerInfo.close();
-
-
+            rs3.close();
         }
         JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='"+player_uuid+"'");
-        if(resultSet.next()) {
-            //Easy Part
-            serverPlayer.setHealth(resultSet.getInt("health"));
-            serverPlayer.getFoodData().setFoodLevel(resultSet.getInt("food_level"));
-            serverPlayer.totalExperience=0;
-            serverPlayer.experienceLevel=0;
-            serverPlayer.experienceProgress=0;
-            serverPlayer.giveExperiencePoints(resultSet.getInt("xp"));
-            serverPlayer.setScore(resultSet.getInt("score"));
-            //Left Hand
-            serverPlayer.setItemInHand(InteractionHand.OFF_HAND,ItemStack.of(NbtUtils.snbtToStructure(resultSet.getString("left_hand").replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
-            //Cursor
-            serverPlayer.containerMenu.setCarried(ItemStack.of(NbtUtils.snbtToStructure(resultSet.getString("cursors").replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'"))));
-            //Equipment
-            String armor_data=resultSet.getString("armor");
-            if(armor_data.length()>2) {
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+
+        if (rs2.next()) {
+            // Restore basic attributes
+            serverPlayer.setHealth(rs2.getInt("health"));
+            serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
+            serverPlayer.totalExperience = 0;
+            serverPlayer.experienceLevel = 0;
+            serverPlayer.experienceProgress = 0;
+            serverPlayer.giveExperiencePoints(rs2.getInt("xp"));
+            serverPlayer.setScore(rs2.getInt("score"));
+
+            // Restore left-hand item
+            String leftHandEncoded = rs2.getString("left_hand");
+            String leftHandNBT = deserializeString(leftHandEncoded);
+            serverPlayer.setItemInHand(InteractionHand.OFF_HAND,
+                    ItemStack.of(NbtUtils.snbtToStructure(leftHandNBT)));
+
+            // Restore cursor item
+            String cursorsEncoded = rs2.getString("cursors");
+            String cursorsNBT = deserializeString(cursorsEncoded);
+            serverPlayer.containerMenu.setCarried(
+                    ItemStack.of(NbtUtils.snbtToStructure(cursorsNBT))
+            );
+
+            // Restore armor
+            String armor_data = rs2.getString("armor");
+            if (armor_data.length() > 2) {
                 Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
                 for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
                     serverPlayer.getInventory().armor.set(entry.getKey(), deserialize(entry));
                 }
             }
-            //Inventory
-            Map<Integer,String> inventory = LocalJsonUtil.StringToEntryMap(resultSet.getString("inventory"));
+
+            // Restore inventory
+            Map<Integer, String> inventory = LocalJsonUtil.StringToEntryMap(rs2.getString("inventory"));
             for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
                 serverPlayer.getInventory().setItem(entry.getKey(), deserialize(entry));
             }
-            //Ender chest
-            Map<Integer,String> ender_chest = LocalJsonUtil.StringToEntryMap(resultSet.getString("enderchest"));
+
+            // Restore Ender Chest
+            Map<Integer, String> ender_chest = LocalJsonUtil.StringToEntryMap(rs2.getString("enderchest"));
             for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
                 serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserialize(entry));
             }
-            //Effects
-            String effectData=resultSet.getString("effects");
-            if(effectData.length()>2) {
+
+            // Restore Effects
+            String effectData = rs2.getString("effects");
+            if (effectData.length() > 2) {
                 serverPlayer.removeAllEffects();
                 Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
                 for (Map.Entry<Integer, String> entry : effects.entrySet()) {
-                    CompoundTag effectTag = NbtUtils.snbtToStructure(entry.getValue().replace("|", ","));
+                    CompoundTag effectTag = NbtUtils.snbtToStructure(deserializeString(entry.getValue()));
                     MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
-                    assert mobEffectInstance != null;
-                    serverPlayer.addEffect(mobEffectInstance);
+                    if (mobEffectInstance != null) {
+                        serverPlayer.addEffect(mobEffectInstance);
+                    }
                 }
             }
-            //Advancements
+
+            // Restore Advancements
             File gameDir = Objects.requireNonNull(serverPlayer.getServer()).getServerDirectory();
-            if(Dist.CLIENT.isDedicatedServer()){
-                File advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0)+"/advancements"+"/"+player_uuid+".json");
+            if (Dist.CLIENT.isDedicatedServer()){
+                File advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0) + "/advancements" + "/" + player_uuid + ".json");
                 if (!advancements.exists()) {
                     advancements.createNewFile();
                 }
-                byte [] bytes=resultSet.getString("advancements").getBytes();
-                Files.write(advancements.toPath(),bytes);
-            }else{
-                File[] files= scanAdvancementsFile(player_uuid, gameDir);
+                byte[] bytes = rs2.getString("advancements").getBytes();
+                Files.write(advancements.toPath(), bytes);
+            } else {
+                File[] files = scanAdvancementsFile(player_uuid, gameDir);
                 for (File file : files) {
-                    if(file==null) continue;
-                    byte [] bytes=resultSet.getString("advancements").getBytes();
-                    Files.write(file.toPath(),bytes);
+                    if (file == null) continue;
+                    byte[] bytes = rs2.getString("advancements").getBytes();
+                    Files.write(file.toPath(), bytes);
                 }
             }
         }
-        //Mod support
+
+        // Mod support
         ModsSupport modsSupport = new ModsSupport();
         modsSupport.onPlayerJoin(serverPlayer);
         serverPlayer.addTag("player_synced");
 
-        resultSet.close();
+        // --- Begin Backpack Data Restore ---
+        PlayerSync.LOGGER.info("Restoring backpack data for player " + player_uuid);
+        net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(serverPlayer, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
+            backpackItem.getCapability(net.p3pp3rf1y.sophisticatedbackpacks.api.CapabilityBackpackWrapper.getCapabilityInstance())
+                    .ifPresent(wrapper -> {
+                        // Retrieve the contents UUID from the backpack's NBT using NBTHelper
+                        Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper.getUniqueId(wrapper.getBackpack(), "contentsUuid");
+                        if (uuidOpt.isPresent()) {
+                            UUID contentsUuid = uuidOpt.get();
+                            try {
+                                JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid.toString() + "'");
+                                ResultSet rsBackpack = qrBackpack.resultSet();
+                                if (rsBackpack.next()) {
+                                    String serialized = rsBackpack.getString("backpack_nbt");
+                                    String nbtString = deserializeString(serialized);
+                                    CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
+                                    // Update BackpackStorage with the retrieved NBT
+                                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
+                                    PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
+                                }
+                                rsBackpack.close();
+                                qrBackpack.connection().close();
+                            } catch (SQLException e) {
+                                PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
+                            } catch (CommandSyntaxException e) {
+                                throw new RuntimeException(e);
+                            }
+                        } else {
+                            PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
+                        }
+                    });
+            return false;
+        });
+        // --- End Backpack Data Restore ---
+
+        rs2.close();
     }
 
     @SubscribeEvent
-    public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event){
-        executorService.submit(()->{
+    public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
+        executorService.submit(() -> {
             try {
                 doPlayerJoin(event);
             } catch (Exception e) {
                 e.printStackTrace();
             }
         });
-
     }
 
     public static ItemStack deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
-        String nbt= entry.getValue().replace("|",",").replace("^","\"").replace("<","{").replace(">","}").replace("~", "'");
+        String nbt = deserializeString(entry.getValue());
         CompoundTag compoundTag = NbtUtils.snbtToStructure(nbt);
         return ItemStack.of(compoundTag);
     }
 
-    public static String serialize(String object){
-        return object.replace(",","|").replace("\"","^").replace("{","<").replace("}",">").replace("'","~");
+    public static String deserializeString(String encoded) {
+        if (encoded.startsWith("B64:")) {
+            String base64 = encoded.substring(4);
+            try {
+                return new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException ex) {
+                PlayerSync.LOGGER.error("Base64 decoding failed for data: " + encoded, ex);
+                // fallback to legacy decoding below
+            }
+        }
+        // Legacy fallback using custom replacement
+        return encoded.replace("|", ",")
+                .replace("^", "\"")
+                .replace("<", "{")
+                .replace(">", "}")
+                .replace("~", "'");
+    }
+
+    public static String serialize(String object) {
+        // Base64 encode with a "B64:" marker for new data
+        return "B64:" + Base64.getEncoder().encodeToString(object.getBytes(StandardCharsets.UTF_8));
     }
 
     public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
         JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-        if(!event.getEntity().getTags().contains("player_synced")) return;
-        store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
+        if (!event.getEntity().getTags().contains("player_synced")) return;
+        store(event.getEntity(), false, Dist.CLIENT.isDedicatedServer());
     }
 
     @SubscribeEvent
     public static void onPlayerSaveToFile(PlayerEvent.SaveToFile event) {
-        executorService.submit(()->{
+        executorService.submit(() -> {
             try {
                 doPlayerSaveToFile(event);
             } catch (Exception e) {
@@ -190,77 +267,102 @@ public class VanillaSync {
 
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='"+player_uuid+"'");
-        store(event.getEntity(),false,Dist.CLIENT.isDedicatedServer());
-
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+        store(event.getEntity(), false, Dist.CLIENT.isDedicatedServer());
     }
 
     @SubscribeEvent
     public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException {
-        //Mod support
+        // Mod support
         ModsSupport modsSupport = new ModsSupport();
         modsSupport.onPlayerLeave(event.getEntity());
-        executorService.submit(()->{
+        executorService.submit(() -> {
             try {
                 doPlayerLogout(event);
             } catch (Exception e) {
                 e.printStackTrace();
             }
         });
-
     }
 
     public static void store(Player player, boolean init, boolean isServer) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
-        //Easy part
+        PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
+
+        // Basic Attributes
         int XP = player.totalExperience;
-        int score=player.getScore();
-        int food_level=player.getFoodData().getFoodLevel();
-        int health=(int) player.getHealth();
-        //Left hand
+        int score = player.getScore();
+        int food_level = player.getFoodData().getFoodLevel();
+        int health = (int) player.getHealth();
+        // Left Hand
         String left_hand = serialize(player.getItemInHand(InteractionHand.OFF_HAND).serializeNBT().toString());
-        //Cursor
+        // Cursor
         String cursors = serialize(player.containerMenu.getCarried().serializeNBT().toString());
-        //Equipment
-        Map<Integer,String> equipment =new HashMap<>() ;
+        // Equipment (Armor)
+        Map<Integer, String> equipment = new HashMap<>();
         for (int i = 0; i < player.getInventory().armor.size(); i++) {
             ItemStack itemStack = player.getInventory().armor.get(i);
-            if(itemStack.isEmpty()) continue;
-            equipment.put(i,serialize(itemStack.serializeNBT().toString()));
+            if (itemStack.isEmpty()) continue;
+            equipment.put(i, serialize(itemStack.serializeNBT().toString()));
         }
-        //inventory
+        // Inventory
         Inventory inventory = player.getInventory();
-        Map<Integer,String> inventoryMap = new HashMap<>();
+        Map<Integer, String> inventoryMap = new HashMap<>();
         for (int i = 0; i < inventory.items.size(); i++) {
             CompoundTag itemNBT = inventory.items.get(i).serializeNBT();
-            inventoryMap.put(i,serialize(itemNBT.toString()));
+            inventoryMap.put(i, serialize(itemNBT.toString()));
         }
-        //EnderChest
+        // Ender Chest
         Map<Integer, String> ender_chest = new HashMap<>();
-        for (int i=0;i< player.getEnderChestInventory().getContainerSize();i++) {
+        for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
             CompoundTag itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
-            ender_chest.put(i,serialize(itemNBT.toString()));
+            ender_chest.put(i, serialize(itemNBT.toString()));
         }
-        //Effects
-        Map<MobEffect,MobEffectInstance> effects= player.getActiveEffectsMap();
-        Map<Integer,String> effectMap=new HashMap<>();
+
+        // --- Begin Backpack Data Sync (Store) ---
+        PlayerSync.LOGGER.info("Storing backpack data for player " + player.getUUID());
+        net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
+            backpackItem.getCapability(net.p3pp3rf1y.sophisticatedbackpacks.api.CapabilityBackpackWrapper.getCapabilityInstance())
+                    .ifPresent(wrapper -> {
+                        // Retrieve the contents UUID from the backpack's NBT using NBTHelper
+                        Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper.getUniqueId(wrapper.getBackpack(), "contentsUuid");
+                        if (uuidOpt.isPresent()) {
+                            UUID contentsUuid = uuidOpt.get();
+                            // Get internal backpack data from BackpackStorage (creates it if missing)
+                            CompoundTag backpackNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
+                            String serialized = VanillaSync.serialize(backpackNbt.toString());
+                            try {
+                                // Use REPLACE INTO so existing records are updated
+                                JDBCsetUp.executeUpdate("REPLACE INTO backpack_data (uuid, backpack_nbt) VALUES ('" + contentsUuid.toString() + "', '" + serialized + "')");
+                                PlayerSync.LOGGER.info("Saved backpack data for UUID " + contentsUuid);
+                            } catch (SQLException e) {
+                                PlayerSync.LOGGER.error("Error saving backpack data for UUID " + contentsUuid, e);
+                            }
+                        } else {
+                            PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid");
+                        }
+                    });
+            return false; // Continue processing all backpack items.
+        });
+        // --- End Backpack Data Sync (Store) ---
+
+        // Effects
+        Map<MobEffect, MobEffectInstance> effects = player.getActiveEffectsMap();
+        Map<Integer, String> effectMap = new HashMap<>();
         for (Map.Entry<MobEffect, MobEffectInstance> entry : effects.entrySet()) {
-            CompoundTag effectTag= entry.getValue().save(new CompoundTag());
-            effectMap.put(MobEffect.getId(entry.getKey()),effectTag.toString().replace(",","|"));
+            CompoundTag effectTag = entry.getValue().save(new CompoundTag());
+            effectMap.put(MobEffect.getId(entry.getKey()), serialize(effectTag.toString()));
         }
-        //Advancements
-        //File root = serverPlayer.getServer().getServerDirectory();
+        // Advancements
         File advancements = null;
         File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory();
-        if(isServer){
-            advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0)+"/advancements"+"/"+player_uuid+".json");
-        }else{
-//            File gameDir = Minecraft.getInstance().gameDirectory;
-            File[] files= scanAdvancementsFile(player_uuid, gameDir);
-            //Get LastModified
+        if (isServer) {
+            advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0) + "/advancements" + "/" + player_uuid + ".json");
+        } else {
+            File[] files = scanAdvancementsFile(player_uuid, gameDir);
             long latestModifiedDate = 0;
             for (File file : files) {
-                if(file==null) continue;
+                if (file == null) continue;
                 if (file.lastModified() > latestModifiedDate) {
                     latestModifiedDate = file.lastModified();
                     advancements = file;
@@ -273,17 +375,19 @@ public class VanillaSync {
         }
         String json = new String(bytes, StandardCharsets.UTF_8);
 
-        //SQL Operation
-        if(init){
-            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,left_hand,cursors,online) VALUES ('"+player_uuid+"','"+equipment+"','"+inventoryMap+"','"+ender_chest+"','"+advancements+"','"+effectMap+"','"+XP+"','"+food_level+"','"+health+"','"+score+"','"+left_hand+"','"+cursors+"',online=true)");
-        }else JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '"+inventoryMap+"',armor='"+equipment+"' ,xp='"+XP+"',effects='"+effectMap+"',enderchest='"+ender_chest+"',score='"+score+"',food_level='"+food_level+"',health='"+health+"',advancements='"+json+"',left_hand='"+left_hand+"',cursors='"+cursors+"' WHERE uuid = '"+player_uuid+"'");
+        // SQL Operation for player data
+        if (init) {
+            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,left_hand,cursors,online) VALUES ('" + player_uuid + "','" + equipment + "','" + inventoryMap + "','" + ender_chest + "','" + advancements + "','" + effectMap + "','" + XP + "','" + food_level + "','" + health + "','" + score + "','" + left_hand + "','" + cursors + "',online=true)");
+        } else {
+            JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '" + inventoryMap + "',armor='" + equipment + "' ,xp='" + XP + "',effects='" + effectMap + "',enderchest='" + ender_chest + "',score='" + score + "',food_level='" + food_level + "',health='" + health + "',advancements='" + json + "',left_hand='" + left_hand + "',cursors='" + cursors + "' WHERE uuid = '" + player_uuid + "'");
+        }
     }
 
     private static File[] scanAdvancementsFile(String player_uuid, File gameDir) {
         File[] files = new File[JdbcConfig.SYNC_WORLD.get().size()];
         for (int i = 0; i < JdbcConfig.SYNC_WORLD.get().size(); i++) {
-            File advanceFile=new File(gameDir, "saves/"+JdbcConfig.SYNC_WORLD.get().get(i)+"/advancements"+"/"+player_uuid+".json");
-            if(!advanceFile.exists()) continue;
+            File advanceFile = new File(gameDir, "saves/" + JdbcConfig.SYNC_WORLD.get().get(i) + "/advancements" + "/" + player_uuid + ".json");
+            if (!advanceFile.exists()) continue;
             files[i] = advanceFile;
         }
         return files;
@@ -294,12 +398,10 @@ public class VanillaSync {
     @SubscribeEvent
     public static void onUpdate(TickEvent.LevelTickEvent event) throws SQLException {
         tick++;
-        if(tick == 1800) {
-            tick=0;
+        if (tick == 1800) {
+            tick = 0;
             long current = System.currentTimeMillis();
-            JDBCsetUp.executeUpdate("UPDATE server_info SET last_update ="+current+" WHERE id= "+ JdbcConfig.SERVER_ID.get());
+            JDBCsetUp.executeUpdate("UPDATE server_info SET last_update =" + current + " WHERE id= " + JdbcConfig.SERVER_ID.get());
         }
     }
-
 }
-
