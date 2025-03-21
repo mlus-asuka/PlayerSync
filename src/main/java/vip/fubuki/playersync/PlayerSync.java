@@ -130,11 +130,13 @@ public class PlayerSync {
         }
 
         // Create backpack_data table
-        JDBCsetUp.executeUpdate(
-                "CREATE TABLE IF NOT EXISTS " + dbName + ".backpack_data (" +
-                        "uuid CHAR(36) NOT NULL, backpack_nbt MEDIUMBLOB, PRIMARY KEY (uuid)" +
-                        ");", 1
-        );
+        if(ModList.get().isLoaded("sophisticatedbackpacks")){
+            JDBCsetUp.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS " + dbName + ".backpack_data (" +
+                            "uuid CHAR(36) NOT NULL, backpack_nbt MEDIUMBLOB, PRIMARY KEY (uuid)" +
+                            ");", 1
+            );
+        }
 
         LOGGER.info("PlayerSync is ready!");
     }

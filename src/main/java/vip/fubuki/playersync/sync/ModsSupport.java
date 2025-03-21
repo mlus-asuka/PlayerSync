@@ -1,11 +1,13 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.common.util.LazyOptional;
 import net.minecraftforge.fml.ModList;
+import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 
@@ -13,6 +15,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+import static vip.fubuki.playersync.sync.VanillaSync.deserializeString;
 
 
 public class ModsSupport {
@@ -55,6 +61,42 @@ public class ModsSupport {
             }else{
                 StoreCurios(player,true);
             }
+        }
+        if(ModList.get().isLoaded("sophisticatedbackpacks")){
+            // --- Begin Backpack Data Restore ---
+            PlayerSync.LOGGER.info("Restoring backpack data for player " + player.getUUID());
+            net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
+                backpackItem.getCapability(net.p3pp3rf1y.sophisticatedbackpacks.api.CapabilityBackpackWrapper.getCapabilityInstance())
+                        .ifPresent(wrapper -> {
+                            // Retrieve the contents UUID from the backpack's NBT using NBTHelper
+                            Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper.getUniqueId(wrapper.getBackpack(), "contentsUuid");
+                            if (uuidOpt.isPresent()) {
+                                UUID contentsUuid = uuidOpt.get();
+                                try {
+                                    JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid.toString() + "'");
+                                    ResultSet rsBackpack = qrBackpack.resultSet();
+                                    if (rsBackpack.next()) {
+                                        String serialized = rsBackpack.getString("backpack_nbt");
+                                        String nbtString = deserializeString(serialized);
+                                        CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
+                                        // Update BackpackStorage with the retrieved NBT
+                                        net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
+                                        PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
+                                    }
+                                    rsBackpack.close();
+                                    qrBackpack.connection().close();
+                                } catch (SQLException e) {
+                                    PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
+                                } catch (CommandSyntaxException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            } else {
+                                PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
+                            }
+                        });
+                return false;
+            });
+            // --- End Backpack Data Restore ---
         }
     }
 
