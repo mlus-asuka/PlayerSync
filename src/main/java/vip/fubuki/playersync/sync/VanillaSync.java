@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffect;
@@ -31,6 +32,7 @@ import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.sync.ModsSupport;
@@ -402,6 +404,46 @@ public class VanillaSync {
             tick = 0;
             long current = System.currentTimeMillis();
             JDBCsetUp.executeUpdate("UPDATE server_info SET last_update =" + current + " WHERE id= " + JdbcConfig.SERVER_ID.get());
+        }
+    }
+
+
+    // New fields for auto-save
+    private static int autoSaveTickCounter = 0;
+    private static final int AUTO_SAVE_INTERVAL_TICKS = 1200; // Every Minute
+
+    //AutoSave
+    @SubscribeEvent
+    public static void onServerTick(TickEvent.ServerTickEvent event) {
+        // Run at the end phase to avoid interfering with game logic
+        if (event.phase == TickEvent.Phase.END) {
+            autoSaveTickCounter++;
+            if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
+                autoSaveTickCounter = 0;
+                // Retrieve the current server instance
+                MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+                if (server != null) {
+                    // Iterate through all online players
+                    for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                        executorService.submit(() -> {
+                            try {
+                                // Call the same store method used in logout and file save events.
+                                store(player, false, server.isDedicatedServer());
+                            } catch (Exception e) {
+                                PlayerSync.LOGGER.error("Error auto-saving player " + player.getUUID(), e);
+                            }
+                        });
+                        executorService.submit(() -> {
+                            try {
+                                new ModsSupport().StoreCurios(player, false);
+                            } catch (SQLException e) {
+                                PlayerSync.LOGGER.error("Error auto-saving Curios data for player " + player.getUUID(), e);
+                            }
+                        });
+
+                    }
+                }
+            }
         }
     }
 }

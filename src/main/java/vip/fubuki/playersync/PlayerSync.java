@@ -136,6 +136,42 @@ public class PlayerSync {
                         ");", 1
         );
 
+        // ----- NEW BLOCK: Schema Update for backpack_data and player_data -----
+        // Check if backpack_data table has the 'uuid' column
+        JDBCsetUp.QueryResult backpackColCheck = JDBCsetUp.executeQuery(
+                "SELECT COUNT(*) AS colCount FROM INFORMATION_SCHEMA.COLUMNS " +
+                        "WHERE TABLE_SCHEMA = '" + dbName + "' " +
+                        "AND TABLE_NAME = 'backpack_data' " +
+                        "AND COLUMN_NAME = 'uuid';"
+        );
+        ResultSet rsBackpackCol = backpackColCheck.resultSet();
+        if (rsBackpackCol.next() && rsBackpackCol.getInt("colCount") == 0) {
+            LOGGER.info("Altering backpack_data table to add missing 'uuid' column.");
+            // Add the missing column and set it as primary key.
+            JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD COLUMN uuid CHAR(36) NOT NULL", 1);
+            JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD PRIMARY KEY (uuid)", 1);
+        }
+        rsBackpackCol.close();
+
+        // Check and alter the 'advancements' column in player_data if necessary
+        JDBCsetUp.QueryResult advColCheck = JDBCsetUp.executeQuery(
+                "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS " +
+                        "WHERE TABLE_SCHEMA = '" + dbName + "' " +
+                        "AND TABLE_NAME = 'player_data' " +
+                        "AND COLUMN_NAME = 'advancements';"
+        );
+        ResultSet rsAdvCol = advColCheck.resultSet();
+        if (rsAdvCol.next()) {
+            String dataType = rsAdvCol.getString("DATA_TYPE");
+            if (!"mediumblob".equalsIgnoreCase(dataType)) {
+                LOGGER.info("Altering player_data table to modify 'advancements' column to MEDIUMBLOB.");
+                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB", 1);
+            }
+        }
+        rsAdvCol.close();
+        // ----- END NEW BLOCK -----
+
         LOGGER.info("PlayerSync is ready!");
     }
+
 }
