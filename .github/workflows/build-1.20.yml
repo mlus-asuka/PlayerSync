@@ -35,7 +35,7 @@ jobs:
           SNAPSHOT: true
 
       - name: Build Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Player_Sync
           path: |
