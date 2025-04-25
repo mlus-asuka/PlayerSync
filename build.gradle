@@ -150,7 +150,7 @@ dependencies {
     // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar
     // The group id is ignored when searching -- in this case, it is "blank"
     compileOnly fg.deobf("curse.maven:curios-309927:5266541")
-    runtimeOnly fg.deobf("curse.maven:MySQL-561280:3685108")
+    runtimeOnly fg.deobf("curse.maven:MySQL-561280:4684944")
     compileOnly fg.deobf("curse.maven:sophisticated-backpacks-422301:6303388")
     compileOnly fg.deobf("curse.maven:sophisticated-core-618298:6317048")
 
