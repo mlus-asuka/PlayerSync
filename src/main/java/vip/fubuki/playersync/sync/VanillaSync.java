@@ -31,6 +31,7 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
@@ -286,32 +287,9 @@ public class VanillaSync {
             ender_chest.put(i, serialize(itemNBT.toString()));
         }
 
-        // --- Begin Backpack Data Sync (Store) ---
-        PlayerSync.LOGGER.info("Storing backpack data for player " + player.getUUID());
-        net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
-            backpackItem.getCapability(net.p3pp3rf1y.sophisticatedbackpacks.api.CapabilityBackpackWrapper.getCapabilityInstance())
-                    .ifPresent(wrapper -> {
-                        // Retrieve the contents UUID from the backpack's NBT using NBTHelper
-                        Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper.getUniqueId(wrapper.getBackpack(), "contentsUuid");
-                        if (uuidOpt.isPresent()) {
-                            UUID contentsUuid = uuidOpt.get();
-                            // Get internal backpack data from BackpackStorage (creates it if missing)
-                            CompoundTag backpackNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
-                            String serialized = VanillaSync.serialize(backpackNbt.toString());
-                            try {
-                                // Use REPLACE INTO so existing records are updated
-                                JDBCsetUp.executeUpdate("REPLACE INTO backpack_data (uuid, backpack_nbt) VALUES ('" + contentsUuid.toString() + "', '" + serialized + "')");
-                                PlayerSync.LOGGER.info("Saved backpack data for UUID " + contentsUuid);
-                            } catch (SQLException e) {
-                                PlayerSync.LOGGER.error("Error saving backpack data for UUID " + contentsUuid, e);
-                            }
-                        } else {
-                            PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid");
-                        }
-                    });
-            return false; // Continue processing all backpack items.
-        });
-        // --- End Backpack Data Sync (Store) ---
+        if(ModList.get().isLoaded("sophisticatedbackpacks")){
+            ModsSupport.storeSophisticatedBackpacks(player);
+        }
 
         // Effects
         Map<MobEffect, MobEffectInstance> effects = player.getActiveEffectsMap();
