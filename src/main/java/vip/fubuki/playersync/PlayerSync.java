@@ -151,6 +151,7 @@ public class PlayerSync {
                 JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD PRIMARY KEY (uuid)", 1);
             }
             rsBackpackCol.close();
+            backpackColCheck.connection().close();
         }
 
         // Check and alter the 'advancements' column in player_data if necessary
