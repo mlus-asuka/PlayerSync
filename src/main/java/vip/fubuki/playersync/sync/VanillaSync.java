@@ -187,6 +187,12 @@ public class VanillaSync {
         return ItemStack.of(compoundTag);
     }
 
+    /**
+     * Deserializes a string from the database back into an NBT string.
+     * Handles both the new Base64 format (prefixed with "B64:") and the old custom format.
+     * @param encoded The string retrieved from the database.
+     * @return The deserialized NBT string.
+     */
     public static String deserializeString(String encoded) {
         if (encoded.startsWith("B64:")) {
             String base64 = encoded.substring(4);
@@ -205,7 +211,24 @@ public class VanillaSync {
                 .replace("~", "'");
     }
 
+    /**
+     * Serializes an NBT string for database storage.
+     * Uses Base64 encoding by default (prefixed with "B64:").
+     * If USE_LEGACY_SERIALIZATION config is true, uses the old custom replacement format.
+     * @param object The NBT string to serialize.
+     * @return The serialized string.
+     */
     public static String serialize(String object) {
+        // Check the config option for backwards compatibility during writing
+        if (JdbcConfig.USE_LEGACY_SERIALIZATION.get()) {
+            // Use old custom replacement logic
+            return objeåct.replace(",", "|")
+                         .replace("\"", "^")
+                         .replace("{", "<")
+                         .replace("}", ">")
+                         .replace("'", "~");
+        }
+
         // Base64 encode with a "B64:" marker for new data
         return "B64:" + Base64.getEncoder().encodeToString(object.getBytes(StandardCharsets.UTF_8));
     }
