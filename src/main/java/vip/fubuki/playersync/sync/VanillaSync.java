@@ -12,6 +12,7 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.storage.WorldData;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -142,7 +143,7 @@ public class VanillaSync {
             // Restore Advancements
             File gameDir = Objects.requireNonNull(serverPlayer.getServer()).getServerDirectory();
             if (Dist.CLIENT.isDedicatedServer()){
-                File advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0) + "/advancements" + "/" + player_uuid + ".json");
+                File advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
                 if (!advancements.exists()) {
                     advancements.createNewFile();
                 }
@@ -319,7 +320,7 @@ public class VanillaSync {
         File advancements = null;
         File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory();
         if (isServer) {
-            advancements = new File(gameDir, JdbcConfig.SYNC_WORLD.get().get(0) + "/advancements" + "/" + player_uuid + ".json");
+            advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
         } else {
             File[] files = scanAdvancementsFile(player_uuid, gameDir);
             long latestModifiedDate = 0;
@@ -343,6 +344,25 @@ public class VanillaSync {
         } else {
             JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '" + inventoryMap + "',armor='" + equipment + "' ,xp='" + XP + "',effects='" + effectMap + "',enderchest='" + ender_chest + "',score='" + score + "',food_level='" + food_level + "',health='" + health + "',advancements='" + json + "',left_hand='" + left_hand + "',cursors='" + cursors + "' WHERE uuid = '" + player_uuid + "'");
         }
+    }
+
+    private static String getSyncWorldForServer() {
+        if (!JdbcConfig.SYNC_WORLD.get().isEmpty()) {
+            PlayerSync.LOGGER.warn("Using configuration 'sync_world' on servers is deprecated. Please leave the array empty. Falling back to first entry.");
+            return JdbcConfig.SYNC_WORLD.get().get(0);
+        }
+
+        final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server == null) {
+            PlayerSync.LOGGER.error("Unable to get current server. Assuming default level-name 'world'.");
+            return "world";
+        }
+
+        final WorldData worldData = server.getWorldData();
+        final String levelName = worldData.getLevelName();
+        PlayerSync.LOGGER.debug("Using server level-name: " + levelName);
+
+        return levelName;
     }
 
     private static File[] scanAdvancementsFile(String player_uuid, File gameDir) {
