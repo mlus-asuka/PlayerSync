@@ -269,7 +269,6 @@ public class VanillaSync {
         Map<Integer, String> equipment = new HashMap<>();
         for (int i = 0; i < player.getInventory().armor.size(); i++) {
             ItemStack itemStack = player.getInventory().armor.get(i);
-            if (itemStack.isEmpty()) continue;
             equipment.put(i, serialize(itemStack.serializeNBT().toString()));
         }
         // Inventory
