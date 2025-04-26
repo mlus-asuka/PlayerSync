@@ -53,7 +53,7 @@ public class VanillaSync {
         ResultSet rs1 = qr1.resultSet();
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
         if (!rs1.next()){
-            store(event.getEntity(), true, Dist.CLIENT.isDedicatedServer());
+            store(event.getEntity(), true);
             return;
         }
         boolean online = rs1.getBoolean("online");
@@ -233,7 +233,7 @@ public class VanillaSync {
     public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
         JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
         if (!event.getEntity().getTags().contains("player_synced")) return;
-        store(event.getEntity(), false, Dist.CLIENT.isDedicatedServer());
+        store(event.getEntity(), false);
     }
 
     @SubscribeEvent
@@ -255,7 +255,7 @@ public class VanillaSync {
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
         JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
-        store(event.getEntity(), false, Dist.CLIENT.isDedicatedServer());
+        store(event.getEntity(), false);
     }
 
     @SubscribeEvent
@@ -272,7 +272,7 @@ public class VanillaSync {
         });
     }
 
-    public static void store(Player player, boolean init, boolean isServer) throws SQLException, IOException {
+    public static void store(Player player, boolean init) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
         PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
 
@@ -319,9 +319,12 @@ public class VanillaSync {
         // Advancements
         File advancements = null;
         File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory();
-        if (isServer) {
+        final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server != null && server.isDedicatedServer() ) {
+            PlayerSync.LOGGER.trace("Reading dedicated server advancements");
             advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
         } else {
+            PlayerSync.LOGGER.debug("Reading non-dedicated server advancements");
             File[] files = scanAdvancementsFile(player_uuid, gameDir);
             long latestModifiedDate = 0;
             for (File file : files) {
@@ -334,9 +337,13 @@ public class VanillaSync {
         }
         byte[] bytes = new byte[0];
         if (advancements != null) {
+            PlayerSync.LOGGER.debug("Storing advancements for " + player_uuid + " from " + advancements.toPath());
             bytes = Files.readAllBytes(advancements.toPath());
+        } else {
+            PlayerSync.LOGGER.error("Unable to save advancements for player " + player_uuid);
         }
         String json = new String(bytes, StandardCharsets.UTF_8);
+        PlayerSync.LOGGER.trace("Storing advancements for player " + player_uuid + ": " + json);
 
         // SQL Operation for player data
         if (init) {
@@ -408,7 +415,7 @@ public class VanillaSync {
                         executorService.submit(() -> {
                             try {
                                 // Call the same store method used in logout and file save events.
-                                store(player, false, server.isDedicatedServer());
+                                store(player, false);
                             } catch (Exception e) {
                                 PlayerSync.LOGGER.error("Error auto-saving player " + player.getUUID(), e);
                             }
