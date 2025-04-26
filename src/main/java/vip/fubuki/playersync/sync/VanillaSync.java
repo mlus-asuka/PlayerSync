@@ -48,6 +48,9 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onDataPackSyncEvent(OnDatapackSyncEvent event) throws SQLException, IOException {
+        if (!JdbcConfig.SYNC_ADVANCEMENTS.get())
+            return; // advancement sync disabled
+
         final ServerPlayer serverPlayer = event.getPlayer();
         if (serverPlayer == null) {
             PlayerSync.LOGGER.debug("No player joining");
@@ -364,33 +367,36 @@ public class VanillaSync {
             CompoundTag effectTag = entry.getValue().save(new CompoundTag());
             effectMap.put(MobEffect.getId(entry.getKey()), serialize(effectTag.toString()));
         }
+
         // Advancements
         File advancements = null;
-        File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory();
-        final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server != null && server.isDedicatedServer() ) {
-            PlayerSync.LOGGER.trace("Reading dedicated server advancements");
-            advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
-        } else {
-            PlayerSync.LOGGER.debug("Reading non-dedicated server advancements");
-            File[] files = scanAdvancementsFile(player_uuid, gameDir);
-            long latestModifiedDate = 0;
-            for (File file : files) {
-                if (file == null) continue;
-                if (file.lastModified() > latestModifiedDate) {
-                    latestModifiedDate = file.lastModified();
-                    advancements = file;
+        byte[] advancementBytes = new byte[0];
+        if (JdbcConfig.SYNC_ADVANCEMENTS.get()) {
+            File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory();
+            final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server != null && server.isDedicatedServer() ) {
+                PlayerSync.LOGGER.trace("Reading dedicated server advancements");
+                advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
+            } else {
+                PlayerSync.LOGGER.debug("Reading non-dedicated server advancements");
+                File[] files = scanAdvancementsFile(player_uuid, gameDir);
+                long latestModifiedDate = 0;
+                for (File file : files) {
+                    if (file == null) continue;
+                    if (file.lastModified() > latestModifiedDate) {
+                        latestModifiedDate = file.lastModified();
+                        advancements = file;
+                    }
                 }
             }
+            if (advancements != null) {
+                PlayerSync.LOGGER.debug("Storing advancements for " + player_uuid + " from " + advancements.toPath());
+                advancementBytes = Files.readAllBytes(advancements.toPath());
+            } else {
+                PlayerSync.LOGGER.error("Unable to save advancements for player " + player_uuid);
+            }
         }
-        byte[] bytes = new byte[0];
-        if (advancements != null) {
-            PlayerSync.LOGGER.debug("Storing advancements for " + player_uuid + " from " + advancements.toPath());
-            bytes = Files.readAllBytes(advancements.toPath());
-        } else {
-            PlayerSync.LOGGER.error("Unable to save advancements for player " + player_uuid);
-        }
-        String json = new String(bytes, StandardCharsets.UTF_8);
+        String json = new String(advancementBytes, StandardCharsets.UTF_8);
         PlayerSync.LOGGER.trace("Storing advancements for player " + player_uuid + ": " + json);
 
         // SQL Operation for player data

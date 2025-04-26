@@ -16,6 +16,7 @@ public class JdbcConfig {
     public static ForgeConfigSpec.ConfigValue<String> PASSWORD;
     public static ForgeConfigSpec.ConfigValue<String> DATABASE_NAME;
     public static ForgeConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
+    public static ForgeConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
     public static ForgeConfigSpec.BooleanValue USE_SSL;
     public static ForgeConfigSpec.BooleanValue SYNC_CHAT;
     public static ForgeConfigSpec.BooleanValue IS_CHAT_SERVER;
@@ -37,6 +38,8 @@ public class JdbcConfig {
         DATABASE_NAME = COMMON_BUILDER.comment("database name").define("db_name","playersync");
         SERVER_ID = COMMON_BUILDER.comment("the server id should be unique").define("Server_id", new Random().nextInt(1,Integer.MAX_VALUE-1));
         SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized. If running on a server, leave array empty.").define("sync_world", new ArrayList<>());
+        SYNC_ADVANCEMENTS = COMMON_BUILDER.comment("Whether to sync advancements between servers")
+                .define("sync_advancements", true);
         SYNC_CHAT= COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", true);
         IS_CHAT_SERVER = COMMON_BUILDER.comment("Whether recieve messages from other servers as host").define("IsChatServer",false);
         CHAT_SERVER_IP = COMMON_BUILDER.define("ChatServerIP","127.0.0.1");
