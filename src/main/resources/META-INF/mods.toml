@@ -66,6 +66,14 @@ description='''${mod_description}'''
     ordering="NONE"
     side="BOTH"
 
+# Dependency for MySQL
+[[dependencies.${mod_id}]]
+    modId="mysql_jdbc"
+    mandatory=true
+    versionRange="[8.0.33+20230506,)"
+    ordering="NONE"
+    side="SERVER"
+
 # Features are specific properties of the game environment, that you may want to declare you require. This example declares
 # that your mod requires GL version 3.2 or higher. Other features will be added. They are side aware so declaring this won't
 # stop your mod loading on the server for example.
