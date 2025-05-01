@@ -1,0 +1,16 @@
+services:
+
+  db:
+    image: mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: playersync
+      MARIADB_USER: playersync
+      MARIADB_PASSWORD: pleaseChangeThisPassword  # It is strongly recommended to change this password outside of local development
+      MARIADB_RANDOM_ROOT_PASSWORD: True
+
+  adminer:
+    image: adminer
+    restart: unless-stopped
+    ports:
+      - 8080:8080
