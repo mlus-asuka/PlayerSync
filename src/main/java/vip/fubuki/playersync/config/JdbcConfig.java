@@ -32,8 +32,8 @@ public class JdbcConfig {
         HOST=COMMON_BUILDER.comment("The host of the database").define("host", "localhost");
         PORT = COMMON_BUILDER.comment("database port").defineInRange("db_port", 3306, 0, 65535);
         USE_SSL = COMMON_BUILDER.comment("whether use SSL").define("use_ssl", false);
-        USERNAME = COMMON_BUILDER.comment("username").define("user_name", "root");
-        PASSWORD = COMMON_BUILDER.comment("password").define("password", "password");
+        USERNAME = COMMON_BUILDER.comment("username").define("user_name", "playersync");
+        PASSWORD = COMMON_BUILDER.comment("password").define("password", "pleaseChangeThisPassword");
         DATABASE_NAME = COMMON_BUILDER.comment("database name").define("db_name","playersync");
         SERVER_ID = COMMON_BUILDER.comment("the server id should be unique").define("Server_id", new Random().nextInt(1,Integer.MAX_VALUE-1));
         SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized.If running in server it is supposed to have only one").define("sync_world", new ArrayList<>());
