@@ -2,9 +2,9 @@ package vip.fubuki.playersync.sync;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.players.PlayerList;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.io.IOException;
@@ -39,7 +39,7 @@ public class ChatSync {
             new Thread(ChatSync::ServerSocket).start();
         }
         ClientSocket();
-        MinecraftForge.EVENT_BUS.register(ChatSync.class);
+        NeoForge.EVENT_BUS.register(ChatSync.class);
     }
 
 
@@ -122,7 +122,7 @@ public class ChatSync {
     }
 
     @SubscribeEvent
-    public static void onPlayerChat(net.minecraftforge.event.ServerChatEvent event) throws IOException {
+    public static void onPlayerChat(net.neoforged.neoforge.event.ServerChatEvent event) throws IOException {
         String message= event.getUsername()+":"+event.getMessage();
         OutputStream outputStream = clientSocket.getOutputStream();
         outputStream.write(message.getBytes());

@@ -5,8 +5,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
-import net.minecraftforge.common.util.LazyOptional;
-import net.minecraftforge.fml.ModList;
+import net.neoforged.fml.ModList;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
@@ -35,7 +34,7 @@ public class ModsSupport {
     public void onPlayerJoin(net.minecraft.world.entity.player.Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
             // Obtain the handler from the API.
-            LazyOptional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
+            Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
             JDBCsetUp.QueryResult qr = JDBCsetUp.executeQuery("SELECT curios_item FROM curios WHERE uuid = '" + player.getUUID() + "'");
             ResultSet rs = qr.resultSet();
             if (rs.next()) {
@@ -145,7 +144,7 @@ public class ModsSupport {
     }
 
     public void StoreCurios(net.minecraft.world.entity.player.Player player, boolean init) throws SQLException {
-        LazyOptional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
+        Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
         Map<String, String> flatMap = new HashMap<>();
 
         handlerOpt.ifPresent(handler -> {
@@ -155,7 +154,7 @@ public class ModsSupport {
                 for (int i = 0; i < dynStacks.getSlots(); i++) {
                     ItemStack stack = dynStacks.getStackInSlot(i);
                     if (!stack.isEmpty()) {
-                        String serialized = VanillaSync.serialize(stack.serializeNBT().toString());
+                        String serialized = VanillaSync.serialize(VanillaSync.serializeNBT(stack).toString());
                         flatMap.put(slotType + ":" + i, serialized);
                     }
                 }
