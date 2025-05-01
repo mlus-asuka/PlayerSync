@@ -49,15 +49,13 @@ public class ModsSupport {
                 Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
 
                 // Clear current Curios slots to avoid conflicts.
-                handlerOpt.ifPresent(handler -> {
-                    handler.getCurios().forEach((slotType, stacksHandler) -> {
-                        // Use the dynamic stack handler to clear slots.
-                        IDynamicStackHandler dynStacks = stacksHandler.getStacks();
-                        for (int i = 0; i < dynStacks.getSlots(); i++) {
-                            dynStacks.setStackInSlot(i, ItemStack.EMPTY);
-                        }
-                    });
-                });
+                handlerOpt.ifPresent(handler -> handler.getCurios().forEach((slotType, stacksHandler) -> {
+                    // Use the dynamic stack handler to clear slots.
+                    IDynamicStackHandler dynStacks = stacksHandler.getStacks();
+                    for (int i = 0; i < dynStacks.getSlots(); i++) {
+                        dynStacks.setStackInSlot(i, ItemStack.EMPTY);
+                    }
+                }));
 
                 // Restore each saved item.
                 handlerOpt.ifPresent(handler -> {
@@ -109,7 +107,7 @@ public class ModsSupport {
                             if (uuidOpt.isPresent()) {
                                 UUID contentsUuid = uuidOpt.get();
                                 try {
-                                    JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid.toString() + "'");
+                                    JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid + "'");
                                     ResultSet rsBackpack = qrBackpack.resultSet();
                                     if (rsBackpack.next()) {
                                         String serialized = rsBackpack.getString("backpack_nbt");
@@ -186,7 +184,7 @@ public class ModsSupport {
                             String serialized = VanillaSync.serialize(backpackNbt.toString());
                             try {
                                 // Use REPLACE INTO so existing records are updated
-                                JDBCsetUp.executeUpdate("REPLACE INTO backpack_data (uuid, backpack_nbt) VALUES ('" + contentsUuid.toString() + "', '" + serialized + "')");
+                                JDBCsetUp.executeUpdate("REPLACE INTO backpack_data (uuid, backpack_nbt) VALUES ('" + contentsUuid + "', '" + serialized + "')");
                                 PlayerSync.LOGGER.info("Saved backpack data for UUID " + contentsUuid);
                             } catch (SQLException e) {
                                 PlayerSync.LOGGER.error("Error saving backpack data for UUID " + contentsUuid, e);
