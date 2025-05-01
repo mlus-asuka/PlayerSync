@@ -4,7 +4,13 @@ import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
 
+import org.slf4j.Logger;
+
+import com.mojang.logging.LogUtils;
+
 public class JDBCsetUp {
+
+    private static final Logger LOGGER = LogUtils.getLogger();
 
     /**
      * Returns a connection to the MySQL server.
@@ -40,6 +46,7 @@ public class JDBCsetUp {
      * Executes a query using a connection that includes the database.
      */
     public static QueryResult executeQuery(String sql) throws SQLException {
+        LOGGER.trace(sql);
         Connection connection = getConnection();  // With database selected (and "USE" already run)
         PreparedStatement queryStatement = connection.prepareStatement(sql);
         ResultSet resultSet = queryStatement.executeQuery();
@@ -50,6 +57,7 @@ public class JDBCsetUp {
      * Executes an update using a connection that includes the database.
      */
     public static void executeUpdate(String sql) throws SQLException {
+        LOGGER.trace(sql);
         try (Connection connection = getConnection()) {  // With database selected
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 updateStatement.executeUpdate();
@@ -62,6 +70,7 @@ public class JDBCsetUp {
      * This method is used for commands like "CREATE DATABASE IF NOT EXISTS ..."
      */
     public static void executeUpdate(String sql, int dummy) throws SQLException {
+        LOGGER.trace(sql);
         try (Connection connection = getConnection(false)) {  // Without default database
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 updateStatement.executeUpdate();
@@ -73,6 +82,7 @@ public class JDBCsetUp {
      * A helper method for updates with parameters.
      */
     public static void update(String sql, String... argument) throws SQLException {
+        LOGGER.trace(sql);
         try (Connection connection = getConnection()) {  // With database selected
             PreparedStatement updateStatement = connection.prepareStatement(sql);
             for (int i = 0; i < argument.length; i++) {
