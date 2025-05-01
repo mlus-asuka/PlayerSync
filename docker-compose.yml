@@ -9,9 +9,14 @@ services:
       MARIADB_RANDOM_ROOT_PASSWORD: True
     ports:
       - 3306:3306
+    volumes:
+      - dbvolume:/var/lib/mysql
 
   adminer:
     image: adminer
     restart: unless-stopped
     ports:
       - 8080:8080
+
+volumes:
+  dbvolume:
