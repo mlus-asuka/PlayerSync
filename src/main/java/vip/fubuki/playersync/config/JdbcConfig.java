@@ -21,6 +21,7 @@ public class JdbcConfig {
     public static ForgeConfigSpec.BooleanValue IS_CHAT_SERVER;
     public static ForgeConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
     public static ForgeConfigSpec.IntValue CHAT_SERVER_PORT;
+    public static ForgeConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
 
     public static ForgeConfigSpec.ConfigValue<Integer> SERVER_ID;
 
@@ -40,8 +41,13 @@ public class JdbcConfig {
         IS_CHAT_SERVER = COMMON_BUILDER.comment("Whether recieve messages from other servers as host").define("IsChatServer",false);
         CHAT_SERVER_IP = COMMON_BUILDER.define("ChatServerIP","127.0.0.1");
         CHAT_SERVER_PORT = COMMON_BUILDER.defineInRange("ChatServerPort",7900,0,65535);
+        USE_LEGACY_SERIALIZATION = COMMON_BUILDER.comment(
+                "Use the old (pre-Base64) serialization format for writing data to the database.",
+                "Set to true ONLY if you have older mod versions reading the same database.",
+                "This only affects writing data, the mod can read both Base64 and pre-Base64 serialization.",
+                "New installations should leave this as 'false'."
+            ).define("use_legacy_serialization", false);
         COMMON_BUILDER.pop();
         COMMON_CONFIG = COMMON_BUILDER.build();
     }
 }
-
