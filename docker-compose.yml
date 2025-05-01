@@ -1,5 +1,4 @@
 services:
-
   db:
     image: mariadb
     restart: unless-stopped
@@ -8,6 +7,8 @@ services:
       MARIADB_USER: playersync
       MARIADB_PASSWORD: pleaseChangeThisPassword  # It is strongly recommended to change this password outside of local development
       MARIADB_RANDOM_ROOT_PASSWORD: True
+    ports:
+      - 3306:3306
 
   adminer:
     image: adminer
