@@ -35,10 +35,14 @@ public class PlayerSync {
 
     private void commonSetup(final FMLCommonSetupEvent event) {
         VanillaSync.register();
-        if (JdbcConfig.SYNC_CHAT.get()) {
-            LOGGER.info("Chat sync enabled.");
-            ChatSync.register();
-        }
+        event.enqueueWork(() -> {
+            // read SYNC_CHAT only within the enqueueWork to reliably get the real
+            // config value and not its default value.
+            if (JdbcConfig.SYNC_CHAT.get()) {
+                LOGGER.info("Chat sync enabled.");
+                ChatSync.register();
+            }
+        });
     }
 
     @SubscribeEvent
