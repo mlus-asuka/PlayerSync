@@ -18,7 +18,12 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.slf4j.Logger;
+
+import com.mojang.logging.LogUtils;
+
 public class ChatSync {
+    private static final Logger LOGGER = LogUtils.getLogger();
 
     static PlayerList playerList;
 
@@ -28,8 +33,10 @@ public class ChatSync {
     static ExecutorService executorService = Executors.newCachedThreadPool();
 
     public static void register(){
-        if(JdbcConfig.IS_CHAT_SERVER.get())
+        if(JdbcConfig.IS_CHAT_SERVER.get()) {
+            LOGGER.info("Launching chat server thread.");
             new Thread(ChatSync::ServerSocket).start();
+        }
         ClientSocket();
         MinecraftForge.EVENT_BUS.register(ChatSync.class);
     }
@@ -37,6 +44,7 @@ public class ChatSync {
 
     private static void ServerSocket() {
         try {
+            LOGGER.info("Trying to setup chat server at port " + JdbcConfig.CHAT_SERVER_PORT.get());
             serverSocket = new ServerSocket(JdbcConfig.CHAT_SERVER_PORT.get());
             while (true) {
                 Socket newSocket = serverSocket.accept();
@@ -44,6 +52,7 @@ public class ChatSync {
                 executorService.submit(() -> handleClient(newSocket));
             }
         } catch (IOException e) {
+            LOGGER.error("Unable to start chat server");
             e.printStackTrace();
         } finally {
             try {
@@ -89,6 +98,10 @@ public class ChatSync {
 
     private static void ClientSocket() {
         try {
+            LOGGER.info("Trying to connect to chat server "
+                    + JdbcConfig.CHAT_SERVER_IP.get()
+                    + ":"
+                    + JdbcConfig.CHAT_SERVER_PORT.get());
             clientSocket = new Socket(JdbcConfig.CHAT_SERVER_IP.get(), JdbcConfig.CHAT_SERVER_PORT.get());
             Scanner scanner = new Scanner(clientSocket.getInputStream());
             while (scanner.hasNextLine()) {
@@ -103,6 +116,7 @@ public class ChatSync {
     }
 
     private static void reconnectClient() {
+        LOGGER.warn("TODO: implement reconnectClient()");
         //TODO
     }
 

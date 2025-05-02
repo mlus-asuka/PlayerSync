@@ -36,6 +36,7 @@ public class PlayerSync {
     private void commonSetup(final FMLCommonSetupEvent event) {
         VanillaSync.register();
         if (JdbcConfig.SYNC_CHAT.get()) {
+            LOGGER.info("Chat sync enabled.");
             ChatSync.register();
         }
     }
