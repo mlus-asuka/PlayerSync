@@ -17,9 +17,11 @@ import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import com.mysql.cj.jdbc.Driver;
 
 @Mod(PlayerSync.MODID)
 public class PlayerSync {
@@ -34,6 +36,14 @@ public class PlayerSync {
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
+        // JDBC driver auto-detection is broken in Forge as of v47.4.0
+        // We need to register the driver manually
+        try {
+            DriverManager.registerDriver(new Driver());
+        } catch (SQLException e) {
+            LOGGER.error("Unable to register JDBC MySQL driver", e);
+        }
+
         VanillaSync.register();
         if (JdbcConfig.SYNC_CHAT.get()) {
             ChatSync.register();
