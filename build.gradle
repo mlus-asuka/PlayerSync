@@ -136,7 +136,6 @@ dependencies {
     // We add the full version to localRuntime, not runtimeOnly, so that we do not publish a dependency on it
     // modLocalRuntime "mezz.jei:jei-${mc_version}-neoforge:${jei_version}"
     compileOnly "curse.maven:curios-309927:5266541"
-    runtimeOnly "curse.maven:MySQL-561280:4684944"
     compileOnly "curse.maven:sophisticated-backpacks-422301:6303388"
     compileOnly "curse.maven:sophisticated-core-618298:6317048"
 
@@ -150,6 +149,11 @@ dependencies {
 
     // Example project dependency using a sister or child project:
     // modImplementation project(":myproject")
+
+    // embedd the JDBC driver in the mod using jarJar
+    runtimeOnly "com.mysql:mysql-connector-j:${jdbc_version}"
+    jarJar "com.mysql:mysql-connector-j:${jdbc_version}"
+    additionalRuntimeClasspath "com.mysql:mysql-connector-j:${jdbc_version}"
 
     // For more info:
     // http://www.gradle.org/docs/current/userguide/artifact_dependencies_tutorial.html
