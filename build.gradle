@@ -151,9 +151,7 @@ dependencies {
     // modImplementation project(":myproject")
 
     // embedd the JDBC driver in the mod using jarJar
-    // JDBC driver auto-detection is broken in Forge as of v47.4.0
-    // i.e. we need to need it both at compile and runtime
-    implementation "com.mysql:mysql-connector-j:${jdbc_version}"
+    runtimeOnly "com.mysql:mysql-connector-j:${jdbc_version}"
     jarJar "com.mysql:mysql-connector-j:${jdbc_version}"
     additionalRuntimeClasspath "com.mysql:mysql-connector-j:${jdbc_version}"
 
