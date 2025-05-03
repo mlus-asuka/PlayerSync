@@ -389,7 +389,11 @@ public class VanillaSync {
                     }
                 }
             }
-            if (advancements != null) {
+            if (!advancements.exists()) {
+                PlayerSync.LOGGER.warn("Advancements file for " + player_uuid + " does not exist (yet).");
+            }
+
+            if (advancements != null && advancements.exists()) {
                 PlayerSync.LOGGER.debug("Storing advancements for " + player_uuid + " from " + advancements.toPath());
                 advancementBytes = Files.readAllBytes(advancements.toPath());
             } else {
