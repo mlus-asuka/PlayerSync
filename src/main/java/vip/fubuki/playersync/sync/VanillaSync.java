@@ -87,9 +87,26 @@ public class VanillaSync {
                 return;
             }
 
+            File advancementsDir = advancements.getParentFile();
+            if (advancementsDir != null && !advancementsDir.exists()) {
+                PlayerSync.LOGGER.info("Creating advancements directory " + advancementsDir.getPath());
+                boolean createdDir = advancementsDir.mkdirs();
+                if (!createdDir) {
+                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements "
+                            + "directory at " + advancementsDir.getPath());
+                    return;
+                }
+            }
+
             if (!advancements.exists()) {
-                advancements.createNewFile();
-                PlayerSync.LOGGER.info("Creating new advancement file for player " + player_uuid);
+                try {
+                    PlayerSync.LOGGER.info("Creating new advancement file for player " + player_uuid);
+                    advancements.createNewFile();
+                } catch (IOException e) {
+                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements file at "
+                            + advancements.getAbsolutePath(), e);
+                    return;
+                }
             }
             PlayerSync.LOGGER.debug("Writing advancement file " + advancements.toPath() + " for player " + player_uuid);
             PlayerSync.LOGGER.trace("Writing advancement file for player " + player_uuid + ": "
