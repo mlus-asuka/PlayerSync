@@ -40,7 +40,7 @@ public class JdbcConfig {
         SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized. If running on a server, leave array empty.").define("sync_world", new ArrayList<>());
         SYNC_ADVANCEMENTS = COMMON_BUILDER.comment("Whether to sync advancements between servers")
                 .define("sync_advancements", true);
-        SYNC_CHAT= COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", true);
+        SYNC_CHAT = COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", false);
         IS_CHAT_SERVER = COMMON_BUILDER.comment("Whether recieve messages from other servers as host").define("IsChatServer",false);
         CHAT_SERVER_IP = COMMON_BUILDER.define("ChatServerIP","127.0.0.1");
         CHAT_SERVER_PORT = COMMON_BUILDER.defineInRange("ChatServerPort",7900,0,65535);
