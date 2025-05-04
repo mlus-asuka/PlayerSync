@@ -15,6 +15,7 @@ import java.net.Socket;
 import java.util.Objects;
 import java.util.Scanner;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -29,7 +30,7 @@ public class ChatSync {
 
     static ServerSocket serverSocket;
     static Socket clientSocket;
-    static Set<Socket> SocketList;
+    static Set<Socket> SocketList = ConcurrentHashMap.newKeySet();
     static ExecutorService executorService = Executors.newCachedThreadPool();
 
     public static void register(){

@@ -1,5 +1,6 @@
 package vip.fubuki.playersync.util;
 
+import javax.annotation.Nonnull;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -11,9 +12,8 @@ public class PSThreadPoolFactory implements ThreadFactory {
     public PSThreadPoolFactory(String Prefix) {
         threadNamePrefix = Prefix;
     }
-
     @Override
-    public Thread newThread(Runnable runnable) {
+    public Thread newThread(@Nonnull Runnable runnable) {
         Thread thread = new Thread(runnable);
         thread.setName(threadNamePrefix + "-thread-" + threadIdx.getAndIncrement());
         return thread;
