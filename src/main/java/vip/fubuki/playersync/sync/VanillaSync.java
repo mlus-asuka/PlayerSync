@@ -1,9 +1,16 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+
+import net.minecraft.ChatFormatting;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.StringTag;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.PlayerAdvancements;
 import net.minecraft.server.level.ServerPlayer;
@@ -13,6 +20,7 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.storage.WorldData;
 import net.minecraftforge.event.OnDatapackSyncEvent;
 import net.minecraftforge.event.TickEvent;
@@ -21,6 +29,7 @@ import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
@@ -38,6 +47,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -182,36 +192,33 @@ public class VanillaSync {
 
             // Restore left-hand item
             String leftHandEncoded = rs2.getString("left_hand");
-            String leftHandNBT = deserializeString(leftHandEncoded);
             serverPlayer.setItemInHand(InteractionHand.OFF_HAND,
-                    ItemStack.of(NbtUtils.snbtToStructure(leftHandNBT)));
+                    deserializeAndCreatePlaceholderIfNeeded(leftHandEncoded));
 
             // Restore cursor item
             String cursorsEncoded = rs2.getString("cursors");
-            String cursorsNBT = deserializeString(cursorsEncoded);
             serverPlayer.containerMenu.setCarried(
-                    ItemStack.of(NbtUtils.snbtToStructure(cursorsNBT))
-            );
+                    deserializeAndCreatePlaceholderIfNeeded(cursorsEncoded));
 
             // Restore armor
             String armor_data = rs2.getString("armor");
             if (armor_data.length() > 2) {
                 Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
                 for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                    serverPlayer.getInventory().armor.set(entry.getKey(), deserialize(entry));
+                    serverPlayer.getInventory().armor.set(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
                 }
             }
 
             // Restore inventory
             Map<Integer, String> inventory = LocalJsonUtil.StringToEntryMap(rs2.getString("inventory"));
             for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
-                serverPlayer.getInventory().setItem(entry.getKey(), deserialize(entry));
+                serverPlayer.getInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
             }
 
             // Restore Ender Chest
             Map<Integer, String> ender_chest = LocalJsonUtil.StringToEntryMap(rs2.getString("enderchest"));
             for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
-                serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserialize(entry));
+                serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
             }
 
             // Restore Effects
@@ -248,10 +255,106 @@ public class VanillaSync {
         });
     }
 
-    public static ItemStack deserialize(Map.Entry<Integer, String> entry) throws CommandSyntaxException {
-        String nbt = deserializeString(entry.getValue());
-        CompoundTag compoundTag = NbtUtils.snbtToStructure(nbt);
-        return ItemStack.of(compoundTag);
+    // deserialize item and potentially create placeholders
+    private static ItemStack deserializeAndCreatePlaceholderIfNeeded(String serializedNbt)
+            throws CommandSyntaxException {
+        if (serializedNbt == null || serializedNbt.isEmpty() || serializedNbt.equals("B64:e30=")) {
+            // Check for empty NBT (Base64 encoded '{}')
+            return ItemStack.EMPTY;
+        }
+
+        String nbtString = deserializeString(serializedNbt);
+        CompoundTag compoundTag = NbtUtils.snbtToStructure(nbtString);
+
+        if (compoundTag == null || compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
+            return ItemStack.EMPTY; // Invalid or empty tag
+        }
+
+        ResourceLocation registryName = ResourceLocation.tryParse(compoundTag.getString("id"));
+
+        if (registryName == null) {
+            PlayerSync.LOGGER.warn("Failed to parse registry name from NBT: {}", nbtString);
+            return ItemStack.EMPTY; // Cannot determine item type
+        }
+
+        if (ForgeRegistries.ITEMS.containsKey(registryName)) {
+            // Item exists (could be vanilla or a loaded mod item), restore normally
+            try {
+                ItemStack restoredItem = ItemStack.of(compoundTag);
+                // Only return the restored item if the ItemStack.of did not unexpectedly
+                // returned an empty item
+                // Either the item is not empty, or it is empty and the original tag was also
+                // empty or it was an empty inventory slot
+                if (!restoredItem.isEmpty() || compoundTag.isEmpty()
+                        || registryName.equals(ResourceLocation.parse("air"))) {
+                    return restoredItem;
+                }
+                // ItemStack.of unexpectedly returned empty for a known, non-air item.
+                PlayerSync.LOGGER.warn(
+                        "ItemStack.of returned EMPTY for known item {} with NBT: {}. Creating placeholder as fallback.",
+                        registryName, nbtString);
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error(
+                        "Error creating ItemStack for known item {} with NBT: {}. Creating placeholder as fallback.",
+                        registryName, nbtString, e);
+            }
+        }
+
+        // Create placeholder
+        PlayerSync.LOGGER.debug("Item {} not found in registry. Creating placeholder.", registryName);
+        ItemStack placeholder = new ItemStack(Items.PAPER);
+
+        CompoundTag placeholderNbt = placeholder.getOrCreateTag();
+        // Store the original serialized NBT string, not the parsed CompoundTag string
+        placeholderNbt.putString("playersync:original_item_nbt", serializedNbt);
+        placeholderNbt.putString("playersync:original_item_id", registryName.toString());
+
+        // Add a unique UUID to ensure the item is unstackable
+        // Stacked placerholders would be converted into a single item when restoring item
+        placeholderNbt.putUUID("playersync:unique_id", UUID.randomUUID());
+
+        // Add display name and lore
+        CompoundTag displayTag = placeholderNbt.getCompound("display");
+        if (!placeholderNbt.contains("display"))
+            placeholderNbt.put("display", displayTag);
+
+        String placeholderItemTitleOverride = JdbcConfig.ITEM_PLACEHOLDER_TITLE_OVERRIDE.get();
+        displayTag.putString("Name", Component.Serializer.toJson(
+                Component
+                        .literal(placeholderItemTitleOverride != null && !placeholderItemTitleOverride.isBlank()
+                                ? placeholderItemTitleOverride
+                                : Component.translatable("playersync.item_placeholder_title").getString())
+                        .setStyle(Style.EMPTY.withColor(ChatFormatting.RED).withItalic(true))));
+
+        ListTag loreList = new ListTag();
+        String placeholderItemDetails = registryName.toString();
+
+        // add a stack size if it is available
+        PlayerSync.LOGGER.warn("Item {}: {}", registryName, compoundTag);
+        int placeholderItemAmount = compoundTag.getInt("Count");
+        if (placeholderItemAmount > 1) {
+            placeholderItemDetails = placeholderItemAmount + "x " + placeholderItemDetails;
+        }
+
+        loreList.add(StringTag.valueOf(Component.Serializer.toJson(
+                Component.literal(placeholderItemDetails)
+                        .setStyle(Style.EMPTY.withColor(ChatFormatting.GRAY).withItalic(false)))));
+        // add newline
+        loreList.add(StringTag.valueOf(Component.Serializer.toJson(Component.literal(""))));
+
+        String placeholderItemDescriptionOverride = JdbcConfig.ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE.get();
+        String placeholderItemDescriptionLines = placeholderItemDescriptionOverride != null && ! placeholderItemDescriptionOverride.isBlank()
+                ? placeholderItemDescriptionOverride
+                : Component.translatable("playersync.item_placeholder_description").getString();
+
+        for (String descriptionLine : placeholderItemDescriptionLines.split("\n")) {
+            loreList.add(StringTag.valueOf(Component.Serializer.toJson(
+                    Component.literal(descriptionLine)
+                            .setStyle(Style.EMPTY.withColor(ChatFormatting.DARK_GRAY)))));
+        }
+        displayTag.put("Lore", loreList);
+
+        return placeholder;
     }
 
     /**
@@ -342,6 +445,18 @@ public class VanillaSync {
         });
     }
 
+    // Helper function to get the NBT string to be saved
+    // If item is a placeholder, get original NBT; otherwise, get current NBT
+    private static String getNbtForStorage(ItemStack itemStack) {
+        if (itemStack.is(Items.PAPER) && itemStack.hasTag() && itemStack.getTag().contains("playersync:original_item_nbt", Tag.TAG_STRING)) {
+            // It's our placeholder, retrieve the original NBT string
+            return itemStack.getTag().getString("playersync:original_item_nbt");
+        } else {
+            // It's a normal item or empty, serialize its current NBT
+            return serialize(itemStack.serializeNBT().toString());
+        }
+    }
+
     public static void store(Player player, boolean init) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
         PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
@@ -352,27 +467,27 @@ public class VanillaSync {
         int food_level = player.getFoodData().getFoodLevel();
         int health = (int) player.getHealth();
         // Left Hand
-        String left_hand = serialize(player.getItemInHand(InteractionHand.OFF_HAND).serializeNBT().toString());
+        String left_hand = getNbtForStorage(player.getItemInHand(InteractionHand.OFF_HAND));
+
         // Cursor
-        String cursors = serialize(player.containerMenu.getCarried().serializeNBT().toString());
+        String cursors = getNbtForStorage(player.containerMenu.getCarried());
+
         // Equipment (Armor)
         Map<Integer, String> equipment = new HashMap<>();
         for (int i = 0; i < player.getInventory().armor.size(); i++) {
             ItemStack itemStack = player.getInventory().armor.get(i);
-            equipment.put(i, serialize(itemStack.serializeNBT().toString()));
+            equipment.put(i, getNbtForStorage(itemStack));
         }
         // Inventory
         Inventory inventory = player.getInventory();
         Map<Integer, String> inventoryMap = new HashMap<>();
         for (int i = 0; i < inventory.items.size(); i++) {
-            CompoundTag itemNBT = inventory.items.get(i).serializeNBT();
-            inventoryMap.put(i, serialize(itemNBT.toString()));
+            inventoryMap.put(i, getNbtForStorage(inventory.items.get(i)));
         }
         // Ender Chest
         Map<Integer, String> ender_chest = new HashMap<>();
         for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
-            CompoundTag itemNBT = player.getEnderChestInventory().getItem(i).serializeNBT();
-            ender_chest.put(i, serialize(itemNBT.toString()));
+            ender_chest.put(i, getNbtForStorage(player.getEnderChestInventory().getItem(i)));
         }
 
         if(ModList.get().isLoaded("sophisticatedbackpacks")){

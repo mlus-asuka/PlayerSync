@@ -20,6 +20,8 @@ public class JdbcConfig {
     public static ForgeConfigSpec.BooleanValue USE_SSL;
     public static ForgeConfigSpec.BooleanValue SYNC_CHAT;
     public static ForgeConfigSpec.BooleanValue IS_CHAT_SERVER;
+    public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
+    public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
     public static ForgeConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
     public static ForgeConfigSpec.IntValue CHAT_SERVER_PORT;
     public static ForgeConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
@@ -50,6 +52,13 @@ public class JdbcConfig {
                 "This only affects writing data, the mod can read both Base64 and pre-Base64 serialization.",
                 "New installations should leave this as 'false'."
             ).define("use_legacy_serialization", false);
+        ITEM_PLACEHOLDER_TITLE_OVERRIDE = COMMON_BUILDER
+                .comment("Override the title of placeholder items which are unavailable on the current server.")
+                .define("item_placeholder_title_override", "");
+        ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE = COMMON_BUILDER
+                .comment("Override the description of placeholder items which are unavailable on the current server.")
+                .define("item_placeholder_description_override", "");
+
         COMMON_BUILDER.pop();
         COMMON_CONFIG = COMMON_BUILDER.build();
     }
