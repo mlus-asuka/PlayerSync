@@ -22,15 +22,15 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.storage.WorldData;
-import net.minecraftforge.event.OnDatapackSyncEvent;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.server.ServerStoppedEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.ModList;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.registries.ForgeRegistries;
-import net.minecraftforge.server.ServerLifecycleHooks;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.ModList;
+import net.neoforged.fml.common.Mod;
+import net.neoforged.neoforge.event.OnDatapackSyncEvent;
+import net.neoforged.neoforge.event.TickEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.server.ServerStoppedEvent;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.util.JDBCsetUp;
@@ -277,7 +277,7 @@ public class VanillaSync {
             return ItemStack.EMPTY; // Cannot determine item type
         }
 
-        if (ForgeRegistries.ITEMS.containsKey(registryName)) {
+        if (BuiltInRegistries.ITEM.containsKey(registryName)) {
             // Item exists (could be vanilla or a loaded mod item), restore normally
             try {
                 ItemStack restoredItem = ItemStack.of(compoundTag);
@@ -286,7 +286,7 @@ public class VanillaSync {
                 // Either the item is not empty, or it is empty and the original tag was also
                 // empty or it was an empty inventory slot
                 if (!restoredItem.isEmpty() || compoundTag.isEmpty()
-                        || registryName.equals(ResourceLocation.parse("air"))) {
+                        || registryName.equals(ResourceLocation.tryParse("air"))) {
                     return restoredItem;
                 }
                 // ItemStack.of unexpectedly returned empty for a known, non-air item.
@@ -453,8 +453,18 @@ public class VanillaSync {
             return itemStack.getTag().getString("playersync:original_item_nbt");
         } else {
             // It's a normal item or empty, serialize its current NBT
-            return serialize(itemStack.serializeNBT().toString());
+            return serialize(serializeNBT(itemStack).toString());
         }
+    }
+
+    public static CompoundTag serializeNBT(ItemStack itemStack) {
+        if (itemStack == null || itemStack.isEmpty()) {
+            return new CompoundTag();
+        }
+        // Serialize the ItemStack to NBT
+        CompoundTag compoundTag = new CompoundTag();
+        itemStack.save(compoundTag);
+        return compoundTag;
     }
 
     public static void store(Player player, boolean init) throws SQLException, IOException {
@@ -499,7 +509,7 @@ public class VanillaSync {
         Map<Integer, String> effectMap = new HashMap<>();
         for (Map.Entry<MobEffect, MobEffectInstance> entry : effects.entrySet()) {
             CompoundTag effectTag = entry.getValue().save(new CompoundTag());
-            effectMap.put(MobEffect.getId(entry.getKey()), serialize(effectTag.toString()));
+            effectMap.put(BuiltInRegistries.MOB_EFFECT.getId(entry.getKey()), serialize(effectTag.toString()));
         }
 
         // Advancements

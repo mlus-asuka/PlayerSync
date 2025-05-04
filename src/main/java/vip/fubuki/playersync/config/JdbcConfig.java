@@ -1,36 +1,35 @@
 package vip.fubuki.playersync.config;
 
 
-import net.minecraftforge.common.ForgeConfigSpec;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import net.neoforged.neoforge.common.ModConfigSpec;
 
 
 public class JdbcConfig {
-    public static ForgeConfigSpec COMMON_CONFIG;
-    public static ForgeConfigSpec.ConfigValue<String> HOST;
-    public static ForgeConfigSpec.IntValue PORT;
-    public static ForgeConfigSpec.ConfigValue<String> USERNAME;
-    public static ForgeConfigSpec.ConfigValue<String> PASSWORD;
-    public static ForgeConfigSpec.ConfigValue<String> DATABASE_NAME;
-    public static ForgeConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
-    public static ForgeConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
-    public static ForgeConfigSpec.BooleanValue USE_SSL;
-    public static ForgeConfigSpec.BooleanValue SYNC_CHAT;
-    public static ForgeConfigSpec.BooleanValue IS_CHAT_SERVER;
-    public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
-    public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
-    public static ForgeConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
-    public static ForgeConfigSpec.IntValue CHAT_SERVER_PORT;
-    public static ForgeConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
+    public static ModConfigSpec COMMON_CONFIG;
+    public static ModConfigSpec.ConfigValue<String> HOST;
+    public static ModConfigSpec.IntValue PORT;
+    public static ModConfigSpec.ConfigValue<String> USERNAME;
+    public static ModConfigSpec.ConfigValue<String> PASSWORD;
+    public static ModConfigSpec.ConfigValue<String> DATABASE_NAME;
+    public static ModConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
+    public static ModConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
+    public static ModConfigSpec.BooleanValue USE_SSL;
+    public static ModConfigSpec.BooleanValue SYNC_CHAT;
+    public static ModConfigSpec.BooleanValue IS_CHAT_SERVER;
+    public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
+    public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
+    public static ModConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
+    public static ModConfigSpec.IntValue CHAT_SERVER_PORT;
+    public static ModConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
 
-    public static ForgeConfigSpec.ConfigValue<Integer> SERVER_ID;
+    public static ModConfigSpec.ConfigValue<Integer> SERVER_ID;
 
 
     static {
-        ForgeConfigSpec.Builder COMMON_BUILDER = new ForgeConfigSpec.Builder();
+        ModConfigSpec.Builder COMMON_BUILDER = new ModConfigSpec.Builder();
         COMMON_BUILDER.comment("General settings").push("general");
         HOST=COMMON_BUILDER.comment("The host of the database").define("host", "localhost");
         PORT = COMMON_BUILDER.comment("database port").defineInRange("db_port", 3306, 0, 65535);
