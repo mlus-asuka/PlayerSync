@@ -184,10 +184,8 @@ public class VanillaSync {
             // Restore basic attributes
             serverPlayer.setHealth(rs2.getInt("health"));
             serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
-            serverPlayer.totalExperience = 0;
-            serverPlayer.experienceLevel = 0;
-            serverPlayer.experienceProgress = 0;
-            serverPlayer.giveExperiencePoints(rs2.getInt("xp"));
+
+            setXpForPlayer(serverPlayer, rs2.getInt("xp"));
             serverPlayer.setScore(rs2.getInt("score"));
 
             // Restore left-hand item
@@ -472,7 +470,7 @@ public class VanillaSync {
         PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
 
         // Basic Attributes
-        int XP = player.totalExperience;
+        int XP = getTotalExperience(player);
         int score = player.getScore();
         int food_level = player.getFoodData().getFoodLevel();
         int health = (int) player.getHealth();
@@ -634,5 +632,53 @@ public class VanillaSync {
                 }
             }
         }
+    }
+
+    private static void setXpForPlayer(ServerPlayer serverPlayer, int databaseXp) {
+        // Don't use giveExperience() as it has several side-effects:
+        // triggers an event, sends network packets, increases the score, ...
+        serverPlayer.totalExperience = databaseXp;
+        serverPlayer.experienceLevel = 0;
+        serverPlayer.experienceProgress = 0;
+
+        int xpForLevel;
+
+        while (databaseXp >= (xpForLevel = serverPlayer.getXpNeededForNextLevel())) {
+            databaseXp -= xpForLevel;
+            serverPlayer.experienceLevel++;
+        }
+
+        serverPlayer.experienceProgress = serverPlayer.experienceLevel > 0
+                ? (float) databaseXp / serverPlayer.getXpNeededForNextLevel()
+                : 0f;
+
+        PlayerSync.LOGGER.debug("Giving player "
+                + serverPlayer.experienceLevel + " levels and "
+                + serverPlayer.experienceProgress * 100 + "% experience progress, calculated from "
+                + serverPlayer.totalExperience + " XP.");
+    }
+
+    private static int getTotalExperience(final Player player) {
+        int level = player.experienceLevel;
+        int totalXp = 0;
+
+        // Calculate total XP for completed levels
+        if (level > 30) {
+            totalXp = (int) (4.5 * Math.pow(level, 2) - 162.5 * level + 2220);
+        } else if (level > 15) {
+            totalXp = (int) (2.5 * Math.pow(level, 2) - 40.5 * level + 360);
+        } else {
+            totalXp = level * level + 6 * level;
+        }
+
+        // Add partial level progress
+        totalXp += Math.round(player.getXpNeededForNextLevel() * player.experienceProgress);
+
+        PlayerSync.LOGGER.debug("Experience calcuation for "
+                + player.experienceLevel + " levels and "
+                + player.experienceProgress * 100 + "% experience progress yields "
+                + totalXp + " XP.");
+
+        return totalXp;
     }
 }
