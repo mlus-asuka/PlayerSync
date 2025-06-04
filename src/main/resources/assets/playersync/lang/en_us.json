@@ -1,6 +1,5 @@
 {
   "playersync.item_placeholder_description": "Item is unknown on this server. This can either\nbe a modded item, an added, or a removed vanilla\nitem.\nThis voucher will automatically be replaced with\nthe corresponding item when joining a server\nwhere the item is known.",
-  "playersync.placeholder_title_override": "Item Voucher",
   "playersync.item_placeholder_title": "Item Voucher",
   "playersync.already_online": "You can't join more than one synchronization server at the same time."
 }
