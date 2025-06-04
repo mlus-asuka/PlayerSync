@@ -11,14 +11,18 @@ import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.util.JDBCsetUp;
+import vip.fubuki.playersync.util.PSThreadPoolFactory;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Mod(PlayerSync.MODID)
 public class PlayerSync
 {
     public static final String MODID = "playersync";
+    public static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
     public PlayerSync()
     {
         IEventBus modEventBus = FMLJavaModLoadingContext.get().getModEventBus();
@@ -27,20 +31,27 @@ public class PlayerSync
     }
 
     @SubscribeEvent
-    public void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException {
-        if (event.getPlayer() instanceof ServerPlayerEntity) {
-            String player_uuid = event.getEntity().getUUID().toString();
-            JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT * FROM AstralSorcery WHERE player='" + player_uuid + "';");
-            ResultSet resultSet=queryResult.getResultSet();
-            if(!resultSet.next()){
-                JDBCsetUp.executeUpdate("INSERT INTO AstralSorcery(player,tag) VALUES('"+player_uuid+"','{}');");
+    public void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
+        executorService.submit(() -> {
+            try {
+                if (event.getPlayer() instanceof ServerPlayerEntity) {
+                    String player_uuid = event.getEntity().getUUID().toString();
+                    JDBCsetUp.QueryResult queryResult=JDBCsetUp.executeQuery("SELECT * FROM AstralSorcery WHERE player='" + player_uuid + "';");
+                    ResultSet resultSet=queryResult.getResultSet();
+                    if(!resultSet.next()){
+                        JDBCsetUp.executeUpdate("INSERT INTO AstralSorcery(player,tag) VALUES('"+player_uuid+"','{}');");
+                    }
+                    JDBCsetUp.QueryResult queryResult1=JDBCsetUp.executeQuery("SELECT * FROM FTB WHERE player='" + player_uuid + "';");
+                    ResultSet resultSet1=queryResult1.getResultSet();
+                    if(!resultSet1.next()){
+                        JDBCsetUp.executeUpdate("INSERT INTO FTB(player,tag) VALUES('"+player_uuid+"','{}');");
+                    }
+                }
+            } catch (SQLException e) {
+                e.printStackTrace();
             }
-            JDBCsetUp.QueryResult queryResult1=JDBCsetUp.executeQuery("SELECT * FROM FTB WHERE player='" + player_uuid + "';");
-            ResultSet resultSet1=queryResult1.getResultSet();
-            if(!resultSet1.next()){
-                JDBCsetUp.executeUpdate("INSERT INTO FTB(player,tag) VALUES('"+player_uuid+"','{}');");
-            }
-        }
+        });
+
     }
 
 }
