@@ -1,13 +1,9 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-
 import net.minecraft.ChatFormatting;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.NbtUtils;
-import net.minecraft.nbt.StringTag;
-import net.minecraft.nbt.Tag;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.*;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.Style;
 import net.minecraft.resources.ResourceLocation;
@@ -29,7 +25,6 @@ import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.TickEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
@@ -43,11 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Objects;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -184,10 +175,8 @@ public class VanillaSync {
             // Restore basic attributes
             serverPlayer.setHealth(rs2.getInt("health"));
             serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
-            serverPlayer.totalExperience = 0;
-            serverPlayer.experienceLevel = 0;
-            serverPlayer.experienceProgress = 0;
-            serverPlayer.giveExperiencePoints(rs2.getInt("xp"));
+
+            setXpForPlayer(serverPlayer, rs2.getInt("xp"));
             serverPlayer.setScore(rs2.getInt("score"));
 
             // Restore left-hand item
@@ -634,5 +623,53 @@ public class VanillaSync {
                 }
             }
         }
+    }
+
+    private static void setXpForPlayer(ServerPlayer serverPlayer, int databaseXp) {
+        // Don't use giveExperience() as it has several side-effects:
+        // triggers an event, sends network packets, increases the score, ...
+        serverPlayer.totalExperience = databaseXp;
+        serverPlayer.experienceLevel = 0;
+        serverPlayer.experienceProgress = 0;
+
+        int xpForLevel;
+
+        while (databaseXp >= (xpForLevel = serverPlayer.getXpNeededForNextLevel())) {
+            databaseXp -= xpForLevel;
+            serverPlayer.experienceLevel++;
+        }
+
+        serverPlayer.experienceProgress = serverPlayer.experienceLevel > 0
+                ? (float) databaseXp / serverPlayer.getXpNeededForNextLevel()
+                : 0f;
+
+        PlayerSync.LOGGER.debug("Giving player "
+                + serverPlayer.experienceLevel + " levels and "
+                + serverPlayer.experienceProgress * 100 + "% experience progress, calculated from "
+                + serverPlayer.totalExperience + " XP.");
+    }
+
+    private static int getTotalExperience(final Player player) {
+        int level = player.experienceLevel;
+        int totalXp = 0;
+
+        // Calculate total XP for completed levels
+        if (level > 30) {
+            totalXp = (int) (4.5 * Math.pow(level, 2) - 162.5 * level + 2220);
+        } else if (level > 15) {
+            totalXp = (int) (2.5 * Math.pow(level, 2) - 40.5 * level + 360);
+        } else {
+            totalXp = level * level + 6 * level;
+        }
+
+        // Add partial level progress
+        totalXp += Math.round(player.getXpNeededForNextLevel() * player.experienceProgress);
+
+        PlayerSync.LOGGER.debug("Experience calcuation for "
+                + player.experienceLevel + " levels and "
+                + player.experienceProgress * 100 + "% experience progress yields "
+                + totalXp + " XP.");
+
+        return totalXp;
     }
 }
