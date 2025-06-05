@@ -461,7 +461,7 @@ public class VanillaSync {
         PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
 
         // Basic Attributes
-        int XP = player.totalExperience;
+        int XP = getTotalExperience(player);
         int score = player.getScore();
         int food_level = player.getFoodData().getFoodLevel();
         int health = (int) player.getHealth();
