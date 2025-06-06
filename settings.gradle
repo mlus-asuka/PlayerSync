@@ -4,6 +4,11 @@ pluginManagement {
         gradlePluginPortal()
         maven { url = 'https://maven.neoforged.net/releases' }
     }
+    plugins {
+        // https://projects.neoforged.net/neoforged/ModDevGradle
+        id 'net.neoforged.moddev' version '2.0.74'
+        id 'net.neoforged.moddev.repositories' version '2.0.74'
+    }
 }
 
 plugins {

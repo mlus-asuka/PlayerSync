@@ -27,7 +27,6 @@ public class PlayerSync {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public PlayerSync(IEventBus modEventBus, ModContainer modContainer) {
-        DataComponentTypes.REGISTRY.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         NeoForge.EVENT_BUS.register(this);
         modContainer.registerConfig(ModConfig.Type.COMMON, JdbcConfig.COMMON_CONFIG);

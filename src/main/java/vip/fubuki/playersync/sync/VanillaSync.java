@@ -22,6 +22,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.component.ItemLore;
 import net.minecraft.world.level.storage.WorldData;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -33,7 +34,6 @@ import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
-import vip.fubuki.playersync.DataComponentTypes;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.util.JDBCsetUp;
@@ -50,7 +50,7 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-@EventBusSubscriber
+@EventBusSubscriber(modid = PlayerSync.MODID)
 public class VanillaSync {
 
     public static void register() {}
@@ -301,14 +301,16 @@ public class VanillaSync {
         PlayerSync.LOGGER.debug("Item {} not found in registry. Creating placeholder.", registryName);
         ItemStack placeholder = new ItemStack(Items.PAPER);
 
+        CompoundTag placeholderNbt = new CompoundTag();
         // Store the original serialized NBT string, not the parsed CompoundTag string
-        placeholder.set(DataComponentTypes.ORIGINAL_ITEM_NBT.get(), serializedNbt);
-        placeholder.set(DataComponentTypes.ORIGINAL_ITEM_ID.get(), registryName.toString());
+        placeholderNbt.putString("playersync:original_item_nbt", serializedNbt);
+        placeholderNbt.putString("playersync:original_item_id", registryName.toString());
 
         // Add a unique UUID to ensure the item is unstackable
         // Stacked placerholders would be converted into a single item when restoring item
-        placeholder.set(DataComponentTypes.UNIQUE_ID.get(), UUID.randomUUID().toString());
+        placeholderNbt.putUUID("playersync:unique_id", UUID.randomUUID());
 
+        CustomData.set(DataComponents.CUSTOM_DATA,placeholder, placeholderNbt);
         // Add display name and lore
         String placeholderItemTitleOverride = JdbcConfig.ITEM_PLACEHOLDER_TITLE_OVERRIDE.get();
         placeholder.set(DataComponents.ITEM_NAME,
@@ -441,23 +443,24 @@ public class VanillaSync {
     // Helper function to get the NBT string to be saved
     // If item is a placeholder, get original NBT; otherwise, get current NBT
     private static String getNbtForStorage(ItemStack itemStack) {
-        if (itemStack.is(Items.PAPER) && itemStack.getComponents().has(DataComponentTypes.ORIGINAL_ITEM_NBT.get())) {
+        if (itemStack.is(Items.PAPER) && itemStack.getComponents().has(DataComponents.CUSTOM_DATA)
+                && itemStack.getComponents().get(DataComponents.CUSTOM_DATA).contains("playersync:original_item_nbt")) {
             // It's our placeholder, retrieve the original NBT string
-            return itemStack.getComponents().get(DataComponentTypes.ORIGINAL_ITEM_NBT.get());
+            return itemStack.getComponents().get(DataComponents.CUSTOM_DATA).copyTag().getString("playersync:original_item_nbt");
         } else {
             // It's a normal item or empty, serialize its current NBT
             return serialize(serializeNBT(itemStack).toString());
         }
     }
 
-    public static CompoundTag serializeNBT(ItemStack itemStack) {
+    public static Tag serializeNBT(ItemStack itemStack) {
         if (itemStack == null || itemStack.isEmpty()) {
             return new CompoundTag();
         }
         // Serialize the ItemStack to NBT
         HolderLookup.Provider provider = ServerLifecycleHooks.getCurrentServer().registryAccess();
-        CompoundTag compoundTag = new CompoundTag();
-        itemStack.save(provider);
+        Tag compoundTag;
+        compoundTag = itemStack.save(provider);
         return compoundTag;
     }
 
@@ -581,7 +584,7 @@ public class VanillaSync {
     static int tick = 0;
 
     @SubscribeEvent
-    public static void onUpdate(LevelTickEvent event) throws SQLException {
+    public static void onUpdate(LevelTickEvent.Post event) throws SQLException {
         tick++;
         if (tick == 1800) {
             tick = 0;
