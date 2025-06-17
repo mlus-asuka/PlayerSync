@@ -451,8 +451,18 @@ public class VanillaSync {
             return itemStack.getTag().getString("playersync:original_item_nbt");
         } else {
             // It's a normal item or empty, serialize its current NBT
-            return serialize(itemStack.serializeNBT().toString());
+            return serialize(serializeNBT(itemStack).toString());
         }
+    }
+
+    public static CompoundTag serializeNBT(ItemStack itemStack) {
+        if (itemStack == null || itemStack.isEmpty()) {
+            return new CompoundTag();
+        }
+        // Serialize the ItemStack to NBT
+        CompoundTag compoundTag = new CompoundTag();
+        itemStack.save(compoundTag);
+        return compoundTag;
     }
 
     public static void store(Player player, boolean init) throws SQLException, IOException {
