@@ -1,0 +1,10 @@
+{
+    "java.compile.nullAnalysis.mode": "automatic",
+    "java.completion.importOrder": [
+        "",
+        "javax",
+        "java",
+        "#"
+    ],
+    "java.sources.organizeImports.starThreshold": 5
+}
