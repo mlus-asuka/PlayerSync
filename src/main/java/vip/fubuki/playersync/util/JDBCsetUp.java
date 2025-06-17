@@ -1,12 +1,10 @@
 package vip.fubuki.playersync.util;
 
+import com.mojang.logging.LogUtils;
+import org.slf4j.Logger;
 import vip.fubuki.playersync.config.JdbcConfig;
 
 import java.sql.*;
-
-import org.slf4j.Logger;
-
-import com.mojang.logging.LogUtils;
 
 public class JDBCsetUp {
 

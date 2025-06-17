@@ -1,10 +1,11 @@
 package vip.fubuki.playersync.config;
 
 
+import net.neoforged.neoforge.common.ModConfigSpec;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-import net.neoforged.neoforge.common.ModConfigSpec;
 
 
 public class JdbcConfig {
