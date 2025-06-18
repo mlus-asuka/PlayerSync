@@ -1,6 +1,7 @@
 package vip.fubuki.playersync;
 
 import com.mojang.logging.LogUtils;
+import com.mysql.cj.jdbc.Driver;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
@@ -16,12 +17,7 @@ import vip.fubuki.playersync.sync.ChatSync;
 import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import com.mysql.cj.jdbc.Driver;
+import java.sql.*;
 
 @Mod(PlayerSync.MODID)
 public class PlayerSync {
