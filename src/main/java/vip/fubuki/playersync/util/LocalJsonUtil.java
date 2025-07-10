@@ -11,8 +11,15 @@ public class LocalJsonUtil {
         String[] split = s2.split(",");
         for (int i = split.length - 1; i >= 0; i--) {
             String trim = split[i].trim();
-            String[] split1 = trim.split("=");
-            map.put(split1[0],split1[1]);
+
+            // only check for the first "=" as the values also contain additional "="
+            int equalIndex = trim.indexOf('=');
+            if (equalIndex < 0)
+                continue;
+
+            String key = trim.substring(0, equalIndex);
+            String value = trim.substring(equalIndex + 1);
+            map.put(key, value);
         }
         return map;
     }
@@ -24,8 +31,15 @@ public class LocalJsonUtil {
         String[] split = s2.split(",");
         for (int i = split.length - 1; i >= 0; i--) {
             String trim = split[i].trim();
-            String[] split1 = trim.split("=");
-            map.put(Integer.parseInt(split1[0]),split1[1]);
+
+            // only check for the first "=" as the values also contain additional "="
+            int equalIndex = trim.indexOf('=');
+            if (equalIndex < 0)
+                continue;
+
+            String key = trim.substring(0, equalIndex);
+            String value = trim.substring(equalIndex + 1);
+            map.put(Integer.parseInt(key), value);
         }
         return map;
     }
