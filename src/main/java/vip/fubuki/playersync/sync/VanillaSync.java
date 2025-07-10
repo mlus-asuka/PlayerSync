@@ -249,7 +249,7 @@ public class VanillaSync {
     }
 
     // deserialize item and potentially create placeholders
-    private static ItemStack deserializeAndCreatePlaceholderIfNeeded(String serializedNbt)
+    public static ItemStack deserializeAndCreatePlaceholderIfNeeded(String serializedNbt)
             throws CommandSyntaxException {
         if (serializedNbt == null || serializedNbt.isEmpty() || serializedNbt.equals("B64:e30=")) {
             // Check for empty NBT (Base64 encoded '{}')

@@ -72,9 +72,7 @@ public class ModsSupport {
                         }
                         String serialized = entry.getValue();
                         try {
-                            String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag tag = VanillaSync.snbtToFixedCompoundTag(nbtString);
-                            ItemStack stack = ItemStack.of(tag);
+                            ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(serialized);
                             if (handler.getCurios().containsKey(slotType)) {
                                 ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);
                                 IDynamicStackHandler dynStacks = stacksHandler.getStacks();
