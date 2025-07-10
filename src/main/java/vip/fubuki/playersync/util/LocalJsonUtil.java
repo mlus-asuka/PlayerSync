@@ -7,11 +7,21 @@ import java.util.function.Function;
 public class LocalJsonUtil {
     private static <K> Map<K, String> stringToGenericMap(String param, Function<String, K> keyParser) {
         Map<K, String> map = new HashMap<>();
-        String s1 = param.substring(1,param.length()-1);
-        String s2 = s1.trim();
-        String[] split = s2.split(",");
-        for (int i = split.length - 1; i >= 0; i--) {
-            String trim = split[i].trim();
+
+        // check if string is at least minimal json
+        if (param == null || param.length() < 2 || param.equals("{}")) {
+            return map;
+        }
+
+        // extract string within outermost json brackets {}
+        String s1 = param.substring(param.indexOf('{')+1, param.lastIndexOf('}')).trim();
+        if (s1.isEmpty()) {
+            return map;
+        }
+
+        // split all json elements
+        for (String split : s1.split(",")) {
+            String trim = split.trim();
 
             // only check for the first "=" as the values also contain additional "="
             int equalIndex = trim.indexOf('=');
