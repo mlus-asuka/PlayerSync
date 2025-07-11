@@ -21,8 +21,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import static vip.fubuki.playersync.sync.VanillaSync.deserializeString;
-
 
 public class ModsSupport {
 
@@ -111,7 +109,7 @@ public class ModsSupport {
                         ResultSet rsBackpack = qrBackpack.resultSet();
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
-                            String nbtString = deserializeString(serialized);
+                            String nbtString = VanillaSync.deserializeString(serialized);
                             CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
