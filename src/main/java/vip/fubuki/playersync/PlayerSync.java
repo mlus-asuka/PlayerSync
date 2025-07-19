@@ -49,7 +49,7 @@ public class PlayerSync {
         String dbName = JdbcConfig.DATABASE_NAME.get();
 
         // Step 1: Create the database using a connection that does not select a database.
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS " + dbName, 1);
+        JDBCsetUp.executeUpdateWithoutDatabase("CREATE DATABASE IF NOT EXISTS " + dbName);
 
         // Step 2: Explicitly select the database on a connection obtained without default database.
         try (Connection conn = JDBCsetUp.getConnection(false);
@@ -130,10 +130,10 @@ public class PlayerSync {
 
         // Create backpack_data table
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
-            JDBCsetUp.executeUpdate(
+            JDBCsetUp.executeUpdateWithoutDatabase(
                     "CREATE TABLE IF NOT EXISTS " + dbName + ".backpack_data (" +
                             "uuid CHAR(36) NOT NULL, backpack_nbt MEDIUMBLOB, PRIMARY KEY (uuid)" +
-                            ");", 1
+                            ");"
             );
 
             // Check if backpack_data table has the 'uuid' column
@@ -147,8 +147,8 @@ public class PlayerSync {
             if (rsBackpackCol.next() && rsBackpackCol.getInt("colCount") == 0) {
                 LOGGER.info("Altering backpack_data table to add missing 'uuid' column.");
                 // Add the missing column and set it as primary key.
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD COLUMN uuid CHAR(36) NOT NULL", 1);
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD PRIMARY KEY (uuid)", 1);
+                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE " + dbName + ".backpack_data ADD COLUMN uuid CHAR(36) NOT NULL");
+                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE " + dbName + ".backpack_data ADD PRIMARY KEY (uuid)");
             }
             rsBackpackCol.close();
             backpackColCheck.connection().close();
@@ -166,7 +166,7 @@ public class PlayerSync {
             String dataType = rsAdvCol.getString("DATA_TYPE");
             if (!"mediumblob".equalsIgnoreCase(dataType)) {
                 LOGGER.info("Altering player_data table to modify 'advancements' column from {} to MEDIUMBLOB.", dataType);
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB", 1);
+                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB");
             }
         }
         rsAdvCol.close();

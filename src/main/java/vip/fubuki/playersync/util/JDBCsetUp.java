@@ -52,11 +52,11 @@ public class JDBCsetUp {
     }
 
     /**
-     * Executes an update using a connection that includes the database.
+     * Executes an update using a connection with or without the database within the JDBC URL
      */
-    public static void executeUpdate(String sql) throws SQLException {
+    private static void executeUpdate(boolean selectDatabase, String sql) throws SQLException {
         LOGGER.trace(sql);
-        try (Connection connection = getConnection()) {  // With database selected
+        try (Connection connection = getConnection(selectDatabase)) {
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
                 updateStatement.executeUpdate();
             }
@@ -64,16 +64,18 @@ public class JDBCsetUp {
     }
 
     /**
+     * Executes an update using a connection that includes the database in the JDBC URL
+     */
+    public static void executeUpdate(String sql) throws SQLException {
+        executeUpdate(true, sql);
+    }
+
+    /**
      * Executes an update using a connection that does NOT include a default database.
      * This method is used for commands like "CREATE DATABASE IF NOT EXISTS ..."
      */
-    public static void executeUpdate(String sql, int dummy) throws SQLException {
-        LOGGER.trace(sql);
-        try (Connection connection = getConnection(false)) {  // Without default database
-            try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
-                updateStatement.executeUpdate();
-            }
-        }
+    public static void executeUpdateWithoutDatabase(String sql) throws SQLException {
+        executeUpdate(false, sql);
     }
 
     /**
