@@ -9,24 +9,24 @@ import java.util.Random;
 
 
 public class JdbcConfig {
-    public static ForgeConfigSpec COMMON_CONFIG;
-    public static ForgeConfigSpec.ConfigValue<String> HOST;
-    public static ForgeConfigSpec.IntValue PORT;
-    public static ForgeConfigSpec.ConfigValue<String> USERNAME;
-    public static ForgeConfigSpec.ConfigValue<String> PASSWORD;
-    public static ForgeConfigSpec.ConfigValue<String> DATABASE_NAME;
-    public static ForgeConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
-    public static ForgeConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
-    public static ForgeConfigSpec.BooleanValue USE_SSL;
-    public static ForgeConfigSpec.BooleanValue SYNC_CHAT;
-    public static ForgeConfigSpec.BooleanValue IS_CHAT_SERVER;
+    public static final ForgeConfigSpec COMMON_CONFIG;
+    public static final ForgeConfigSpec.ConfigValue<String> HOST;
+    public static final ForgeConfigSpec.IntValue PORT;
+    public static final ForgeConfigSpec.ConfigValue<String> USERNAME;
+    public static final ForgeConfigSpec.ConfigValue<String> PASSWORD;
+    public static final ForgeConfigSpec.ConfigValue<String> DATABASE_NAME;
+    public static final ForgeConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
+    public static final ForgeConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
+    public static final ForgeConfigSpec.BooleanValue USE_SSL;
+    public static final ForgeConfigSpec.BooleanValue SYNC_CHAT;
+    public static final ForgeConfigSpec.BooleanValue IS_CHAT_SERVER;
     public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
     public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
-    public static ForgeConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
-    public static ForgeConfigSpec.IntValue CHAT_SERVER_PORT;
-    public static ForgeConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
+    public static final ForgeConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
+    public static final ForgeConfigSpec.IntValue CHAT_SERVER_PORT;
+    public static final ForgeConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
 
-    public static ForgeConfigSpec.ConfigValue<Integer> SERVER_ID;
+    public static final ForgeConfigSpec.ConfigValue<Integer> SERVER_ID;
 
 
     static {
