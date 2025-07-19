@@ -9,24 +9,24 @@ import java.util.Random;
 
 
 public class JdbcConfig {
-    public static ModConfigSpec COMMON_CONFIG;
-    public static ModConfigSpec.ConfigValue<String> HOST;
-    public static ModConfigSpec.IntValue PORT;
-    public static ModConfigSpec.ConfigValue<String> USERNAME;
-    public static ModConfigSpec.ConfigValue<String> PASSWORD;
-    public static ModConfigSpec.ConfigValue<String> DATABASE_NAME;
-    public static ModConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
-    public static ModConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
-    public static ModConfigSpec.BooleanValue USE_SSL;
-    public static ModConfigSpec.BooleanValue SYNC_CHAT;
-    public static ModConfigSpec.BooleanValue IS_CHAT_SERVER;
+    public static final ModConfigSpec COMMON_CONFIG;
+    public static final ModConfigSpec.ConfigValue<String> HOST;
+    public static final ModConfigSpec.IntValue PORT;
+    public static final ModConfigSpec.ConfigValue<String> USERNAME;
+    public static final ModConfigSpec.ConfigValue<String> PASSWORD;
+    public static final ModConfigSpec.ConfigValue<String> DATABASE_NAME;
+    public static final ModConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
+    public static final ModConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
+    public static final ModConfigSpec.BooleanValue USE_SSL;
+    public static final ModConfigSpec.BooleanValue SYNC_CHAT;
+    public static final ModConfigSpec.BooleanValue IS_CHAT_SERVER;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
-    public static ModConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
-    public static ModConfigSpec.IntValue CHAT_SERVER_PORT;
-    public static ModConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
+    public static final ModConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
+    public static final ModConfigSpec.IntValue CHAT_SERVER_PORT;
+    public static final ModConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
 
-    public static ModConfigSpec.ConfigValue<Integer> SERVER_ID;
+    public static final ModConfigSpec.ConfigValue<Integer> SERVER_ID;
 
 
     static {
