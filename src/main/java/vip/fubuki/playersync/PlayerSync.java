@@ -112,12 +112,28 @@ public class PlayerSync {
                         ");"
         );
         long current = System.currentTimeMillis();
-        JDBCsetUp.executeUpdate(
-                "INSERT INTO " + dbName + ".server_info(id,enable,last_update) " +
-                        "VALUES(" + JdbcConfig.SERVER_ID.get() + ",true," + current + ") " +
-                        "ON DUPLICATE KEY UPDATE id= " + JdbcConfig.SERVER_ID.get() + ",enable = 1," +
-                        "last_update=" + current + ";"
-        );
+        JDBCsetUp.executeUpdate("""
+                INSERT INTO %s.server_info
+                (
+                    id,
+                    enable,
+                    last_update
+                )
+                VALUES (
+                    %d,
+                    true,
+                    %d
+                )
+                ON DUPLICATE KEY UPDATE
+                    id = %d,
+                    enable = true,
+                    last_update = %d;
+                """,
+                dbName,
+                JdbcConfig.SERVER_ID.get(),
+                current,
+                JdbcConfig.SERVER_ID.get(),
+                current);
 
         // Create curios table if the Curios mod is loaded
         if (ModList.get().isLoaded("curios")) {
