@@ -125,10 +125,6 @@ public class PlayerSync {
                         "ON DUPLICATE KEY UPDATE id= " + JdbcConfig.SERVER_ID.get() + ",enable = 1," +
                         "last_update=" + current + ";"
         );
-        JDBCsetUp.executeUpdate(
-                "UPDATE " + dbName + ".server_info SET last_update=" + System.currentTimeMillis() +
-                        " WHERE id='" + JdbcConfig.SERVER_ID.get() + "'"
-        );
 
         // Create curios table if the Curios mod is loaded
         if (ModList.get().isLoaded("curios")) {
