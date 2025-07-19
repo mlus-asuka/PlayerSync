@@ -43,7 +43,8 @@ public class JDBCsetUp {
     /**
      * Executes a query using a connection that includes the database.
      */
-    public static QueryResult executeQuery(String sql) throws SQLException {
+    public static QueryResult executeQuery(String sqlFormatString, Object... args) throws SQLException {
+        String sql = String.format(sqlFormatString, args);
         LOGGER.trace(sql);
         Connection connection = getConnection();  // With database selected (and "USE" already run)
         PreparedStatement queryStatement = connection.prepareStatement(sql);
@@ -54,7 +55,8 @@ public class JDBCsetUp {
     /**
      * Executes an update using a connection with or without the database within the JDBC URL
      */
-    private static void executeUpdate(boolean selectDatabase, String sql) throws SQLException {
+    private static void executeUpdate(boolean selectDatabase, String sqlFormatString, Object... args) throws SQLException {
+        String sql = String.format(sqlFormatString, args);
         LOGGER.trace(sql);
         try (Connection connection = getConnection(selectDatabase)) {
             try (PreparedStatement updateStatement = connection.prepareStatement(sql)) {
@@ -66,16 +68,16 @@ public class JDBCsetUp {
     /**
      * Executes an update using a connection that includes the database in the JDBC URL
      */
-    public static void executeUpdate(String sql) throws SQLException {
-        executeUpdate(true, sql);
+    public static void executeUpdate(String sqlFormatString, Object... args) throws SQLException {
+        executeUpdate(true, sqlFormatString, args);
     }
 
     /**
      * Executes an update using a connection that does NOT include a default database.
      * This method is used for commands like "CREATE DATABASE IF NOT EXISTS ..."
      */
-    public static void executeUpdateWithoutDatabase(String sql) throws SQLException {
-        executeUpdate(false, sql);
+    public static void executeUpdateWithoutDatabase(String sqlFormatString, Object... args) throws SQLException {
+        executeUpdate(false, sqlFormatString, args);
     }
 
     /**
