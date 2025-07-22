@@ -90,6 +90,24 @@ public class JDBCsetUp {
         }
     }
 
-    public record QueryResult(Connection connection, ResultSet resultSet) {
+    public record QueryResult(Connection connection, ResultSet resultSet) implements AutoCloseable {
+        @Override
+        public void close() {
+            if (resultSet != null) {
+                try {
+                    resultSet.close();
+                } catch (SQLException e) {
+                    LOGGER.error("Error closing ResultSet", e);
+                }
+            }
+
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException e) {
+                    LOGGER.error("Error closing Connection", e);
+                }
+            }
+        }
     }
 }
