@@ -1,6 +1,7 @@
 package vip.fubuki.playersync;
 
 import com.mojang.logging.LogUtils;
+import net.minecraft.SharedConstants;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
@@ -111,28 +112,37 @@ public class PlayerSync {
                         "PRIMARY KEY (`id`)" +
                         ");"
         );
+        // do not modify the create table statement to make sure this code is compatible with older database versions
+        addColumnIfNotExists("server_info", "data_version", "INT NOT NULL DEFAULT 0");
+
         long current = System.currentTimeMillis();
+        int data_version = SharedConstants.getCurrentVersion().getDataVersion().getVersion();
         JDBCsetUp.executeUpdate("""
                 INSERT INTO %s.server_info
                 (
                     id,
                     enable,
+                    data_version,
                     last_update
                 )
                 VALUES (
                     %d,
                     true,
+                    %d,
                     %d
                 )
                 ON DUPLICATE KEY UPDATE
                     id = %d,
                     enable = true,
+                    data_version = %d,
                     last_update = %d;
                 """,
                 dbName,
                 JdbcConfig.SERVER_ID.get(),
+                data_version,
                 current,
                 JdbcConfig.SERVER_ID.get(),
+                data_version,
                 current);
 
         // Create curios table if the Curios mod is loaded
