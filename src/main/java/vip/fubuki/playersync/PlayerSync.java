@@ -151,23 +151,8 @@ public class PlayerSync {
                             "uuid CHAR(36) NOT NULL, backpack_nbt MEDIUMBLOB, PRIMARY KEY (uuid)" +
                             ");"
             );
-
             // Check if backpack_data table has the 'uuid' column
-            JDBCsetUp.QueryResult backpackColCheck = JDBCsetUp.executeQuery(
-                    "SELECT COUNT(*) AS colCount FROM INFORMATION_SCHEMA.COLUMNS " +
-                            "WHERE TABLE_SCHEMA = '" + dbName + "' " +
-                            "AND TABLE_NAME = 'backpack_data' " +
-                            "AND COLUMN_NAME = 'uuid';"
-            );
-            ResultSet rsBackpackCol = backpackColCheck.resultSet();
-            if (rsBackpackCol.next() && rsBackpackCol.getInt("colCount") == 0) {
-                LOGGER.info("Altering backpack_data table to add missing 'uuid' column.");
-                // Add the missing column and set it as primary key.
-                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE " + dbName + ".backpack_data ADD COLUMN uuid CHAR(36) NOT NULL");
-                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE " + dbName + ".backpack_data ADD PRIMARY KEY (uuid)");
-            }
-            rsBackpackCol.close();
-            backpackColCheck.connection().close();
+            addColumnIfNotExists("backpack_data", "uuid", "CHAR(36) NOT NULL", true);
         }
 
         // Check and alter the 'advancements' column in player_data if necessary
@@ -191,4 +176,44 @@ public class PlayerSync {
         LOGGER.info("PlayerSync is ready!");
     }
 
+    private static void addColumnIfNotExists(String tableName, String columnName, String dataTypeDefaultNullness,
+            boolean makePrimaryKey) throws SQLException {
+
+        // Making use of the AutoCloseable QueryResult here
+        try (JDBCsetUp.QueryResult backpackColCheck = JDBCsetUp.executeQuery(
+                "SELECT COUNT(*) AS colCount FROM INFORMATION_SCHEMA.COLUMNS " +
+                        "WHERE TABLE_SCHEMA = DATABASE()" +
+                        "AND TABLE_NAME = '" + tableName + "' " +
+                        "AND COLUMN_NAME = '" + columnName + "';")) {
+            ResultSet rsBackpackCol = backpackColCheck.resultSet();
+
+            if (!rsBackpackCol.next()) {
+                LOGGER.warn("Warning: Unable to check existence of colum {} in table {}.", columnName, tableName);
+                return;
+            }
+
+            if (rsBackpackCol.getInt("colCount") > 0) {
+                LOGGER.debug("Column {} already exists. Skipping creation.", columnName);
+                return;
+            }
+        }
+
+        LOGGER.info("ALTER {} table to add missing {} column.", tableName, columnName);
+        // Add the missing column and set it as primary key.
+        JDBCsetUp.executeUpdate(
+                "ALTER TABLE %s ADD COLUMN %s %s",
+                tableName, columnName, dataTypeDefaultNullness);
+
+        if (makePrimaryKey) {
+            LOGGER.info("Altering {} table to add primary key on {}.", tableName, columnName);
+            JDBCsetUp.executeUpdate(
+                    "ALTER TABLE %s ADD PRIMARY KEY (%s)",
+                    tableName, columnName);
+        }
+    }
+
+    private static void addColumnIfNotExists(String tableName, String columnName,
+            String dataTypeDefaultNullness) throws SQLException {
+        addColumnIfNotExists(tableName, columnName, dataTypeDefaultNullness, false);
+    }
 }
