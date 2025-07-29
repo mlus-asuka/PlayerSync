@@ -169,7 +169,7 @@ public class PlayerSync {
         if (rsAdvCol.next()) {
             String dataType = rsAdvCol.getString("DATA_TYPE");
             if (!"mediumblob".equalsIgnoreCase(dataType)) {
-                LOGGER.info("Altering player_data table to modify 'advancements' column to MEDIUMBLOB.");
+                LOGGER.info("Altering player_data table to modify 'advancements' column from {} to MEDIUMBLOB.", dataType);
                 JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB", 1);
             }
         }
