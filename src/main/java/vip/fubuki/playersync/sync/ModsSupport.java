@@ -7,6 +7,10 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.common.util.LazyOptional;
 import net.minecraftforge.fml.ModList;
+import top.theillusivec4.curios.api.CuriosApi;
+import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
+import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
+import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
@@ -15,11 +19,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
-
-import top.theillusivec4.curios.api.CuriosApi;
-import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
-import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
-import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -59,6 +58,7 @@ public class ModsSupport {
 
                 // Restore each saved item.
                 handlerOpt.ifPresent(handler -> {
+                    handler.getCurios().clear();
                     for (Map.Entry<String, String> entry : storedMap.entrySet()) {
                         String compositeKey = entry.getKey(); // Expected format: "slotType:index"
                         String[] parts = compositeKey.split(":");
