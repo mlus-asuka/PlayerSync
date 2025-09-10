@@ -32,7 +32,7 @@ public class ChatSyncClient {
             while ((serverMessage = in.readLine()) != null) {
                 PlayerSync.LOGGER.info("Received message from chat server: " + serverMessage);
                 Component textComponents = Component.nullToEmpty(serverMessage);
-                if(playerList!=null){
+                if(playerList != null){
                     playerList.broadcastSystemMessage(textComponents,false);
                 }
             }

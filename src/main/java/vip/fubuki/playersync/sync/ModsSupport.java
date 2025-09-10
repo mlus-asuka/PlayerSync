@@ -56,6 +56,7 @@ public class ModsSupport {
 
                 // Restore each saved item.
                 handlerOpt.ifPresent(handler -> {
+                    handler.getCurios().clear();
                     for (Map.Entry<String, String> entry : storedMap.entrySet()) {
                         String compositeKey = entry.getKey(); // Expected format: "slotType:index"
                         String[] parts = compositeKey.split(":");
