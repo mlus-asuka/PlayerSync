@@ -39,14 +39,8 @@ public class ModsSupport {
             ResultSet rs = qr.resultSet();
             if (rs.next()) {
                 String curiosData = rs.getString("curios_item");
-                if (curiosData.length() <= 2) {
-                    rs.close();
-                    qr.connection().close();
-                    return;
-                }
                 // Parse the stored data (assumes a simple Map.toString() format: "{key=value, key2=value2, ...}")
                 Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
-
                 // Clear current Curios slots to avoid conflicts.
                 handlerOpt.ifPresent(handler -> handler.getCurios().forEach((slotType, stacksHandler) -> {
                     // Use the dynamic stack handler to clear slots.
@@ -56,9 +50,14 @@ public class ModsSupport {
                     }
                 }));
 
+                if (curiosData.length() <= 2) {
+                    rs.close();
+                    qr.connection().close();
+                    return;
+                }
+
                 // Restore each saved item.
                 handlerOpt.ifPresent(handler -> {
-                    handler.getCurios().clear();
                     for (Map.Entry<String, String> entry : storedMap.entrySet()) {
                         String compositeKey = entry.getKey(); // Expected format: "slotType:index"
                         String[] parts = compositeKey.split(":");
