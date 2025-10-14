@@ -1,6 +1,7 @@
 package vip.fubuki.playersync;
 
 import com.mojang.logging.LogUtils;
+import net.minecraft.SharedConstants;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
@@ -50,7 +51,7 @@ public class PlayerSync {
         String dbName = JdbcConfig.DATABASE_NAME.get();
 
         // Step 1: Create the database using a connection that does not select a database.
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS " + dbName, 1);
+        JDBCsetUp.executeUpdateWithoutDatabase("CREATE DATABASE IF NOT EXISTS " + dbName);
 
         // Step 2: Explicitly select the database on a connection obtained without default database.
         try (Connection conn = JDBCsetUp.getConnection(false);
@@ -112,17 +113,38 @@ public class PlayerSync {
                         "PRIMARY KEY (`id`)" +
                         ");"
         );
+        // do not modify the create table statement to make sure this code is compatible with older database versions
+        addColumnIfNotExists("server_info", "data_version", "INT NOT NULL DEFAULT 0");
+
         long current = System.currentTimeMillis();
-        JDBCsetUp.executeUpdate(
-                "INSERT INTO " + dbName + ".server_info(id,enable,last_update) " +
-                        "VALUES(" + JdbcConfig.SERVER_ID.get() + ",true," + current + ") " +
-                        "ON DUPLICATE KEY UPDATE id= " + JdbcConfig.SERVER_ID.get() + ",enable = 1," +
-                        "last_update=" + current + ";"
-        );
-        JDBCsetUp.executeUpdate(
-                "UPDATE " + dbName + ".server_info SET last_update=" + System.currentTimeMillis() +
-                        " WHERE id='" + JdbcConfig.SERVER_ID.get() + "'"
-        );
+        int data_version = SharedConstants.getCurrentVersion().getDataVersion().getVersion();
+        JDBCsetUp.executeUpdate("""
+                INSERT INTO %s.server_info
+                (
+                    id,
+                    enable,
+                    data_version,
+                    last_update
+                )
+                VALUES (
+                    %d,
+                    true,
+                    %d,
+                    %d
+                )
+                ON DUPLICATE KEY UPDATE
+                    id = %d,
+                    enable = true,
+                    data_version = %d,
+                    last_update = %d;
+                """,
+                dbName,
+                JdbcConfig.SERVER_ID.get(),
+                data_version,
+                current,
+                JdbcConfig.SERVER_ID.get(),
+                data_version,
+                current);
 
         // Create curios table if the Curios mod is loaded
         if (ModList.get().isLoaded("curios")) {
@@ -135,28 +157,13 @@ public class PlayerSync {
 
         // Create backpack_data table
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
-            JDBCsetUp.executeUpdate(
+            JDBCsetUp.executeUpdateWithoutDatabase(
                     "CREATE TABLE IF NOT EXISTS " + dbName + ".backpack_data (" +
                             "uuid CHAR(36) NOT NULL, backpack_nbt MEDIUMBLOB, PRIMARY KEY (uuid)" +
-                            ");", 1
+                            ");"
             );
-
             // Check if backpack_data table has the 'uuid' column
-            JDBCsetUp.QueryResult backpackColCheck = JDBCsetUp.executeQuery(
-                    "SELECT COUNT(*) AS colCount FROM INFORMATION_SCHEMA.COLUMNS " +
-                            "WHERE TABLE_SCHEMA = '" + dbName + "' " +
-                            "AND TABLE_NAME = 'backpack_data' " +
-                            "AND COLUMN_NAME = 'uuid';"
-            );
-            ResultSet rsBackpackCol = backpackColCheck.resultSet();
-            if (rsBackpackCol.next() && rsBackpackCol.getInt("colCount") == 0) {
-                LOGGER.info("Altering backpack_data table to add missing 'uuid' column.");
-                // Add the missing column and set it as primary key.
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD COLUMN uuid CHAR(36) NOT NULL", 1);
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD PRIMARY KEY (uuid)", 1);
-            }
-            rsBackpackCol.close();
-            backpackColCheck.connection().close();
+            addColumnIfNotExists("backpack_data", "uuid", "CHAR(36) NOT NULL", true);
         }
 
         // Check and alter the 'advancements' column in player_data if necessary
@@ -170,8 +177,8 @@ public class PlayerSync {
         if (rsAdvCol.next()) {
             String dataType = rsAdvCol.getString("DATA_TYPE");
             if (!"mediumblob".equalsIgnoreCase(dataType)) {
-                LOGGER.info("Altering player_data table to modify 'advancements' column to MEDIUMBLOB.");
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB", 1);
+                LOGGER.info("Altering player_data table to modify 'advancements' column from {} to MEDIUMBLOB.", dataType);
+                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB");
             }
         }
         rsAdvCol.close();
@@ -185,4 +192,44 @@ public class PlayerSync {
         ChatSync.shutdown();
     }
 
+    private static void addColumnIfNotExists(String tableName, String columnName, String dataTypeDefaultNullness,
+            boolean makePrimaryKey) throws SQLException {
+
+        // Making use of the AutoCloseable QueryResult here
+        try (JDBCsetUp.QueryResult backpackColCheck = JDBCsetUp.executeQuery(
+                "SELECT COUNT(*) AS colCount FROM INFORMATION_SCHEMA.COLUMNS " +
+                        "WHERE TABLE_SCHEMA = DATABASE()" +
+                        "AND TABLE_NAME = '" + tableName + "' " +
+                        "AND COLUMN_NAME = '" + columnName + "';")) {
+            ResultSet rsBackpackCol = backpackColCheck.resultSet();
+
+            if (!rsBackpackCol.next()) {
+                LOGGER.warn("Warning: Unable to check existence of colum {} in table {}.", columnName, tableName);
+                return;
+            }
+
+            if (rsBackpackCol.getInt("colCount") > 0) {
+                LOGGER.debug("Column {} already exists. Skipping creation.", columnName);
+                return;
+            }
+        }
+
+        LOGGER.info("ALTER {} table to add missing {} column.", tableName, columnName);
+        // Add the missing column and set it as primary key.
+        JDBCsetUp.executeUpdate(
+                "ALTER TABLE %s ADD COLUMN %s %s",
+                tableName, columnName, dataTypeDefaultNullness);
+
+        if (makePrimaryKey) {
+            LOGGER.info("Altering {} table to add primary key on {}.", tableName, columnName);
+            JDBCsetUp.executeUpdate(
+                    "ALTER TABLE %s ADD PRIMARY KEY (%s)",
+                    tableName, columnName);
+        }
+    }
+
+    private static void addColumnIfNotExists(String tableName, String columnName,
+            String dataTypeDefaultNullness) throws SQLException {
+        addColumnIfNotExists(tableName, columnName, dataTypeDefaultNullness, false);
+    }
 }

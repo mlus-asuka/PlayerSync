@@ -6,6 +6,10 @@ import net.minecraft.nbt.NbtUtils;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.fml.ModList;
+import top.theillusivec4.curios.api.CuriosApi;
+import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
+import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
+import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
@@ -14,15 +18,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
-
-import top.theillusivec4.curios.api.CuriosApi;
-import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
-import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
-import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import java.util.Optional;
 import java.util.UUID;
-
-import static vip.fubuki.playersync.sync.VanillaSync.deserializeString;
 
 
 public class ModsSupport {
@@ -39,14 +36,8 @@ public class ModsSupport {
             ResultSet rs = qr.resultSet();
             if (rs.next()) {
                 String curiosData = rs.getString("curios_item");
-                if (curiosData.length() <= 2) {
-                    rs.close();
-                    qr.connection().close();
-                    return;
-                }
                 // Parse the stored data (assumes a simple Map.toString() format: "{key=value, key2=value2, ...}")
                 Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
-
                 // Clear current Curios slots to avoid conflicts.
                 handlerOpt.ifPresent(handler -> handler.getCurios().forEach((slotType, stacksHandler) -> {
                     // Use the dynamic stack handler to clear slots.
@@ -55,6 +46,12 @@ public class ModsSupport {
                         dynStacks.setStackInSlot(i, ItemStack.EMPTY);
                     }
                 }));
+
+                if (curiosData.length() <= 2) {
+                    rs.close();
+                    qr.connection().close();
+                    return;
+                }
 
                 // Restore each saved item.
                 handlerOpt.ifPresent(handler -> {
@@ -73,9 +70,7 @@ public class ModsSupport {
                         }
                         String serialized = entry.getValue();
                         try {
-                            String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag tag = NbtUtils.snbtToStructure(nbtString);
-                            ItemStack stack = ItemStack.of(tag);
+                            ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(serialized);
                             if (handler.getCurios().containsKey(slotType)) {
                                 ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);
                                 IDynamicStackHandler dynStacks = stacksHandler.getStacks();
@@ -112,7 +107,7 @@ public class ModsSupport {
                         ResultSet rsBackpack = qrBackpack.resultSet();
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
-                            String nbtString = deserializeString(serialized);
+                            String nbtString = VanillaSync.deserializeString(serialized);
                             CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);

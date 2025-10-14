@@ -1,7 +1,9 @@
 package vip.fubuki.playersync.sync;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.serialization.Dynamic;
 import net.minecraft.ChatFormatting;
+import net.minecraft.SharedConstants;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.*;
 import net.minecraft.network.chat.Component;
@@ -10,6 +12,8 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.PlayerAdvancements;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.datafix.DataFixers;
+import net.minecraft.util.datafix.fixes.References;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -247,7 +251,7 @@ public class VanillaSync {
     }
 
     // deserialize item and potentially create placeholders
-    private static ItemStack deserializeAndCreatePlaceholderIfNeeded(String serializedNbt)
+    public static ItemStack deserializeAndCreatePlaceholderIfNeeded(String serializedNbt)
             throws CommandSyntaxException {
         if (serializedNbt == null || serializedNbt.isEmpty() || serializedNbt.equals("B64:e30=")) {
             // Check for empty NBT (Base64 encoded '{}')
@@ -255,7 +259,7 @@ public class VanillaSync {
         }
 
         String nbtString = deserializeString(serializedNbt);
-        CompoundTag compoundTag = NbtUtils.snbtToStructure(nbtString);
+        CompoundTag compoundTag = snbtToFixedCompoundTag(nbtString);
 
         if (compoundTag == null || compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
             return ItemStack.EMPTY; // Invalid or empty tag
@@ -346,6 +350,23 @@ public class VanillaSync {
         displayTag.put("Lore", loreList);
 
         return placeholder;
+    }
+
+    public static CompoundTag snbtToFixedCompoundTag(String nbtString) throws CommandSyntaxException {
+        CompoundTag parsedTag = TagParser.parseTag(nbtString);
+
+        int currentDataVersion = SharedConstants.getCurrentVersion().getDataVersion().getVersion();
+        int snbtDataVersion = NbtUtils.getDataVersion(parsedTag, 500);
+
+        Dynamic<Tag> dynamicTagInput = new Dynamic<>(NbtOps.INSTANCE, parsedTag);
+
+        Dynamic<Tag> updatedDynamicTag = DataFixers.getDataFixer().update(
+                References.ITEM_STACK,
+                dynamicTagInput,
+                snbtDataVersion,
+                currentDataVersion);
+        CompoundTag compoundTag = (CompoundTag) updatedDynamicTag.getValue();
+        return compoundTag;
     }
 
     /**
@@ -455,6 +476,8 @@ public class VanillaSync {
         // Serialize the ItemStack to NBT
         CompoundTag compoundTag = new CompoundTag();
         itemStack.save(compoundTag);
+        // Adding data version to allow newer version of Minecraft to properly update the itemstack from the db
+        NbtUtils.addCurrentDataVersion(compoundTag);
         return compoundTag;
     }
 
@@ -463,7 +486,7 @@ public class VanillaSync {
         PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
 
         // Basic Attributes
-        int XP = player.totalExperience;
+        int XP = getTotalExperience(player);
         int score = player.getScore();
         int food_level = player.getFoodData().getFoodLevel();
         int health = (int) player.getHealth();
