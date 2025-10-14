@@ -85,7 +85,7 @@ public class VanillaSync {
         File gameDir = Objects.requireNonNull(serverPlayer.getServer()).getServerDirectory().toFile();
 
         final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server != null && server.isDedicatedServer()) {
+        if (server.isDedicatedServer()) {
             PlayerSync.LOGGER.debug("Attempting to write dedicated server advancement file");
             File advancements = new File(gameDir,
                     getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");

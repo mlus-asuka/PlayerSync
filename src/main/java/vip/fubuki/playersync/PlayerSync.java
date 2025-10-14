@@ -10,6 +10,7 @@ import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import org.slf4j.Logger;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.sync.ChatSync;
@@ -177,6 +178,11 @@ public class PlayerSync {
         // ----- END NEW BLOCK -----
 
         LOGGER.info("PlayerSync is ready!");
+    }
+
+    @SubscribeEvent
+    public void onServerStopping(ServerStoppingEvent event){
+        ChatSync.shutdown();
     }
 
 }

@@ -6,7 +6,6 @@ import net.minecraft.commands.Commands;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
-import vip.fubuki.playersync.sync.chat.ChatSyncClient;
 
 @EventBusSubscriber()
 public class CommandInit {
@@ -18,7 +17,6 @@ public class CommandInit {
                 .requires(cs->cs.hasPermission(2))
                 .then(Commands.literal("reconnect")
                         .executes(context -> {
-                            new ChatSyncClient().run();
 //                                  context.getSource().sendSuccess(()->MutableComponent.create(new TranslatableContents("playersync.command.reconnect")),true);
                                     return 0;
                                 }
