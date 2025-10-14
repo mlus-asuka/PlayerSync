@@ -8,10 +8,8 @@ import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.*;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -26,6 +24,9 @@ public class ChatSyncClient {
     private static final int RECONNECT_DELAY = 5000;
     private static final int MAX_RECONNECT_ATTEMPTS = 10;
 
+    private static volatile long lastHeartbeat = System.currentTimeMillis();
+    private static final long HEARTBEAT_INTERVAL = 15000;
+
     public void run() {
         int reconnectAttempts = 0;
 
@@ -36,40 +37,52 @@ public class ChatSyncClient {
                         JdbcConfig.CHAT_SERVER_PORT.get());
 
                 clientSocket = new Socket();
+                clientSocket.setReuseAddress(true);
+                clientSocket.setKeepAlive(true);
+                clientSocket.setTcpNoDelay(true);
 
                 clientSocket.connect(
                         new InetSocketAddress(
                                 JdbcConfig.CHAT_SERVER_IP.get(),
                                 JdbcConfig.CHAT_SERVER_PORT.get()
                         ),
-                        10000
+                        15000
                 );
 
                 clientSocket.setSoTimeout(30000);
 
-                out = new PrintWriter(clientSocket.getOutputStream(), true);
-                BufferedReader in = new BufferedReader(
-                        new InputStreamReader(clientSocket.getInputStream()));
+                out = new PrintWriter(new BufferedWriter(
+                        new OutputStreamWriter(clientSocket.getOutputStream())), true);
 
                 PlayerSync.LOGGER.info("Successfully connected to chat server");
                 reconnectAttempts = 0;
+                lastHeartbeat = System.currentTimeMillis();
+
+                startHeartbeatMonitor();
+
+                BufferedReader in = new BufferedReader(
+                        new InputStreamReader(clientSocket.getInputStream()));
 
                 String serverMessage;
                 while (running && (serverMessage = in.readLine()) != null) {
+                    lastHeartbeat = System.currentTimeMillis();
+
+                    if ("<heartbeat>".equals(serverMessage)) {
+                        continue;
+                    }
+
                     PlayerSync.LOGGER.info("Received message from chat server: " + serverMessage);
                     Component textComponents = Component.nullToEmpty(serverMessage);
                     if(playerList != null){
-                        if (playerList.getServer().isSameThread()) {
-                            playerList.broadcastSystemMessage(textComponents, false);
-                        } else {
-                            playerList.getServer().execute(() ->
-                                    playerList.broadcastSystemMessage(textComponents, false));
-                        }
+                        playerList.getServer().execute(() ->
+                                playerList.broadcastSystemMessage(textComponents, false));
                     }
                 }
 
             } catch (SocketTimeoutException e) {
-                PlayerSync.LOGGER.warn("Chat server connection timeout, reconnecting...");
+                PlayerSync.LOGGER.warn("Chat server read timeout, reconnecting...");
+            } catch (ConnectException e) {
+                PlayerSync.LOGGER.warn("Cannot connect to chat server: {}", e.getMessage());
             } catch (IOException e) {
                 PlayerSync.LOGGER.error("Chat client connection error: {}", e.getMessage());
             } finally {
@@ -82,17 +95,40 @@ public class ChatSyncClient {
                         reconnectAttempts, MAX_RECONNECT_ATTEMPTS);
 
                 try {
-                    Thread.sleep(RECONNECT_DELAY);
+                    long delay = Math.min(RECONNECT_DELAY * (long)Math.pow(2, reconnectAttempts-1), 60000);
+                    Thread.sleep(delay);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
             }
         }
+    }
 
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            PlayerSync.LOGGER.error("Failed to connect to chat server after {} attempts", MAX_RECONNECT_ATTEMPTS);
-        }
+    private void startHeartbeatMonitor() {
+        Thread heartbeatThread = new Thread(() -> {
+            while (running && clientSocket != null && !clientSocket.isClosed()) {
+                try {
+                    Thread.sleep(10000); // 每10秒检查一次
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
+                        PlayerSync.LOGGER.warn("No heartbeat for {}ms, sending test message",
+                                now - lastHeartbeat);
+
+                        // 发送测试消息检查连接
+                        if (out != null) {
+                            out.println("<heartbeat>");
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }, "ChatSync-Heartbeat");
+        heartbeatThread.setDaemon(true);
+        heartbeatThread.start();
     }
 
     private void closeConnection() {
