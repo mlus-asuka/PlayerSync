@@ -6,7 +6,6 @@ import net.minecraft.commands.Commands;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
-import vip.fubuki.playersync.sync.chat.ChatSyncClient;
 
 @Mod.EventBusSubscriber()
 public class CommandInit {
@@ -18,7 +17,6 @@ public class CommandInit {
                 .requires(cs->cs.hasPermission(2))
                 .then(Commands.literal("reconnect")
                         .executes(context -> {
-                            new ChatSyncClient().run();
 //                                  context.getSource().sendSuccess(()->MutableComponent.create(new TranslatableContents("playersync.command.reconnect")),true);
                                     return 0;
                                 }

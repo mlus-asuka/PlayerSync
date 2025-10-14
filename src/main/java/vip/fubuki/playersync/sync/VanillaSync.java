@@ -145,6 +145,11 @@ public class VanillaSync {
         JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
         ResultSet rs1 = qr1.resultSet();
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
+
+        // Mod support
+        ModsSupport modsSupport = new ModsSupport();
+        modsSupport.onPlayerJoin(serverPlayer);
+
         if (!rs1.next()){
             store(event.getEntity(), true);
             return;
@@ -229,9 +234,6 @@ public class VanillaSync {
             }
         }
 
-        // Mod support
-        ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerJoin(serverPlayer);
         serverPlayer.addTag("player_synced");
 
         rs2.close();
