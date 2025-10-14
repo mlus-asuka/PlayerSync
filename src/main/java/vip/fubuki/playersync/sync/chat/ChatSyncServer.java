@@ -3,10 +3,7 @@ package vip.fubuki.playersync.sync.chat;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -28,6 +25,8 @@ public class ChatSyncServer {
             serverSocket = new ServerSocket(JdbcConfig.CHAT_SERVER_PORT.get());
             serverSocket.setReuseAddress(true);
             PlayerSync.LOGGER.info("Chat server started successfully on port {}", JdbcConfig.CHAT_SERVER_PORT.get());
+
+            startHeartbeatBroadcast();
 
             while (running && !Thread.currentThread().isInterrupted()) {
                 try {
@@ -93,6 +92,47 @@ public class ChatSyncServer {
                         // Ignore
                     }
                 }
+            }
+        }
+    }
+
+    private void startHeartbeatBroadcast() {
+        Thread heartbeatThread = new Thread(() -> {
+            while (running) {
+                try {
+                    Thread.sleep(20000);
+                    broadcastHeartbeat();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }, "ChatSync-Server-Heartbeat");
+        heartbeatThread.setDaemon(true);
+        heartbeatThread.start();
+    }
+
+    private void broadcastHeartbeat() {
+        Iterator<Socket> iterator = SocketList.iterator();
+        while (iterator.hasNext()) {
+            Socket socket = iterator.next();
+            if (!socket.isClosed()) {
+                try {
+                    PrintWriter writer = new PrintWriter(
+                            new BufferedWriter(
+                                    new OutputStreamWriter(socket.getOutputStream())), true);
+                    writer.println("<heartbeat>");
+                } catch (IOException e) {
+                    PlayerSync.LOGGER.warn("Failed to send heartbeat to client, removing: {}", e.getMessage());
+                    iterator.remove();
+                    try {
+                        socket.close();
+                    } catch (IOException ex) {
+                        // Ignore
+                    }
+                }
+            } else {
+                iterator.remove();
             }
         }
     }

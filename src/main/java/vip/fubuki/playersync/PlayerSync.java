@@ -5,6 +5,7 @@ import com.mysql.cj.jdbc.Driver;
 import net.minecraft.SharedConstants;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.server.ServerStartingEvent;
+import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
@@ -191,6 +192,11 @@ public class PlayerSync {
         // ----- END NEW BLOCK -----
 
         LOGGER.info("PlayerSync is ready!");
+    }
+
+    @SubscribeEvent
+    public void onServerStopping(ServerStoppingEvent event){
+        ChatSync.shutdown();
     }
 
     private static void addColumnIfNotExists(String tableName, String columnName, String dataTypeDefaultNullness,
