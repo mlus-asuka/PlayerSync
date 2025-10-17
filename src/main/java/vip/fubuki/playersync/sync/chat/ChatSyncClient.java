@@ -59,11 +59,12 @@ public class ChatSyncClient {
 
                 String serverMessage;
                 while (running && (serverMessage = in.readLine()) != null) {
-                    PlayerSync.LOGGER.info("Received message from chat server: " + serverMessage);
                     Component textComponents = Component.nullToEmpty(serverMessage);
                     if(playerList != null){
                         playerList.getServer().execute(() ->
                                 playerList.broadcastSystemMessage(textComponents, false));
+                    }else {
+                        PlayerSync.LOGGER.info("Received message from chat server: " + serverMessage);
                     }
                 }
 

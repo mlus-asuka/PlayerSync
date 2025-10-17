@@ -55,7 +55,6 @@ public class ChatSyncServer {
 
             String message;
             while (running && (message = reader.readLine()) != null) {
-                PlayerSync.LOGGER.info("Received message from {}: {}", clientInfo, message);
                 broadcastMessage(socket, message);
             }
 
