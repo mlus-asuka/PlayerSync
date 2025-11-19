@@ -28,6 +28,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.TickEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerNegotiationEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
@@ -149,106 +150,150 @@ public class VanillaSync {
         }
     }
 
-    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, CommandSyntaxException, IOException {
-        String player_uuid = event.getEntity().getUUID().toString();
-        PlayerSync.LOGGER.info("Starting synchronization for player " + player_uuid);
+    public static void doPlayerConnect(PlayerNegotiationEvent event) {
+        try {
+            String player_uuid = event.getProfile().getId().toString();
+            PlayerSync.LOGGER.info("Detected connection from player" + player_uuid + ",starting checking");
+            boolean online = false;
+            int lastServer = -1;
 
-        // First query: check basic player data
-        JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
-        ResultSet rs1 = qr1.resultSet();
-        ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
+            // First query: check basic player data and check whether player can join into server.
+            JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
 
-        // Mod support
-        ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerJoin(serverPlayer);
-
-        if (!rs1.next()){
-            store(event.getEntity(), true);
-            return;
-        }
-        boolean online = rs1.getBoolean("online");
-        int lastServer = rs1.getInt("last_server");
-
-        // Second query: retrieve full player data
-        JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='" + player_uuid + "'");
-        ResultSet rs2 = qr2.resultSet();
-
-        // Check if player is already online on another server
-        if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
-            JDBCsetUp.QueryResult qr3 = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='" + lastServer + "'");
-            ResultSet rs3 = qr3.resultSet();
-            if (rs3.next()){
-                long last_update = rs3.getLong("last_update");
-                boolean enable = rs3.getBoolean("enable");
-                if (enable && System.currentTimeMillis() < last_update + 300000.0){
-                    event.getEntity().removeTag("player_synced");
-                    serverPlayer.connection.disconnect(Component.translatable("playersync.already_online"));
+            try (ResultSet rs1 = qr1.resultSet()) {
+                if (!rs1.next()) {
+                    PlayerSync.LOGGER.info("A new-player connection detected");
+                    qr1.connection().close();
                     return;
                 }
-                JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + lastServer);
+                online = rs1.getBoolean("online");
+                lastServer = rs1.getInt("last_server");
+                qr1.connection().close();
             }
-            rs3.close();
-        }
-        JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
 
-        if (rs2.next()) {
-            // Restore basic attributes
-            serverPlayer.setHealth(rs2.getInt("health"));
-            serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
-
-            setXpForPlayer(serverPlayer, rs2.getInt("xp"));
-            serverPlayer.setScore(rs2.getInt("score"));
-
-            // Restore left-hand item
-            String leftHandEncoded = rs2.getString("left_hand");
-            serverPlayer.setItemInHand(InteractionHand.OFF_HAND,
-                    deserializeAndCreatePlaceholderIfNeeded(leftHandEncoded));
-
-            // Restore cursor item
-            String cursorsEncoded = rs2.getString("cursors");
-            serverPlayer.containerMenu.setCarried(
-                    deserializeAndCreatePlaceholderIfNeeded(cursorsEncoded));
-
-            // Restore armor
-            String armor_data = rs2.getString("armor");
-            if (armor_data.length() > 2) {
-                Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
-                for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                    serverPlayer.getInventory().armor.set(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+            // Second query: Check if player is already online on another server
+            if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
+                JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='" + lastServer + "'");
+                try (ResultSet rs2 = qr2.resultSet()) {
+                    if (rs2.next()) {
+                        long last_update = rs2.getLong("last_update");
+                        boolean enable = rs2.getBoolean("enable");
+                        if (enable && System.currentTimeMillis() < last_update + 300000.0) {
+                            event.getConnection().disconnect(Component.translatable("playersync.already_online"));
+                            qr2.connection().close();
+                            return;
+                        }
+                        JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + lastServer);
+                    }
+                    qr2.connection().close();
                 }
             }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("SqlException detected!", e);
+            event.getConnection().disconnect(Component.translatable("playersync.sqlexception"));
+        }
+    }
 
-            // Restore inventory
-            Map<Integer, String> inventory = LocalJsonUtil.StringToEntryMap(rs2.getString("inventory"));
-            for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
-                serverPlayer.getInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
+        try {
+            String player_uuid = event.getEntity().getUUID().toString();
+            PlayerSync.LOGGER.info("Starting synchronization for player " + player_uuid);
+
+            // First query: check basic player data
+            JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
+            ResultSet rs1 = qr1.resultSet();
+            ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
+
+            // Mod support
+            ModsSupport modsSupport = new ModsSupport();
+            modsSupport.onPlayerJoin(serverPlayer);
+
+            if (!rs1.next()){
+                store(event.getEntity(), true);
+                JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+                JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+                rs1.close();
+                return;
             }
 
-            // Restore Ender Chest
-            Map<Integer, String> ender_chest = LocalJsonUtil.StringToEntryMap(rs2.getString("enderchest"));
-            for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
-                serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
-            }
+            // Second query: retrieve full player data
+            JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='" + player_uuid + "'");
+            ResultSet rs2 = qr2.resultSet();
 
-            // Restore Effects
-            String effectData = rs2.getString("effects");
-            if (effectData.length() > 2) {
-                serverPlayer.removeAllEffects();
-                Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
-                for (Map.Entry<Integer, String> entry : effects.entrySet()) {
-                    CompoundTag effectTag = NbtUtils.snbtToStructure(deserializeString(entry.getValue()));
-                    MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
-                    if (mobEffectInstance != null) {
-                        serverPlayer.addEffect(mobEffectInstance);
+            JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+
+            if (rs2.next()) {
+                // Restore basic attributes
+                serverPlayer.setHealth(rs2.getInt("health"));
+                serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
+
+                setXpForPlayer(serverPlayer, rs2.getInt("xp"));
+                serverPlayer.setScore(rs2.getInt("score"));
+
+                // Restore left-hand item
+                String leftHandEncoded = rs2.getString("left_hand");
+                serverPlayer.setItemInHand(InteractionHand.OFF_HAND,
+                        deserializeAndCreatePlaceholderIfNeeded(leftHandEncoded));
+
+                // Restore cursor item
+                String cursorsEncoded = rs2.getString("cursors");
+                serverPlayer.containerMenu.setCarried(
+                        deserializeAndCreatePlaceholderIfNeeded(cursorsEncoded));
+
+                // Restore armor
+                String armor_data = rs2.getString("armor");
+                if (armor_data.length() > 2) {
+                    Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
+                    for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
+                        serverPlayer.getInventory().armor.set(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+                    }
+                }
+
+                // Restore inventory
+                Map<Integer, String> inventory = LocalJsonUtil.StringToEntryMap(rs2.getString("inventory"));
+                for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
+                    serverPlayer.getInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+                }
+
+                // Restore Ender Chest
+                Map<Integer, String> ender_chest = LocalJsonUtil.StringToEntryMap(rs2.getString("enderchest"));
+                for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
+                    serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+                }
+
+                // Restore Effects
+                String effectData = rs2.getString("effects");
+                if (effectData.length() > 2) {
+                    serverPlayer.removeAllEffects();
+                    Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
+                    for (Map.Entry<Integer, String> entry : effects.entrySet()) {
+                        CompoundTag effectTag = NbtUtils.snbtToStructure(deserializeString(entry.getValue()));
+                        MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
+                        if (mobEffectInstance != null) {
+                            serverPlayer.addEffect(mobEffectInstance);
+                        }
                     }
                 }
             }
+
+            serverPlayer.addTag("player_synced");
+
+            rs2.close();
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Internal Exception detected!", e);
         }
+    }
 
-        serverPlayer.addTag("player_synced");
-
-        rs2.close();
+    @SubscribeEvent
+    public static void onPlayerConnect(PlayerNegotiationEvent event) {
+        executorService.submit(() -> {
+            try {
+                doPlayerConnect(event);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
     }
 
     @SubscribeEvent
