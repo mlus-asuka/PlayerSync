@@ -150,7 +150,7 @@ public class ModsSupport {
                 for (int i = 0; i < dynStacks.getSlots(); i++) {
                     ItemStack stack = dynStacks.getStackInSlot(i);
                     if (!stack.isEmpty()) {
-                        String serialized = VanillaSync.serialize(stack.serializeNBT().toString());
+                        String serialized = VanillaSync.serialize(VanillaSync.serializeNBT(stack).toString());
                         flatMap.put(slotType + ":" + i, serialized);
                     }
                 }
