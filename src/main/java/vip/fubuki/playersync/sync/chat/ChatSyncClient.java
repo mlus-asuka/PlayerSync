@@ -23,9 +23,6 @@ public class ChatSyncClient {
     private static final int RECONNECT_DELAY = 5000;
     private static final int MAX_RECONNECT_ATTEMPTS = 10;
 
-    private static volatile long lastHeartbeat = System.currentTimeMillis();
-    private static final long HEARTBEAT_INTERVAL = 15000;
-
     public void run() {
         int reconnectAttempts = 0;
 
@@ -48,33 +45,25 @@ public class ChatSyncClient {
                         15000
                 );
 
-                clientSocket.setSoTimeout(30000);
+                clientSocket.setSoTimeout(0);
 
                 out = new PrintWriter(new BufferedWriter(
                         new OutputStreamWriter(clientSocket.getOutputStream())), true);
 
                 PlayerSync.LOGGER.info("Successfully connected to chat server");
                 reconnectAttempts = 0;
-                lastHeartbeat = System.currentTimeMillis();
-
-                startHeartbeatMonitor();
 
                 BufferedReader in = new BufferedReader(
                         new InputStreamReader(clientSocket.getInputStream()));
 
                 String serverMessage;
                 while (running && (serverMessage = in.readLine()) != null) {
-                    lastHeartbeat = System.currentTimeMillis();
-
-                    if ("<heartbeat>".equals(serverMessage)) {
-                        continue;
-                    }
-
-                    PlayerSync.LOGGER.info("Received message from chat server: " + serverMessage);
                     Component textComponents = Component.nullToEmpty(serverMessage);
                     if(playerList != null){
                         playerList.getServer().execute(() ->
                                 playerList.broadcastSystemMessage(textComponents, false));
+                    }else {
+                        PlayerSync.LOGGER.info("Received message from chat server: " + serverMessage);
                     }
                 }
 
@@ -102,32 +91,6 @@ public class ChatSyncClient {
                 }
             }
         }
-    }
-
-    private void startHeartbeatMonitor() {
-        Thread heartbeatThread = new Thread(() -> {
-            while (running && clientSocket != null && !clientSocket.isClosed()) {
-                try {
-                    Thread.sleep(10000); // 每10秒检查一次
-
-                    long now = System.currentTimeMillis();
-                    if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
-                        PlayerSync.LOGGER.warn("No heartbeat for {}ms, sending test message",
-                                now - lastHeartbeat);
-
-                        // 发送测试消息检查连接
-                        if (out != null) {
-                            out.println("<heartbeat>");
-                        }
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
-        }, "ChatSync-Heartbeat");
-        heartbeatThread.setDaemon(true);
-        heartbeatThread.start();
     }
 
     private void closeConnection() {
