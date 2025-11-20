@@ -1,4 +1,4 @@
-package vip.fubuki.playersync.sync;
+package vip.fubuki.playersync.sync.addons;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.nbt.CompoundTag;
@@ -12,6 +12,7 @@ import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
 import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
 import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import vip.fubuki.playersync.PlayerSync;
+import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 
@@ -116,6 +117,7 @@ public class ModsSupport {
                             CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
+                            net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setDirty();
                             PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
                         }
                         rsBackpack.close();

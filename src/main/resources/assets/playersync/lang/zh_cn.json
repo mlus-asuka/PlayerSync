@@ -1,5 +1,7 @@
 {
   "playersync.item_placeholder_description": "物品在此服务器未知。这可能是一个模组物品,或是不同版本的原版物品。\n这张券将会在加入可识别此物品的服务器后自动替换为对应物品。",
   "playersync.item_placeholder_title": "物品券",
-  "playersync.already_online": "你不能同时加入多个同步的服务器。"
+  "playersync.already_online": "你不能同时加入多个同步的服务器。",
+  "playersync.sqlexception": "检测到Sql异常!连接已中断,请联系管理员",
+  "playersync.wrong_entity_status": "在世界中尝试创建玩家实体时发生了错误,请尝试重新进入"
 }

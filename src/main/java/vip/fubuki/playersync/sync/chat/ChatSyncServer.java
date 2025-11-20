@@ -26,12 +26,10 @@ public class ChatSyncServer {
             serverSocket.setReuseAddress(true);
             PlayerSync.LOGGER.info("Chat server started successfully on port {}", JdbcConfig.CHAT_SERVER_PORT.get());
 
-            startHeartbeatBroadcast();
-
             while (running && !Thread.currentThread().isInterrupted()) {
                 try {
                     Socket newSocket = serverSocket.accept();
-                    newSocket.setSoTimeout(30000);
+                    newSocket.setSoTimeout(0);
                     SocketList.add(newSocket);
                     executorService.submit(() -> handleClient(newSocket));
                     PlayerSync.LOGGER.info("New client connected, total clients: {}", SocketList.size());
@@ -54,7 +52,6 @@ public class ChatSyncServer {
 
             String message;
             while (running && (message = reader.readLine()) != null) {
-                PlayerSync.LOGGER.info("Received message from {}: {}", clientInfo, message);
                 broadcastMessage(socket, message);
             }
 
@@ -92,47 +89,6 @@ public class ChatSyncServer {
                         // Ignore
                     }
                 }
-            }
-        }
-    }
-
-    private void startHeartbeatBroadcast() {
-        Thread heartbeatThread = new Thread(() -> {
-            while (running) {
-                try {
-                    Thread.sleep(20000);
-                    broadcastHeartbeat();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
-        }, "ChatSync-Server-Heartbeat");
-        heartbeatThread.setDaemon(true);
-        heartbeatThread.start();
-    }
-
-    private void broadcastHeartbeat() {
-        Iterator<Socket> iterator = SocketList.iterator();
-        while (iterator.hasNext()) {
-            Socket socket = iterator.next();
-            if (!socket.isClosed()) {
-                try {
-                    PrintWriter writer = new PrintWriter(
-                            new BufferedWriter(
-                                    new OutputStreamWriter(socket.getOutputStream())), true);
-                    writer.println("<heartbeat>");
-                } catch (IOException e) {
-                    PlayerSync.LOGGER.warn("Failed to send heartbeat to client, removing: {}", e.getMessage());
-                    iterator.remove();
-                    try {
-                        socket.close();
-                    } catch (IOException ex) {
-                        // Ignore
-                    }
-                }
-            } else {
-                iterator.remove();
             }
         }
     }
