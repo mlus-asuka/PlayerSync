@@ -191,6 +191,11 @@ public class PlayerSync {
         rsAdvCol.close();
         // ----- END NEW BLOCK -----
 
+        try {
+            JDBCsetUp.executeUpdate("UPDATE player_data SET online=0 WHERE last_server=" + JdbcConfig.SERVER_ID.get() +" AND online=1 LIMIT 1000");
+        } catch (Exception e) {
+            LOGGER.error("An exception occurred while trying change wrong player-status\n" + e.getMessage());
+        }
         LOGGER.info("PlayerSync is ready!");
     }
 
