@@ -162,8 +162,8 @@ public class VanillaSync {
         try {
             String player_uuid = event.getProfile().getId().toString();
             PlayerSync.LOGGER.info("Detected connection from player" + player_uuid + ",starting checking");
-            boolean online = false;
-            int lastServer = -1;
+            boolean online;
+            int lastServer;
 
             // First query: check basic player data and check whether player can join into server.
             JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
@@ -490,8 +490,7 @@ public class VanillaSync {
                 dynamicTagInput,
                 snbtDataVersion,
                 currentDataVersion);
-        CompoundTag compoundTag = (CompoundTag) updatedDynamicTag.getValue();
-        return compoundTag;
+        return (CompoundTag) updatedDynamicTag.getValue();
     }
 
     /**
