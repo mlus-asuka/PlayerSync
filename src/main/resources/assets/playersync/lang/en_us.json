@@ -3,5 +3,6 @@
   "playersync.placeholder_titel_override": "Item Voucher",
   "playersync.item_placeholder_title": "Item Voucher",
   "playersync.already_online": "You can't join more than one synchronization server at the same time.",
-  "playersync.sqlexception": "SqlException detected!Connection lost,please contact with your admin."
+  "playersync.sqlexception": "SqlException detected!Connection lost,please contact with your admin.",
+  "playersync.wrong_entity_status": "An error occurred while creating playerEntity in the world,please login again."
 }

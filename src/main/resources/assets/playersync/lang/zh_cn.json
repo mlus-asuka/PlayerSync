@@ -3,5 +3,6 @@
   "playersync.placeholder_titel_override": "未知物品凭证",
   "playersync.item_placeholder_title": "未知物品凭证",
   "playersync.already_online": "你不能同时加入多个在线的数据互通的服务器",
-  "playersync.sqlexception": "检测到Sql异常!连接已中断,请联系管理员"
+  "playersync.sqlexception": "检测到Sql异常!连接已中断,请联系管理员",
+  "playersync.wrong_entity_status": "在世界中尝试创建玩家实体时发生了错误,请尝试重新进入"
 }

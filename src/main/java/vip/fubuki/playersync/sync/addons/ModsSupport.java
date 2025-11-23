@@ -1,4 +1,4 @@
-package vip.fubuki.playersync.sync;
+package vip.fubuki.playersync.sync.addons;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.nbt.CompoundTag;
@@ -12,6 +12,7 @@ import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
 import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
 import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import vip.fubuki.playersync.PlayerSync;
+import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 
@@ -135,7 +136,30 @@ public class ModsSupport {
      */
     public void onPlayerLeave(net.minecraft.world.entity.player.Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
-            StoreCurios(player, false);
+            if (player.isDeadOrDying()) {
+                if (!CuriosCache.curiosCache.isEmpty()) {
+                    UUID playerUuid = player.getUUID();
+                    if (CuriosCache.curiosCache.get(playerUuid) != null) {
+                        CuriosCache.CuriosCacheEntry cacheEntry = CuriosCache.curiosCache.get(playerUuid);
+                        String serializedData = cacheEntry.serializedData;
+                        JDBCsetUp.executeUpdate("UPDATE curios SET curios_item = '" + serializedData + "' WHERE uuid = '" + player.getUUID() + "'");
+                        CuriosCache.curiosCache.remove(playerUuid);
+                        PlayerSync.LOGGER.info("Saving curios data for a dead-or-dying player {} Successfully", player.getStringUUID());
+                    } else {
+                        PlayerSync.LOGGER.error("Failed to find the cache of the logged out dead-or-dying player");
+                        PlayerSync.LOGGER.error("The dead-or-dying player uuid is" + player.getStringUUID());
+                        PlayerSync.LOGGER.error("Using default data...");
+                        StoreCurios(player, false);
+                    }
+                } else {
+                    PlayerSync.LOGGER.warn("No curios cache found while executing a dead-or-dying player logout event.you can ignore this warning if keep-inventory is false");
+                    PlayerSync.LOGGER.warn("The dead-or-dying player uuid is" + player.getStringUUID());
+                    PlayerSync.LOGGER.warn("Using default data...");
+                    StoreCurios(player, false);
+                }
+            } else {
+                StoreCurios(player, false);
+            }
         }
     }
 
