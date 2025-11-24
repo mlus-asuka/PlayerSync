@@ -37,9 +37,6 @@ import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.server.ServerLifecycleHooks;
-import top.theillusivec4.curios.api.CuriosApi;
-import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
-import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.sync.addons.CuriosCache;
@@ -181,7 +178,7 @@ public class VanillaSync {
                         long last_update = rs2.getLong("last_update");
                         boolean enable = rs2.getBoolean("enable");
                         if (enable && System.currentTimeMillis() < last_update + 300000.0) {
-                            event.getConnection().disconnect(Component.translatable("playersync.already_online"));
+                            event.getConnection().disconnect(Component.translatableWithFallback("playersync.already_online","You can't join more than one synchronization server at the same time."));
                             qr2.connection().close();
                             return;
                         }
@@ -192,12 +189,13 @@ public class VanillaSync {
             }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("SqlException detected!", e);
-            event.getConnection().disconnect(Component.translatable("playersync.sqlexception"));
+            event.getConnection().disconnect(Component.translatableWithFallback("playersync.sqlexception","SqlException detected!Connection lost,please contact with your admin."));
         }
     }
 
     // Use string uuid as key
     public static Set<String> deadPlayerWhileLogging = ConcurrentHashMap.newKeySet();
+    public static Set<String> syncNotCompletedPlayer = ConcurrentHashMap.newKeySet();
 
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         ServerPlayer joinedPlayer = (ServerPlayer) event.getEntity();
@@ -236,7 +234,7 @@ public class VanillaSync {
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("An error occurred while trying to execute a dead or dying player" + e.getMessage());
             }
-            joinedPlayer.connection.disconnect(Component.translatable("playersync.wrong_entity_status"));
+            joinedPlayer.connection.disconnect(Component.translatableWithFallback("playersync.wrong_entity_status","An error occurred while creating playerEntity in the world,please login again."));
             return;
         }
 
@@ -244,6 +242,7 @@ public class VanillaSync {
             PlayerSync.LOGGER.info("Starting synchronization for player " + player_uuid);
 
             // First query: check basic player data
+            syncNotCompletedPlayer.add(player_uuid);
             JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
             ResultSet rs1 = qr1.resultSet();
             ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
@@ -258,6 +257,8 @@ public class VanillaSync {
                 JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
                 rs1.close();
                 qr1.close();
+                PlayerSync.LOGGER.info("New player detected,init completed.");
+                syncNotCompletedPlayer.remove(player_uuid);
                 return;
             }
 
@@ -333,8 +334,11 @@ public class VanillaSync {
             qr2.close();
             rs1.close();
             qr1.close();
+            PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
+            syncNotCompletedPlayer.remove(player_uuid);
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
+            syncNotCompletedPlayer.remove(player_uuid);
         }
     }
 
@@ -558,9 +562,13 @@ public class VanillaSync {
     public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException {
         String player_uuid = event.getEntity().getUUID().toString();
         if (deadPlayerWhileLogging.contains(player_uuid)) {
-            PlayerSync.LOGGER.warn("A dead or dying player was kicked,which uuid is:" + player_uuid);
+            PlayerSync.LOGGER.warn("A dead or dying player was kicked,which uuid is:{}", player_uuid);
             JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
             deadPlayerWhileLogging.remove(player_uuid);
+        } else if (syncNotCompletedPlayer.contains(player_uuid)) {
+            PlayerSync.LOGGER.warn("A player logged out with uncompleted sync data,which uuid is:{}.For the safety,the new data won't be saved", player_uuid);
+            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+            syncNotCompletedPlayer.remove(player_uuid);
         } else {
             // Mod support
             ModsSupport modsSupport = new ModsSupport();
