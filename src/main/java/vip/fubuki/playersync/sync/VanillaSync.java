@@ -4,12 +4,15 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.serialization.Dynamic;
 import net.minecraft.ChatFormatting;
 import net.minecraft.SharedConstants;
+import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.*;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.Style;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.PlayerAdvancements;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.util.datafix.fixes.References;
@@ -20,9 +23,12 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.WorldData;
+import net.minecraftforge.common.util.LazyOptional;
 import net.minecraftforge.event.OnDatapackSyncEvent;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerNegotiationEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
@@ -31,8 +37,13 @@ import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.server.ServerLifecycleHooks;
+import top.theillusivec4.curios.api.CuriosApi;
+import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
+import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
+import vip.fubuki.playersync.sync.addons.CuriosCache;
+import vip.fubuki.playersync.sync.addons.ModsSupport;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 import vip.fubuki.playersync.util.PSThreadPoolFactory;
@@ -44,13 +55,16 @@ import java.nio.file.Files;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Mod.EventBusSubscriber
 public class VanillaSync {
 
-    public static void register() {}
+    public static void register() {
+    }
 
     static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
 
@@ -182,9 +196,51 @@ public class VanillaSync {
         }
     }
 
+    // Use string uuid as key
+    public static Set<String> deadPlayerWhileLogging = ConcurrentHashMap.newKeySet();
+
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
+        ServerPlayer joinedPlayer = (ServerPlayer) event.getEntity();
+        String player_uuid = joinedPlayer.getUUID().toString();
+        if (joinedPlayer.isDeadOrDying()) {
+            deadPlayerWhileLogging.add(player_uuid);
+            joinedPlayer.removeTag("player_synced");
+
+            // Simulate normal death behavior
+            MinecraftServer server = joinedPlayer.getServer();
+            if (server != null) {
+                ResourceKey<Level> respawnLevel = joinedPlayer.getRespawnDimension();
+                BlockPos respawnPos = joinedPlayer.getRespawnPosition();
+                double respawnX;
+                double respawnY;
+                double respawnZ;
+                if (respawnPos != null && respawnLevel != null) {
+                    ServerLevel level = server.getLevel(respawnLevel);
+                    respawnX = respawnPos.getX();
+                    respawnY = respawnPos.getY();
+                    respawnZ = respawnPos.getZ();
+                    if (level != null) {
+                        joinedPlayer.teleportTo(level, respawnX, respawnY + 1, respawnZ, 0, 0);
+                    }
+                } else {
+                    PlayerSync.LOGGER.debug("Player " + player_uuid + " has no respawn point");
+                }
+            } else {
+                PlayerSync.LOGGER.warn("Trying to get server,but got a null");
+            }
+
+            joinedPlayer.setHealth(1);
+            try {
+                JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+                JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+            } catch (SQLException e) {
+                PlayerSync.LOGGER.error("An error occurred while trying to execute a dead or dying player" + e.getMessage());
+            }
+            joinedPlayer.connection.disconnect(Component.translatable("playersync.wrong_entity_status"));
+            return;
+        }
+
         try {
-            String player_uuid = event.getEntity().getUUID().toString();
             PlayerSync.LOGGER.info("Starting synchronization for player " + player_uuid);
 
             // First query: check basic player data
@@ -196,11 +252,12 @@ public class VanillaSync {
             ModsSupport modsSupport = new ModsSupport();
             modsSupport.onPlayerJoin(serverPlayer);
 
-            if (!rs1.next()){
+            if (!rs1.next()) {
                 store(event.getEntity(), true);
                 JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
                 JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
                 rs1.close();
+                qr1.close();
                 return;
             }
 
@@ -213,7 +270,12 @@ public class VanillaSync {
 
             if (rs2.next()) {
                 // Restore basic attributes
-                serverPlayer.setHealth(rs2.getInt("health"));
+                int health = rs2.getInt("health");
+                if (health <= 0) {
+                    serverPlayer.setHealth(1);
+                } else {
+                    serverPlayer.setHealth(health);
+                }
                 serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
 
                 setXpForPlayer(serverPlayer, rs2.getInt("xp"));
@@ -268,6 +330,9 @@ public class VanillaSync {
             serverPlayer.addTag("player_synced");
 
             rs2.close();
+            qr2.close();
+            rs1.close();
+            qr1.close();
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
         }
@@ -383,7 +448,7 @@ public class VanillaSync {
         loreList.add(StringTag.valueOf(Component.Serializer.toJson(Component.literal(""))));
 
         String placeholderItemDescriptionOverride = JdbcConfig.ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE.get();
-        String placeholderItemDescriptionLines = placeholderItemDescriptionOverride != null && ! placeholderItemDescriptionOverride.isBlank()
+        String placeholderItemDescriptionLines = placeholderItemDescriptionOverride != null && !placeholderItemDescriptionOverride.isBlank()
                 ? placeholderItemDescriptionOverride
                 : Component.translatable("playersync.item_placeholder_description").getString();
 
@@ -416,6 +481,7 @@ public class VanillaSync {
     /**
      * Deserializes a string from the database back into an NBT string.
      * Handles both the new Base64 format (prefixed with "B64:") and the old custom format.
+     *
      * @param encoded The string retrieved from the database.
      * @return The deserialized NBT string.
      */
@@ -441,6 +507,7 @@ public class VanillaSync {
      * Serializes an NBT string for database storage.
      * Uses Base64 encoding by default (prefixed with "B64:").
      * If USE_LEGACY_SERIALIZATION config is true, uses the old custom replacement format.
+     *
      * @param object The NBT string to serialize.
      * @return The serialized string.
      */
@@ -449,10 +516,10 @@ public class VanillaSync {
         if (JdbcConfig.USE_LEGACY_SERIALIZATION.get()) {
             // Use old custom replacement logic
             return object.replace(",", "|")
-                         .replace("\"", "^")
-                         .replace("{", "<")
-                         .replace("}", ">")
-                         .replace("'", "~");
+                    .replace("\"", "^")
+                    .replace("{", "<")
+                    .replace("}", ">")
+                    .replace("'", "~");
         }
 
         // Base64 encode with a "B64:" marker for new data
@@ -489,16 +556,23 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException {
-        // Mod support
-        ModsSupport modsSupport = new ModsSupport();
-        modsSupport.onPlayerLeave(event.getEntity());
-        executorService.submit(() -> {
-            try {
-                doPlayerLogout(event);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        });
+        String player_uuid = event.getEntity().getUUID().toString();
+        if (deadPlayerWhileLogging.contains(player_uuid)) {
+            PlayerSync.LOGGER.warn("A dead or dying player was kicked,which uuid is:" + player_uuid);
+            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+            deadPlayerWhileLogging.remove(player_uuid);
+        } else {
+            // Mod support
+            ModsSupport modsSupport = new ModsSupport();
+            modsSupport.onPlayerLeave(event.getEntity());
+            executorService.submit(() -> {
+                try {
+                    doPlayerLogout(event);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
     }
 
     // Helper function to get the NBT string to be saved
@@ -558,7 +632,7 @@ public class VanillaSync {
             ender_chest.put(i, getNbtForStorage(player.getEnderChestInventory().getItem(i)));
         }
 
-        if(ModList.get().isLoaded("sophisticatedbackpacks")){
+        if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             ModsSupport.storeSophisticatedBackpacks(player);
         }
 
@@ -576,7 +650,7 @@ public class VanillaSync {
         if (JdbcConfig.SYNC_ADVANCEMENTS.get()) {
             File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory();
             final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-            if (server != null && server.isDedicatedServer() ) {
+            if (server != null && server.isDedicatedServer()) {
                 PlayerSync.LOGGER.trace("Reading dedicated server advancements");
                 advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
             } else {
@@ -658,6 +732,8 @@ public class VanillaSync {
     // New fields for auto-save
     private static int autoSaveTickCounter = 0;
     private static final int AUTO_SAVE_INTERVAL_TICKS = 1200; // Every Minute
+    private static int autoCleanCuriosCacheTickCounter = 0;
+    private static final int AUTO_CLEAN_CURIOS_CACHE_INTERVAL_TICKS = 36000; // Every 30 min
 
     //AutoSave
     @SubscribeEvent
@@ -665,6 +741,7 @@ public class VanillaSync {
         // Run at the end phase to avoid interfering with game logic
         if (event.phase == TickEvent.Phase.END) {
             autoSaveTickCounter++;
+            autoCleanCuriosCacheTickCounter++;
             if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
                 autoSaveTickCounter = 0;
                 // Retrieve the current server instance
@@ -687,9 +764,18 @@ public class VanillaSync {
                                 PlayerSync.LOGGER.error("Error auto-saving Curios data for player " + player.getUUID(), e);
                             }
                         });
-
                     }
                 }
+            }
+            if (autoCleanCuriosCacheTickCounter >= AUTO_CLEAN_CURIOS_CACHE_INTERVAL_TICKS) {
+                autoCleanCuriosCacheTickCounter = 0;
+                executorService.submit(() -> {
+                    try {
+                        CuriosCache.RemoveExpiredCuriosCache();
+                    } catch (Exception e) {
+                        PlayerSync.LOGGER.error("An error occurred while cleaning curios cache:" + e.getMessage());
+                    }
+                });
             }
         }
     }
@@ -740,5 +826,13 @@ public class VanillaSync {
                 + totalXp + " XP.");
 
         return totalXp;
+    }
+
+    @SubscribeEvent
+    //Don't know what will happen if a fake player is killed,need more test.
+    public static void onPlayerDeath(LivingDeathEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player && !deadPlayerWhileLogging.contains(event.getEntity().getUUID().toString())) {
+            CuriosCache.tryStoreCuriosToCache(player);
+        }
     }
 }
