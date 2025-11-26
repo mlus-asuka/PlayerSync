@@ -111,6 +111,7 @@ public class ModsSupport {
                                         CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
                                         // Update BackpackStorage with the retrieved NBT
                                         net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
+                                        net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setDirty();
                                         PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
                                     }
                                     rsBackpack.close();
@@ -161,6 +162,11 @@ public class ModsSupport {
                 StoreCurios(player, false);
             }
         }
+
+        if (ModList.get().isLoaded("sophisticatedbackpacks")) {
+            ModsSupport.storeSophisticatedBackpacks(player);
+        }
+
     }
 
     public void StoreCurios(net.minecraft.world.entity.player.Player player, boolean init) throws SQLException {

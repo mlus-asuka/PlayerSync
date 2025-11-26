@@ -640,10 +640,6 @@ public class VanillaSync {
             ender_chest.put(i, getNbtForStorage(player.getEnderChestInventory().getItem(i)));
         }
 
-        if (ModList.get().isLoaded("sophisticatedbackpacks")) {
-            ModsSupport.storeSophisticatedBackpacks(player);
-        }
-
         // Effects
         Map<MobEffect, MobEffectInstance> effects = player.getActiveEffectsMap();
         Map<Integer, String> effectMap = new HashMap<>();
