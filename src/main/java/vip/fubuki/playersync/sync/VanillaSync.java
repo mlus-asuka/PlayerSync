@@ -558,9 +558,13 @@ public class VanillaSync {
     public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException {
         String player_uuid = event.getEntity().getUUID().toString();
         if (deadPlayerWhileLogging.contains(player_uuid)) {
-            PlayerSync.LOGGER.warn("A dead or dying player was kicked,which uuid is:" + player_uuid);
+            PlayerSync.LOGGER.warn("A dead or dying player was kicked,which uuid is:{}", player_uuid);
             JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
             deadPlayerWhileLogging.remove(player_uuid);
+        } else if (syncNotCompletedPlayer.contains(player_uuid)) {
+            PlayerSync.LOGGER.warn("A player logged out with uncompleted sync data,which uuid is:{}.For the safety,the new data won't be saved", player_uuid);
+            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+            syncNotCompletedPlayer.remove(player_uuid);
         } else {
             // Mod support
             ModsSupport modsSupport = new ModsSupport();
@@ -604,7 +608,7 @@ public class VanillaSync {
         PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
 
         // Basic Attributes
-        int XP = player.totalExperience;
+        int XP = getTotalExperience(player);
         int score = player.getScore();
         int food_level = player.getFoodData().getFoodLevel();
         int health = (int) player.getHealth();
@@ -650,7 +654,7 @@ public class VanillaSync {
         if (JdbcConfig.SYNC_ADVANCEMENTS.get()) {
             File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory().toFile();
             final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-            if (server != null && server.isDedicatedServer() ) {
+            if (server != null && server.isDedicatedServer()) {
                 PlayerSync.LOGGER.trace("Reading dedicated server advancements");
                 advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
             } else {

@@ -23,8 +23,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import static vip.fubuki.playersync.sync.VanillaSync.deserializeString;
-
 
 public class ModsSupport {
 
@@ -101,11 +99,10 @@ public class ModsSupport {
             PlayerSync.LOGGER.info("Restoring backpack data for player " + player.getUUID());
             net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
                 net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper backpackWrapper = net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper
-                        .fromData(backpackItem);
+                        .fromStack(backpackItem);
 
                 // Retrieve the contents UUID from the backpack's NBT using NBTHelper
-                Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper
-                        .getUniqueId(backpackWrapper.getBackpack(), "contentsUuid");
+                Optional<UUID> uuidOpt = backpackWrapper.getContentsUuid();
                 if (uuidOpt.isPresent()) {
                     UUID contentsUuid = uuidOpt.get();
                     try {
@@ -113,7 +110,7 @@ public class ModsSupport {
                         ResultSet rsBackpack = qrBackpack.resultSet();
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
-                            String nbtString = deserializeString(serialized);
+                            String nbtString = VanillaSync.deserializeString(serialized);
                             CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
@@ -176,11 +173,10 @@ public class ModsSupport {
         PlayerSync.LOGGER.info("Storing backpack data for player " + player.getUUID());
         net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
             net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper backpackWrapper = net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper
-                    .fromData(backpackItem);
+                    .fromStack(backpackItem);
 
             // Retrieve the contents UUID from the backpack's NBT using NBTHelper
-            Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper
-                    .getUniqueId(backpackWrapper.getBackpack(), "contentsUuid");
+            Optional<UUID> uuidOpt = backpackWrapper.getContentsUuid();
             if (uuidOpt.isPresent()) {
                 UUID contentsUuid = uuidOpt.get();
                 // Get internal backpack data from BackpackStorage (creates it if missing)

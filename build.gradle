@@ -104,10 +104,13 @@ configurations {
 
 dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
-    compileOnly "maven.modrinth:curios:7.4.3+1.20.4"
-    compileOnly "curse.maven:sophisticated-backpacks-422301:5297718"
-    compileOnly "curse.maven:sophisticated-core-618298:5296142"
+    compileOnly "curse.maven:curios-309927:6529130"
+    compileOnly "curse.maven:sophisticated-backpacks-422301:7169832"
+    compileOnly "curse.maven:sophisticated-core-618298:7168230"
 
+    runtimeOnly "curse.maven:curios-309927:6529130"
+    runtimeOnly "curse.maven:sophisticated-backpacks-422301:7169832"
+    runtimeOnly "curse.maven:sophisticated-core-618298:7168230"
     // embedd the JDBC driver in the mod using jarJar
     runtimeOnly "com.mysql:mysql-connector-j:${jdbc_version}"
     jarJar "com.mysql:mysql-connector-j:${jdbc_version}"
