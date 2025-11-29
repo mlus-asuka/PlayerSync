@@ -25,7 +25,6 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.WorldData;
-import net.minecraftforge.common.util.LazyOptional;
 import net.minecraftforge.event.OnDatapackSyncEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
@@ -55,7 +54,6 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
 
 @Mod.EventBusSubscriber
 public class VanillaSync {
@@ -249,7 +247,7 @@ public class VanillaSync {
 
             // Mod support
             ModsSupport modsSupport = new ModsSupport();
-            modsSupport.onPlayerJoin(serverPlayer);
+            modsSupport.doCuriosRestore(serverPlayer);
 
             if (!rs1.next()) {
                 store(event.getEntity(), true);
@@ -327,6 +325,8 @@ public class VanillaSync {
                     }
                 }
             }
+
+            modsSupport.doBackPackRestore(serverPlayer);
 
             serverPlayer.addTag("player_synced");
 
@@ -638,6 +638,10 @@ public class VanillaSync {
         Map<Integer, String> ender_chest = new HashMap<>();
         for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
             ender_chest.put(i, getNbtForStorage(player.getEnderChestInventory().getItem(i)));
+        }
+
+        if (ModList.get().isLoaded("sophisticatedbackpacks")) {
+            ModsSupport.storeSophisticatedBackpacks(player);
         }
 
         // Effects
