@@ -258,7 +258,7 @@ public class VanillaSync {
 
             // Mod support
             ModsSupport modsSupport = new ModsSupport();
-            modsSupport.onPlayerJoin(serverPlayer);
+            modsSupport.doCuriosRestore(serverPlayer);
 
             if (!rs1.next()) {
                 store(event.getEntity(), true);
@@ -336,6 +336,8 @@ public class VanillaSync {
                     }
                 }
             }
+
+            modsSupport.doBackPackRestore(serverPlayer);
 
             serverPlayer.addTag("player_synced");
 
@@ -648,6 +650,10 @@ public class VanillaSync {
         Map<Integer, String> ender_chest = new HashMap<>();
         for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
             ender_chest.put(i, getNbtForStorage(player.getEnderChestInventory().getItem(i)));
+        }
+
+        if (ModList.get().isLoaded("sophisticatedbackpacks")) {
+            ModsSupport.storeSophisticatedBackpacks(player);
         }
 
         // Effects
