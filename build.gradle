@@ -136,8 +136,8 @@ dependencies {
     // We add the full version to localRuntime, not runtimeOnly, so that we do not publish a dependency on it
     // modLocalRuntime "mezz.jei:jei-${mc_version}-neoforge:${jei_version}"
     compileOnly "curse.maven:curios-309927:5266541"
-    compileOnly "curse.maven:sophisticated-backpacks-422301:6303388"
-    compileOnly "curse.maven:sophisticated-core-618298:6317048"
+    compileOnly "curse.maven:sophisticated-backpacks-422301:7169843"
+    compileOnly "curse.maven:sophisticated-core-618298:7169400"
 
     // Example mod dependency using a mod jar from ./libs with a flat dir repository
     // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar

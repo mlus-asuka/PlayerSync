@@ -25,12 +25,50 @@ import java.util.UUID;
 
 
 public class ModsSupport {
+    public void doBackPackRestore(Player player) {
+        if(ModList.get().isLoaded("sophisticatedbackpacks")){
+            // --- Begin Backpack Data Restore ---
+            PlayerSync.LOGGER.info("Restoring backpack data for player " + player.getUUID());
+            net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
+                backpackItem.getCapability(net.p3pp3rf1y.sophisticatedbackpacks.api.CapabilityBackpackWrapper.getCapabilityInstance())
+                        .ifPresent(wrapper -> {
+                            // Retrieve the contents UUID from the backpack's NBT using NBTHelper
+                            Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper.getUniqueId(wrapper.getBackpack(), "contentsUuid");
+                            if (uuidOpt.isPresent()) {
+                                UUID contentsUuid = uuidOpt.get();
+                                try {
+                                    JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid + "'");
+                                    ResultSet rsBackpack = qrBackpack.resultSet();
+                                    if (rsBackpack.next()) {
+                                        String serialized = rsBackpack.getString("backpack_nbt");
+                                        String nbtString = VanillaSync.deserializeString(serialized);
+                                        CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
+                                        // Update BackpackStorage with the retrieved NBT
+                                        net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
+                                        PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
+                                    }
+                                    rsBackpack.close();
+                                    qrBackpack.connection().close();
+                                } catch (SQLException e) {
+                                    PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
+                                } catch (CommandSyntaxException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            } else {
+                                PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
+                            }
+                        });
+                return false;
+            });
+            // --- End Backpack Data Restore ---
+        }
+    }
 
     /**
      * Restores the Curios inventory for a player.
      * The saved data is stored as a flat map with composite keys ("slotType:index").
      */
-    public void onPlayerJoin(net.minecraft.world.entity.player.Player player) throws SQLException {
+    public void doCuriosRestore(Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
             // Obtain the handler from the API.
             LazyOptional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
@@ -91,42 +129,6 @@ public class ModsSupport {
                 // No stored data; perform an initial save.
                 StoreCurios(player, true);
             }
-        }
-        if(ModList.get().isLoaded("sophisticatedbackpacks")){
-            // --- Begin Backpack Data Restore ---
-            PlayerSync.LOGGER.info("Restoring backpack data for player " + player.getUUID());
-            net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
-                backpackItem.getCapability(net.p3pp3rf1y.sophisticatedbackpacks.api.CapabilityBackpackWrapper.getCapabilityInstance())
-                        .ifPresent(wrapper -> {
-                            // Retrieve the contents UUID from the backpack's NBT using NBTHelper
-                            Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper.getUniqueId(wrapper.getBackpack(), "contentsUuid");
-                            if (uuidOpt.isPresent()) {
-                                UUID contentsUuid = uuidOpt.get();
-                                try {
-                                    JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid + "'");
-                                    ResultSet rsBackpack = qrBackpack.resultSet();
-                                    if (rsBackpack.next()) {
-                                        String serialized = rsBackpack.getString("backpack_nbt");
-                                        String nbtString = VanillaSync.deserializeString(serialized);
-                                        CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
-                                        // Update BackpackStorage with the retrieved NBT
-                                        net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
-                                        PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
-                                    }
-                                    rsBackpack.close();
-                                    qrBackpack.connection().close();
-                                } catch (SQLException e) {
-                                    PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
-                                } catch (CommandSyntaxException e) {
-                                    throw new RuntimeException(e);
-                                }
-                            } else {
-                                PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
-                            }
-                        });
-                return false;
-            });
-            // --- End Backpack Data Restore ---
         }
     }
 
