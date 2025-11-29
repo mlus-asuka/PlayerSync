@@ -25,17 +25,7 @@ import java.util.UUID;
 
 
 public class ModsSupport {
-
-    /**
-     * Restores the Curios inventory for a player.
-     * The saved data is stored as a flat map with composite keys ("slotType:index").
-     */
-    public void onPlayerJoin(net.minecraft.world.entity.player.Player player) throws SQLException {
-        doRestoreCurios(player);
-        doRestoreBackpacks(player);
-    }
-
-    private static void doRestoreBackpacks(Player player) {
+    public void doBackPackRestore(Player player) {
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             // --- Begin Backpack Data Restore ---
             PlayerSync.LOGGER.info("Restoring backpack data for player " + player.getUUID());
@@ -73,8 +63,11 @@ public class ModsSupport {
             // --- End Backpack Data Restore ---
         }
     }
-
-    private void doRestoreCurios(Player player) throws SQLException {
+    /**
+     * Restores the Curios inventory for a player.
+     * The saved data is stored as a flat map with composite keys ("slotType:index").
+     */
+    public void doCuriosRestore(Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
             // Obtain the handler from the API.
             Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);

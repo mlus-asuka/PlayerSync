@@ -52,6 +52,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
@@ -91,13 +92,14 @@ public class VanillaSync {
         }
 
         // Restore Advancements
-        File gameDir = Objects.requireNonNull(serverPlayer.getServer()).getServerDirectory().toFile();
+        Path path = serverPlayer.getServer().getServerDirectory().resolve(getSyncWorldForServer());
+        File gameDir = path.toFile();
 
         final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server.isDedicatedServer()) {
             PlayerSync.LOGGER.debug("Attempting to write dedicated server advancement file");
             File advancements = new File(gameDir,
-                    getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
+                    "/advancements" + "/" + player_uuid + ".json");
             byte[] bytes = advancementsResultSet.getString("advancements").getBytes();
             advancementsResultSet.close();
 
@@ -248,6 +250,10 @@ public class VanillaSync {
             ResultSet rs1 = qr1.resultSet();
             ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
 
+            // Mod support
+            ModsSupport modsSupport = new ModsSupport();
+            modsSupport.doCuriosRestore(serverPlayer);
+
             if (!rs1.next()) {
                 store(event.getEntity(), true);
                 JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
@@ -268,7 +274,12 @@ public class VanillaSync {
 
             if (rs2.next()) {
                 // Restore basic attributes
-                serverPlayer.setHealth(rs2.getInt("health"));
+                int health = rs2.getInt("health");
+                if (health <= 0) {
+                    serverPlayer.setHealth(1);
+                } else {
+                    serverPlayer.setHealth(health);
+                }
                 serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
 
                 setXpForPlayer(serverPlayer, rs2.getInt("xp"));
@@ -320,19 +331,14 @@ public class VanillaSync {
                 }
             }
 
-            serverPlayer.addTag("player_synced");
+            modsSupport.doBackPackRestore(serverPlayer);
 
-            PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
+            serverPlayer.addTag("player_synced");
 
             rs2.close();
             qr2.close();
             rs1.close();
             qr1.close();
-
-            // Mod support
-            ModsSupport modsSupport = new ModsSupport();
-            modsSupport.onPlayerJoin(serverPlayer);
-
             PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
             syncNotCompletedPlayer.remove(player_uuid);
         } catch (Exception e) {
@@ -466,6 +472,7 @@ public class VanillaSync {
     /**
      * Deserializes a string from the database back into an NBT string.
      * Handles both the new Base64 format (prefixed with "B64:") and the old custom format.
+     *
      * @param encoded The string retrieved from the database.
      * @return The deserialized NBT string.
      */
@@ -491,6 +498,7 @@ public class VanillaSync {
      * Serializes an NBT string for database storage.
      * Uses Base64 encoding by default (prefixed with "B64:").
      * If USE_LEGACY_SERIALIZATION config is true, uses the old custom replacement format.
+     *
      * @param object The NBT string to serialize.
      * @return The serialized string.
      */
@@ -635,12 +643,14 @@ public class VanillaSync {
         File advancements = null;
         byte[] advancementBytes = new byte[0];
         if (JdbcConfig.SYNC_ADVANCEMENTS.get()) {
-            File gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory().toFile();
+            Path path = player.getServer().getServerDirectory().resolve(getSyncWorldForServer());
+            File gameDir = path.toFile();
             final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server != null && server.isDedicatedServer()) {
                 PlayerSync.LOGGER.trace("Reading dedicated server advancements");
-                advancements = new File(gameDir, getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
+                advancements = new File(gameDir,"/advancements" + "/" + player_uuid + ".json");
             } else {
+                gameDir = Objects.requireNonNull(player.getServer()).getServerDirectory().toFile();
                 PlayerSync.LOGGER.debug("Reading non-dedicated server advancements");
                 File[] files = scanAdvancementsFile(player_uuid, gameDir);
                 long latestModifiedDate = 0;
@@ -668,7 +678,7 @@ public class VanillaSync {
 
         // SQL Operation for player data
         if (init) {
-            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,left_hand,cursors,online) VALUES ('" + player_uuid + "','" + equipment + "','" + inventoryMap + "','" + ender_chest + "','" + advancements + "','" + effectMap + "','" + XP + "','" + food_level + "','" + health + "','" + score + "','" + left_hand + "','" + cursors + "',online=true)");
+            JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,left_hand,cursors,online) VALUES ('" + player_uuid + "','" + equipment + "','" + inventoryMap + "','" + ender_chest + "','" + json + "','" + effectMap + "','" + XP + "','" + food_level + "','" + health + "','" + score + "','" + left_hand + "','" + cursors + "',online=true)");
         } else {
             JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '" + inventoryMap + "',armor='" + equipment + "' ,xp='" + XP + "',effects='" + effectMap + "',enderchest='" + ender_chest + "',score='" + score + "',food_level='" + food_level + "',health='" + health + "',advancements='" + json + "',left_hand='" + left_hand + "',cursors='" + cursors + "' WHERE uuid = '" + player_uuid + "'");
         }
