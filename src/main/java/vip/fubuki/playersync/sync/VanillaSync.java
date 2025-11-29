@@ -179,7 +179,7 @@ public class VanillaSync {
                         long last_update = rs2.getLong("last_update");
                         boolean enable = rs2.getBoolean("enable");
                         if (enable && System.currentTimeMillis() < last_update + 300000.0) {
-                            event.getConnection().disconnect(Component.translatable("playersync.already_online"));
+                            event.getConnection().disconnect(Component.translatableWithFallback("playersync.already_online","You can't join more than one synchronization server at the same time."));
                             qr2.connection().close();
                             return;
                         }
@@ -190,7 +190,7 @@ public class VanillaSync {
             }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("SqlException detected!", e);
-            event.getConnection().disconnect(Component.translatable("playersync.sqlexception"));
+            event.getConnection().disconnect(Component.translatableWithFallback("playersync.sqlexception","SqlException detected!Connection lost,please contact with your admin."));
         }
     }
 
@@ -198,7 +198,7 @@ public class VanillaSync {
     public static Set<String> deadPlayerWhileLogging = ConcurrentHashMap.newKeySet();
     public static Set<String> syncNotCompletedPlayer = ConcurrentHashMap.newKeySet();
 
-    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) throws SQLException, CommandSyntaxException, IOException {
+    public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         ServerPlayer joinedPlayer = (ServerPlayer) event.getEntity();
         String player_uuid = joinedPlayer.getUUID().toString();
         if (joinedPlayer.isDeadOrDying()) {
@@ -243,13 +243,10 @@ public class VanillaSync {
             PlayerSync.LOGGER.info("Starting synchronization for player " + player_uuid);
 
             // First query: check basic player data
+            syncNotCompletedPlayer.add(player_uuid);
             JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
             ResultSet rs1 = qr1.resultSet();
             ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
-
-            // Mod support
-            ModsSupport modsSupport = new ModsSupport();
-            modsSupport.onPlayerJoin(serverPlayer);
 
             if (!rs1.next()) {
                 store(event.getEntity(), true);
@@ -261,29 +258,11 @@ public class VanillaSync {
                 syncNotCompletedPlayer.remove(player_uuid);
                 return;
             }
-            boolean online = rs1.getBoolean("online");
-            int lastServer = rs1.getInt("last_server");
 
             // Second query: retrieve full player data
             JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='" + player_uuid + "'");
             ResultSet rs2 = qr2.resultSet();
 
-            // Check if player is already online on another server
-            if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
-                JDBCsetUp.QueryResult qr3 = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='" + lastServer + "'");
-                ResultSet rs3 = qr3.resultSet();
-                if (rs3.next()) {
-                    long last_update = rs3.getLong("last_update");
-                    boolean enable = rs3.getBoolean("enable");
-                    if (enable && System.currentTimeMillis() < last_update + 300000.0) {
-                        event.getEntity().removeTag("player_synced");
-                        serverPlayer.connection.disconnect(Component.translatableWithFallback("playersync.already_online", "You can't join more than one synchronization server at the same time."));
-                        return;
-                    }
-                    JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + lastServer);
-                }
-                rs3.close();
-            }
             JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
             JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
 
@@ -350,6 +329,10 @@ public class VanillaSync {
             rs1.close();
             qr1.close();
 
+            // Mod support
+            ModsSupport modsSupport = new ModsSupport();
+            modsSupport.onPlayerJoin(serverPlayer);
+
             PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
             syncNotCompletedPlayer.remove(player_uuid);
         } catch (Exception e) {
@@ -391,7 +374,7 @@ public class VanillaSync {
         String nbtString = deserializeString(serializedNbt);
         CompoundTag compoundTag = NbtUtils.snbtToStructure(nbtString);
 
-        if (compoundTag == null || compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
+        if (compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
             return ItemStack.EMPTY; // Invalid or empty tag
         }
 
@@ -673,7 +656,7 @@ public class VanillaSync {
                 PlayerSync.LOGGER.warn("Advancements file for " + player_uuid + " does not exist (yet).");
             }
 
-            if (advancements != null && advancements.exists()) {
+            if (advancements.exists()) {
                 PlayerSync.LOGGER.debug("Storing advancements for " + player_uuid + " from " + advancements.toPath());
                 advancementBytes = Files.readAllBytes(advancements.toPath());
             } else {
