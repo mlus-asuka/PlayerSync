@@ -133,6 +133,20 @@ public class PlayerSync {
             );
         }
 
+        // Create Cobblemon table
+        if(ModList.get().isLoaded("cobblemon")){
+            JDBCsetUp.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS " + dbName + ".cobblemon(" +
+                            "uuid CHAR(36) NOT NULL," +
+                            "inv BLOB," +
+                            "pokedex BLOB," +
+                            "pc BLOB," +
+                            "general BLOB," +
+                            "PRIMARY KEY (uuid)" +
+                            ")"
+            );
+        }
+
         // Create backpack_data table
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             JDBCsetUp.executeUpdate(

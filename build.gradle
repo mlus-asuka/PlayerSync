@@ -4,6 +4,11 @@ plugins {
     id 'maven-publish'
 //    id 'net.neoforged.gradle.userdev' version '7.0.170'
     id 'net.neoforged.moddev'
+
+    // Adds the Kotlin Gradle plugin
+    id 'org.jetbrains.kotlin.jvm' version '2.2.20'
+    // OPTIONAL Kotlin Serialization plugin
+    id 'org.jetbrains.kotlin.plugin.serialization' version '2.2.20'
 }
 
 tasks.named('wrapper', Wrapper).configure {
@@ -40,6 +45,11 @@ repositories {
         filter {
             includeGroup "curse.maven"
         }
+    }
+
+    maven {
+        name = 'Kotlin for Forge'
+        url = 'https://thedarkcolour.github.io/KotlinForForge/'
     }
 }
 
@@ -107,6 +117,9 @@ dependencies {
     compileOnly "curse.maven:curios-309927:6529130"
     compileOnly "curse.maven:sophisticated-backpacks-422301:7169832"
     compileOnly "curse.maven:sophisticated-core-618298:7168230"
+
+    compileOnly "thedarkcolour:kotlinforforge:5.10.0"
+    compileOnly "curse.maven:cobblemon-687131:7273151"
 
     runtimeOnly "curse.maven:curios-309927:6529130"
     runtimeOnly "curse.maven:sophisticated-backpacks-422301:7169832"
