@@ -174,7 +174,7 @@ public class VanillaSync {
             }
 
             // Second query: Check if player is already online on another server
-            if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
+            if (JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get() && online && lastServer != JdbcConfig.SERVER_ID.get()) {
                 JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='" + lastServer + "'");
                 try (ResultSet rs2 = qr2.resultSet()) {
                     if (rs2.next()) {
