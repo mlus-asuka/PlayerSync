@@ -22,7 +22,7 @@ public class JdbcConfig {
     public static final ForgeConfigSpec.BooleanValue IS_CHAT_SERVER;
     public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
     public static final ForgeConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
-    public static ModConfigSpec.BooleanValue KICK_WHEN_ALREADY_ONLINE;
+    public static final ForgeConfigSpec.BooleanValue KICK_WHEN_ALREADY_ONLINE;
     public static final ForgeConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
     public static final ForgeConfigSpec.IntValue CHAT_SERVER_PORT;
     public static final ForgeConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
