@@ -22,6 +22,7 @@ public class JdbcConfig {
     public static final ModConfigSpec.BooleanValue IS_CHAT_SERVER;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
+    public static ModConfigSpec.BooleanValue KICK_WHEN_ALREADY_ONLINE;
     public static final ModConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
     public static final ModConfigSpec.IntValue CHAT_SERVER_PORT;
     public static final ModConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
@@ -44,6 +45,8 @@ public class JdbcConfig {
                 .define("sync_advancements", true);
         SYNC_CHAT = COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", false);
         IS_CHAT_SERVER = COMMON_BUILDER.comment("Whether recieve messages from other servers as host").define("IsChatServer",false);
+        KICK_WHEN_ALREADY_ONLINE = COMMON_BUILDER.comment("Whether to kick player when already online on another server")
+                .define("kick_when_already_online", true);
         CHAT_SERVER_IP = COMMON_BUILDER.define("ChatServerIP","127.0.0.1");
         CHAT_SERVER_PORT = COMMON_BUILDER.defineInRange("ChatServerPort",7900,0,65535);
         USE_LEGACY_SERIALIZATION = COMMON_BUILDER.comment(
