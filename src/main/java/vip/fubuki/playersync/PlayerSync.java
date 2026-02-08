@@ -140,10 +140,14 @@ public class PlayerSync {
                             "uuid CHAR(36) NOT NULL," +
                             "inv BLOB," +
                             "pokedex BLOB," +
-                            "pc BLOB," +
+                            "pc MEDIUMBLOB," +
                             "general BLOB," +
                             "PRIMARY KEY (uuid)" +
                             ")"
+            );
+
+            JDBCsetUp.executeUpdate(
+                    "ALTER TABLE " + dbName + ".cobblemon MODIFY COLUMN pc MEDIUMBLOB"
             );
         }
 
