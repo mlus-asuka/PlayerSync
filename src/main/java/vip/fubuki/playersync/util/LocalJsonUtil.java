@@ -42,4 +42,12 @@ public class LocalJsonUtil {
     public static Map<Integer, String> StringToEntryMap(String param) {
         return stringToGenericMap(param, Integer::parseInt);
     }
+
+    public static String cleanSnbt(String snbt) {
+        if (snbt == null) return null;
+
+        return snbt.replaceAll(",\\s*\\{\"\":\"\"}", "")
+                .replaceAll("\\{\"\":\"\"}\\s*,", "")
+                .replaceAll("\\{\"\":\"\"}", "");
+    }
 }

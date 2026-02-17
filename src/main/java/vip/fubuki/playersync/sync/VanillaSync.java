@@ -36,6 +36,7 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerNegotiationEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
@@ -379,7 +380,7 @@ public class VanillaSync {
         }
 
         String nbtString = deserializeString(serializedNbt);
-        CompoundTag compoundTag = TagParser.parseTag(nbtString);
+        CompoundTag compoundTag = TagParser.parseTag(LocalJsonUtil.cleanSnbt(nbtString));
 
         if (compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
             return ItemStack.EMPTY; // Invalid or empty tag

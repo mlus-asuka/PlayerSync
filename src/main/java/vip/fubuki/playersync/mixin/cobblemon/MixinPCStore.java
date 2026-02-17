@@ -14,6 +14,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import vip.fubuki.playersync.util.JDBCsetUp;
+import vip.fubuki.playersync.util.LocalJsonUtil;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -46,7 +47,7 @@ public class MixinPCStore {
             ResultSet rs = qr.resultSet();
             if (rs.next()) {
                 String serializedData = rs.getString("pc");
-                loadedNbt = TagParser.parseTag(serializedData);
+                loadedNbt = TagParser.parseTag(LocalJsonUtil.cleanSnbt(serializedData));
             }
 
             rs.close();

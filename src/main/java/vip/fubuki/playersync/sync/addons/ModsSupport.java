@@ -44,7 +44,7 @@ public class ModsSupport {
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
                             String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag backpackNbt = TagParser.parseTag(nbtString);
+                            CompoundTag backpackNbt = TagParser.parseTag(LocalJsonUtil.cleanSnbt(nbtString));
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
                             PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
@@ -111,7 +111,7 @@ public class ModsSupport {
                         String serialized = entry.getValue();
                         try {
                             String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag tag = TagParser.parseTag(nbtString);
+                            CompoundTag tag = TagParser.parseTag(LocalJsonUtil.cleanSnbt(nbtString));
                             ItemStack stack = ItemStack.parse(ServerLifecycleHooks.getCurrentServer().registryAccess(),tag).get();
                             if (handler.getCurios().containsKey(slotType)) {
                                 ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);
