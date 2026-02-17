@@ -10,6 +10,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.Style;
 import net.minecraft.resources.ResourceKey;
@@ -378,7 +379,7 @@ public class VanillaSync {
         }
 
         String nbtString = deserializeString(serializedNbt);
-        CompoundTag compoundTag = NbtUtils.snbtToStructure(nbtString);
+        CompoundTag compoundTag = TagParser.parseTag(nbtString);
 
         if (compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
             return ItemStack.EMPTY; // Invalid or empty tag
