@@ -3,6 +3,7 @@ package vip.fubuki.playersync.sync.addons;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.fml.ModList;
@@ -43,7 +44,7 @@ public class ModsSupport {
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
                             String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
+                            CompoundTag backpackNbt = TagParser.parseTag(nbtString);
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
                             PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
@@ -110,7 +111,7 @@ public class ModsSupport {
                         String serialized = entry.getValue();
                         try {
                             String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag tag = NbtUtils.snbtToStructure(nbtString);
+                            CompoundTag tag = TagParser.parseTag(nbtString);
                             ItemStack stack = ItemStack.parse(ServerLifecycleHooks.getCurrentServer().registryAccess(),tag).get();
                             if (handler.getCurios().containsKey(slotType)) {
                                 ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);

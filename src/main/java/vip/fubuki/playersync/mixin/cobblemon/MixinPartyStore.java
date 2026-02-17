@@ -5,6 +5,7 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.TagParser;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -45,7 +46,7 @@ public class MixinPartyStore {
             ResultSet rs = qr.resultSet();
             if (rs.next()) {
                 String serializedData = rs.getString("inv");
-                loadedNbt = NbtUtils.snbtToStructure(serializedData);
+                loadedNbt = TagParser.parseTag(serializedData);
             }
 
             rs.close();
