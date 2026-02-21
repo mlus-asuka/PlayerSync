@@ -139,7 +139,7 @@ public class PlayerSync {
                     "CREATE TABLE IF NOT EXISTS " + dbName + ".cobblemon(" +
                             "uuid CHAR(36) NOT NULL," +
                             "inv BLOB," +
-                            "pokedex BLOB," +
+                            "pokedex MEDIUMBLOB," +
                             "pc MEDIUMBLOB," +
                             "general BLOB," +
                             "PRIMARY KEY (uuid)" +
@@ -148,6 +148,9 @@ public class PlayerSync {
 
             JDBCsetUp.executeUpdate(
                     "ALTER TABLE " + dbName + ".cobblemon MODIFY COLUMN pc MEDIUMBLOB"
+            );
+             JDBCsetUp.executeUpdate(
+                    "ALTER TABLE " + dbName + ".cobblemon MODIFY COLUMN pokedex MEDIUMBLOB"
             );
         }
 
