@@ -4,7 +4,6 @@ import com.cobblemon.mod.common.api.storage.party.PartyStore;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.TagParser;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;

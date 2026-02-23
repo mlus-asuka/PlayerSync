@@ -36,7 +36,6 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
-import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerNegotiationEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
@@ -372,7 +371,7 @@ public class VanillaSync {
     }
 
     // deserialize item and potentially create placeholders
-    private static ItemStack deserializeAndCreatePlaceholderIfNeeded(String serializedNbt)
+    public static ItemStack deserializeAndCreatePlaceholderIfNeeded(String serializedNbt)
             throws CommandSyntaxException {
         if (serializedNbt == null || serializedNbt.isEmpty() || serializedNbt.equals("B64:e30=")) {
             // Check for empty NBT (Base64 encoded '{}')
@@ -380,7 +379,7 @@ public class VanillaSync {
         }
 
         String nbtString = deserializeString(serializedNbt);
-        CompoundTag compoundTag = TagParser.parseTag(LocalJsonUtil.cleanSnbt(nbtString));
+        CompoundTag compoundTag = TagParser.parseTag(nbtString);
 
         if (compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
             return ItemStack.EMPTY; // Invalid or empty tag
@@ -489,11 +488,13 @@ public class VanillaSync {
             }
         }
         // Legacy fallback using custom replacement
-        return encoded.replace("|", ",")
+        // cleanSnbt is applied here because legacy serialization could produce stray {"":""} type markers
+        // B64-decoded data must NOT be cleaned as it contains verbatim NBT from modern mods
+        return LocalJsonUtil.cleanSnbt(encoded.replace("|", ",")
                 .replace("^", "\"")
                 .replace("<", "{")
                 .replace(">", "}")
-                .replace("~", "'");
+                .replace("~", "'"));
     }
 
     /**
@@ -574,7 +575,7 @@ public class VanillaSync {
 
     // Helper function to get the NBT string to be saved
     // If item is a placeholder, get original NBT; otherwise, get current NBT
-    private static String getNbtForStorage(ItemStack itemStack) {
+    public static String getNbtForStorage(ItemStack itemStack) {
         if (itemStack.is(Items.PAPER) && itemStack.getComponents().has(DataComponents.CUSTOM_DATA)
                 && itemStack.getComponents().get(DataComponents.CUSTOM_DATA).contains("playersync:original_item_nbt")) {
             // It's our placeholder, retrieve the original NBT string

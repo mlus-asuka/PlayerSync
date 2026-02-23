@@ -4,7 +4,6 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameRules;
-
 import net.neoforged.fml.ModList;
 import top.theillusivec4.curios.api.CuriosApi;
 import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
@@ -72,7 +71,7 @@ public class CuriosCache {
                 for (int i = 0; i < dynStacks.getSlots(); i++) {
                     ItemStack stack = dynStacks.getStackInSlot(i);
                     if (!stack.isEmpty()) {
-                        String serialized = VanillaSync.serialize(VanillaSync.serializeNBT(stack).toString());
+                        String serialized = VanillaSync.getNbtForStorage(stack);
                         flatMap.put(slotType + ":" + i, serialized);
                     }
                 }

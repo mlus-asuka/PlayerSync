@@ -2,12 +2,10 @@ package vip.fubuki.playersync.sync.addons;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.TagParser;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.fml.ModList;
-import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import top.theillusivec4.curios.api.CuriosApi;
 import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
 import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
@@ -44,7 +42,7 @@ public class ModsSupport {
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
                             String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag backpackNbt = TagParser.parseTag(LocalJsonUtil.cleanSnbt(nbtString));
+                            CompoundTag backpackNbt = TagParser.parseTag(nbtString);
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
                             PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
@@ -97,22 +95,21 @@ public class ModsSupport {
                 handlerOpt.ifPresent(handler -> {
                     for (Map.Entry<String, String> entry : storedMap.entrySet()) {
                         String compositeKey = entry.getKey(); // Expected format: "slotType:index"
-                        String[] parts = compositeKey.split(":");
-                        if (parts.length != 2) {
+                        // Use lastIndexOf to correctly handle slot type names that may contain ':'
+                        int lastColon = compositeKey.lastIndexOf(':');
+                        if (lastColon < 0) {
                             continue;
                         }
-                        String slotType = parts[0];
+                        String slotType = compositeKey.substring(0, lastColon);
                         int slotIndex;
                         try {
-                            slotIndex = Integer.parseInt(parts[1]);
+                            slotIndex = Integer.parseInt(compositeKey.substring(lastColon + 1));
                         } catch (NumberFormatException ex) {
                             continue;
                         }
                         String serialized = entry.getValue();
                         try {
-                            String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag tag = TagParser.parseTag(LocalJsonUtil.cleanSnbt(nbtString));
-                            ItemStack stack = ItemStack.parse(ServerLifecycleHooks.getCurrentServer().registryAccess(),tag).get();
+                            ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(serialized);
                             if (handler.getCurios().containsKey(slotType)) {
                                 ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);
                                 IDynamicStackHandler dynStacks = stacksHandler.getStacks();
@@ -155,7 +152,7 @@ public class ModsSupport {
                 for (int i = 0; i < dynStacks.getSlots(); i++) {
                     ItemStack stack = dynStacks.getStackInSlot(i);
                     if (!stack.isEmpty()) {
-                        String serialized = VanillaSync.serialize(VanillaSync.serializeNBT(stack).toString());
+                        String serialized = VanillaSync.getNbtForStorage(stack);
                         flatMap.put(slotType + ":" + i, serialized);
                     }
                 }

@@ -1,6 +1,5 @@
 package vip.fubuki.playersync.mixin.cobblemon;
 
-import com.cobblemon.mod.common.Cobblemon;
 import com.cobblemon.mod.common.api.pokedex.PokedexManager;
 import com.cobblemon.mod.common.api.storage.player.InstancedPlayerData;
 import com.cobblemon.mod.common.api.storage.player.adapter.NbtBackedPlayerData;
