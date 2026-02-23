@@ -50,12 +50,12 @@ public class PlayerSync {
         String dbName = JdbcConfig.DATABASE_NAME.get();
 
         // Step 1: Create the database using a connection that does not select a database.
-        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS " + dbName, 1);
+        JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `" + dbName + "`", 1);
 
         // Step 2: Explicitly select the database on a connection obtained without default database.
         try (Connection conn = JDBCsetUp.getConnection(false);
              Statement st = conn.createStatement()) {
-            st.execute("USE " + dbName);
+            st.execute("USE `" + dbName + "`");
         } catch (SQLException e) {
             LOGGER.error("Error selecting database " + dbName, e);
             throw e;
@@ -64,7 +64,7 @@ public class PlayerSync {
         // Step 3: Create and alter tables using fully qualified names.
         // Create player_data table
         JDBCsetUp.executeUpdate(
-                "CREATE TABLE IF NOT EXISTS " + dbName + ".`player_data` (" +
+                "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`player_data` (" +
                         "`uuid` char(36) NOT NULL," +
                         "`inventory` mediumblob," +
                         "`armor` blob," +
@@ -97,7 +97,7 @@ public class PlayerSync {
         }
         if (columnCount < 14) {
             JDBCsetUp.executeUpdate(
-                    "ALTER TABLE " + dbName + ".player_data " +
+                    "ALTER TABLE `" + dbName + "`.`player_data` " +
                             "ADD COLUMN left_hand blob, " +
                             "ADD COLUMN cursors blob;"
             );
@@ -105,7 +105,7 @@ public class PlayerSync {
 
         // Create server_info table
         JDBCsetUp.executeUpdate(
-                "CREATE TABLE IF NOT EXISTS " + dbName + ".server_info (" +
+                "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`server_info` (" +
                         "`id` INT NOT NULL," +
                         "`enable` boolean NOT NULL," +
                         "`last_update` BIGINT NOT NULL," +
@@ -114,20 +114,20 @@ public class PlayerSync {
         );
         long current = System.currentTimeMillis();
         JDBCsetUp.executeUpdate(
-                "INSERT INTO " + dbName + ".server_info(id,enable,last_update) " +
+                "INSERT INTO `" + dbName + "`.`server_info`(id,enable,last_update) " +
                         "VALUES(" + JdbcConfig.SERVER_ID.get() + ",true," + current + ") " +
                         "ON DUPLICATE KEY UPDATE id= " + JdbcConfig.SERVER_ID.get() + ",enable = 1," +
                         "last_update=" + current + ";"
         );
         JDBCsetUp.executeUpdate(
-                "UPDATE " + dbName + ".server_info SET last_update=" + System.currentTimeMillis() +
+                "UPDATE `" + dbName + "`.`server_info` SET last_update=" + System.currentTimeMillis() +
                         " WHERE id='" + JdbcConfig.SERVER_ID.get() + "'"
         );
 
         // Create curios table if the Curios mod is loaded
         if (ModList.get().isLoaded("curios")) {
             JDBCsetUp.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS " + dbName + ".curios (" +
+                    "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`curios` (" +
                             "uuid CHAR(36) NOT NULL, curios_item BLOB, PRIMARY KEY (uuid)" +
                             ")"
             );
@@ -136,7 +136,7 @@ public class PlayerSync {
         // Create Cobblemon table
         if(ModList.get().isLoaded("cobblemon")){
             JDBCsetUp.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS " + dbName + ".cobblemon(" +
+                    "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`cobblemon`(" +
                             "uuid CHAR(36) NOT NULL," +
                             "inv BLOB," +
                             "pokedex MEDIUMBLOB," +
@@ -147,17 +147,17 @@ public class PlayerSync {
             );
 
             JDBCsetUp.executeUpdate(
-                    "ALTER TABLE " + dbName + ".cobblemon MODIFY COLUMN pc MEDIUMBLOB"
+                    "ALTER TABLE `" + dbName + "`.`cobblemon` MODIFY COLUMN pc MEDIUMBLOB"
             );
              JDBCsetUp.executeUpdate(
-                    "ALTER TABLE " + dbName + ".cobblemon MODIFY COLUMN pokedex MEDIUMBLOB"
+                    "ALTER TABLE `" + dbName + "`.`cobblemon` MODIFY COLUMN pokedex MEDIUMBLOB"
             );
         }
 
         // Create backpack_data table
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             JDBCsetUp.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS " + dbName + ".backpack_data (" +
+                    "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`backpack_data` (" +
                             "uuid CHAR(36) NOT NULL, backpack_nbt MEDIUMBLOB, PRIMARY KEY (uuid)" +
                             ");", 1
             );
@@ -173,8 +173,8 @@ public class PlayerSync {
             if (rsBackpackCol.next() && rsBackpackCol.getInt("colCount") == 0) {
                 LOGGER.info("Altering backpack_data table to add missing 'uuid' column.");
                 // Add the missing column and set it as primary key.
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD COLUMN uuid CHAR(36) NOT NULL", 1);
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".backpack_data ADD PRIMARY KEY (uuid)", 1);
+                JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`backpack_data` ADD COLUMN uuid CHAR(36) NOT NULL", 1);
+                JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`backpack_data` ADD PRIMARY KEY (uuid)", 1);
             }
             rsBackpackCol.close();
             backpackColCheck.connection().close();
@@ -192,7 +192,7 @@ public class PlayerSync {
             String dataType = rsAdvCol.getString("DATA_TYPE");
             if (!"mediumblob".equalsIgnoreCase(dataType)) {
                 LOGGER.info("Altering player_data table to modify 'advancements' column to MEDIUMBLOB.");
-                JDBCsetUp.executeUpdate("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB", 1);
+                JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`player_data` MODIFY COLUMN advancements MEDIUMBLOB", 1);
             }
         }
         rsAdvCol.close();

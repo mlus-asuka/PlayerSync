@@ -29,7 +29,7 @@ public class JDBCsetUp {
         // Ensure that the connection uses the desired database by explicitly issuing "USE dbName"
         if (selectDatabase && !dbName.isEmpty()) {
             try (Statement st = conn.createStatement()) {
-                st.execute("USE " + dbName);
+                st.execute("USE `" + dbName + "`");
             }
         }
         return conn;
