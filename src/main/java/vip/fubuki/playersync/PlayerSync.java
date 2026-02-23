@@ -58,12 +58,12 @@ public class PlayerSync {
         String dbName = JdbcConfig.DATABASE_NAME.get();
 
         // Step 1: Create the database using a connection that does not select a database.
-        JDBCsetUp.executeUpdateWithoutDatabase("CREATE DATABASE IF NOT EXISTS " + dbName);
+        JDBCsetUp.executeUpdateWithoutDatabase("CREATE DATABASE IF NOT EXISTS `" + dbName + "`");
 
         // Step 2: Explicitly select the database on a connection obtained without default database.
         try (Connection conn = JDBCsetUp.getConnection(false);
              Statement st = conn.createStatement()) {
-            st.execute("USE " + dbName);
+            st.execute("USE `" + dbName + "`");
         } catch (SQLException e) {
             LOGGER.error("Error selecting database " + dbName, e);
             throw e;
@@ -72,7 +72,7 @@ public class PlayerSync {
         // Step 3: Create and alter tables using fully qualified names.
         // Create player_data table
         JDBCsetUp.executeUpdate(
-                "CREATE TABLE IF NOT EXISTS " + dbName + ".`player_data` (" +
+                "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`player_data` (" +
                         "`uuid` char(36) NOT NULL," +
                         "`inventory` mediumblob," +
                         "`armor` blob," +
@@ -105,7 +105,7 @@ public class PlayerSync {
         }
         if (columnCount < 14) {
             JDBCsetUp.executeUpdate(
-                    "ALTER TABLE " + dbName + ".player_data " +
+                    "ALTER TABLE `" + dbName + "`.`player_data` " +
                             "ADD COLUMN left_hand blob, " +
                             "ADD COLUMN cursors blob;"
             );
@@ -113,7 +113,7 @@ public class PlayerSync {
 
         // Create server_info table
         JDBCsetUp.executeUpdate(
-                "CREATE TABLE IF NOT EXISTS " + dbName + ".server_info (" +
+                "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`server_info` (" +
                         "`id` INT NOT NULL," +
                         "`enable` boolean NOT NULL," +
                         "`last_update` BIGINT NOT NULL," +
@@ -126,7 +126,7 @@ public class PlayerSync {
         long current = System.currentTimeMillis();
         int data_version = SharedConstants.getCurrentVersion().getDataVersion().getVersion();
         JDBCsetUp.executeUpdate("""
-                INSERT INTO %s.server_info
+                INSERT INTO `%s`.`server_info`
                 (
                     id,
                     enable,
@@ -156,7 +156,7 @@ public class PlayerSync {
         // Create curios table if the Curios mod is loaded
         if (ModList.get().isLoaded("curios")) {
             JDBCsetUp.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS " + dbName + ".curios (" +
+                    "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`curios` (" +
                             "uuid CHAR(36) NOT NULL, curios_item BLOB, PRIMARY KEY (uuid)" +
                             ")"
             );
@@ -165,7 +165,7 @@ public class PlayerSync {
         // Create backpack_data table
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             JDBCsetUp.executeUpdateWithoutDatabase(
-                    "CREATE TABLE IF NOT EXISTS " + dbName + ".backpack_data (" +
+                    "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`backpack_data` (" +
                             "uuid CHAR(36) NOT NULL, backpack_nbt MEDIUMBLOB, PRIMARY KEY (uuid)" +
                             ");"
             );
@@ -185,7 +185,7 @@ public class PlayerSync {
             String dataType = rsAdvCol.getString("DATA_TYPE");
             if (!"mediumblob".equalsIgnoreCase(dataType)) {
                 LOGGER.info("Altering player_data table to modify 'advancements' column from {} to MEDIUMBLOB.", dataType);
-                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE " + dbName + ".player_data MODIFY COLUMN advancements MEDIUMBLOB");
+                JDBCsetUp.executeUpdateWithoutDatabase("ALTER TABLE `" + dbName + "`.`player_data` MODIFY COLUMN advancements MEDIUMBLOB");
             }
         }
         rsAdvCol.close();
