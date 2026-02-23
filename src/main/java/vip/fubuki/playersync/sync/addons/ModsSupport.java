@@ -15,6 +15,7 @@ import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 
+import java.io.IOException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
@@ -41,8 +42,18 @@ public class ModsSupport {
                         ResultSet rsBackpack = qrBackpack.resultSet();
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
-                            String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag backpackNbt = TagParser.parseTag(nbtString);
+                            CompoundTag backpackNbt;
+                            if (serialized.startsWith("BNBT:")) {
+                                backpackNbt = VanillaSync.deserializeBinaryBase64Tag(serialized);
+                            } else {
+                                String nbtString = VanillaSync.deserializeString(serialized);
+                                try {
+                                    backpackNbt = TagParser.parseTag(nbtString);
+                                } catch (CommandSyntaxException ex) {
+                                    PlayerSync.LOGGER.warn("TagParser.parseTag failed for backpack UUID {}, trying fallback", contentsUuid);
+                                    backpackNbt = net.minecraft.nbt.NbtUtils.snbtToStructure(nbtString);
+                                }
+                            }
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
                             PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
@@ -52,7 +63,9 @@ public class ModsSupport {
                     } catch (SQLException e) {
                         PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
                     } catch (CommandSyntaxException e) {
-                        throw new RuntimeException(e);
+                        PlayerSync.LOGGER.error("Error parsing backpack NBT for UUID {}. Skipping backpack.", contentsUuid, e);
+                    } catch (IOException e) {
+                        PlayerSync.LOGGER.error("Error reading binary backpack NBT for UUID {}. Skipping backpack.", contentsUuid, e);
                     }
                 } else {
                     PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
@@ -118,7 +131,9 @@ public class ModsSupport {
                                 }
                             }
                         } catch (CommandSyntaxException e) {
-                            throw new RuntimeException("Error deserializing Curio data for key " + compositeKey, e);
+                            PlayerSync.LOGGER.error("Error deserializing Curio data for key {}. Skipping this slot. Data: {}", compositeKey, serialized, e);
+                        } catch (Exception e) {
+                            PlayerSync.LOGGER.error("Unexpected error restoring Curio data for key {}. Skipping this slot.", compositeKey, e);
                         }
                     }
                 });
@@ -179,7 +194,7 @@ public class ModsSupport {
                 UUID contentsUuid = uuidOpt.get();
                 // Get internal backpack data from BackpackStorage (creates it if missing)
                 CompoundTag backpackNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
-                String serialized = VanillaSync.serialize(backpackNbt.toString());
+                String serialized = VanillaSync.serializeTagToBinaryBase64(backpackNbt);
                 try {
                     // Use REPLACE INTO so existing records are updated
                     JDBCsetUp.executeUpdate("REPLACE INTO backpack_data (uuid, backpack_nbt) VALUES ('" + contentsUuid + "', '" + serialized + "')");

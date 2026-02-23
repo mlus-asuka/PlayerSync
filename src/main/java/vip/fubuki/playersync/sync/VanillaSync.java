@@ -80,14 +80,14 @@ public class VanillaSync {
         }
 
         final String player_uuid = serverPlayer.getUUID().toString();
-        PlayerSync.LOGGER.info("Player entity joining level " + player_uuid);
+        PlayerSync.LOGGER.info("Player entity joining level {}", player_uuid);
 
         JDBCsetUp.QueryResult advancementsQuery = JDBCsetUp
                 .executeQuery("SELECT advancements FROM player_data WHERE uuid='" + player_uuid + "'");
         ResultSet advancementsResultSet = advancementsQuery.resultSet();
 
         if (!advancementsResultSet.next()) {
-            PlayerSync.LOGGER.debug("No advancements found for player " + player_uuid);
+            PlayerSync.LOGGER.debug("No advancements found for player {}", player_uuid);
             advancementsResultSet.close();
             return;
         }
@@ -106,37 +106,34 @@ public class VanillaSync {
 
             // only create advancements file if at least "{}" has been stored in the field
             if (bytes.length < 2) {
-                PlayerSync.LOGGER.debug("Skip writing advancements for player " + player_uuid);
+                PlayerSync.LOGGER.debug("Skip writing advancements for player {}", player_uuid);
                 return;
             }
 
             File advancementsDir = advancements.getParentFile();
             if (advancementsDir != null && !advancementsDir.exists()) {
-                PlayerSync.LOGGER.info("Creating advancements directory " + advancementsDir.getPath());
+                PlayerSync.LOGGER.info("Creating advancements directory {}", advancementsDir.getPath());
                 boolean createdDir = advancementsDir.mkdirs();
                 if (!createdDir) {
-                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements "
-                            + "directory at " + advancementsDir.getPath());
+                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements directory at {}", advancementsDir.getPath());
                     return;
                 }
             }
 
             if (!advancements.exists()) {
                 try {
-                    PlayerSync.LOGGER.info("Creating new advancement file for player " + player_uuid);
+                    PlayerSync.LOGGER.info("Creating new advancement file for player {}", player_uuid);
                     advancements.createNewFile();
                 } catch (IOException e) {
-                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements file at "
-                            + advancements.getAbsolutePath(), e);
+                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements file at {}", advancements.getAbsolutePath(), e);
                     return;
                 }
             }
-            PlayerSync.LOGGER.debug("Writing advancement file " + advancements.toPath() + " for player " + player_uuid);
-            PlayerSync.LOGGER.trace("Writing advancement file for player " + player_uuid + ": "
-                    + new String(bytes, StandardCharsets.UTF_8));
+            PlayerSync.LOGGER.debug("Writing advancement file {} for player {}", advancements.toPath(), player_uuid);
+            PlayerSync.LOGGER.trace("Writing advancement file for player {}: {}", player_uuid, new String(bytes, StandardCharsets.UTF_8));
             Files.write(advancements.toPath(), bytes);
 
-            // reload the json files on the server after updating them
+            // reload the JSON files on the server after updating them
             PlayerAdvancements playeradvancements = serverPlayer.getAdvancements();
             playeradvancements.reload(server.getAdvancements());
 
@@ -156,7 +153,7 @@ public class VanillaSync {
     public static void doPlayerConnect(PlayerNegotiationEvent event) {
         try {
             String player_uuid = event.getProfile().getId().toString();
-            PlayerSync.LOGGER.info("Detected connection from player" + player_uuid + ",starting checking");
+            PlayerSync.LOGGER.info("Detected connection from player{},starting checking", player_uuid);
             boolean online;
             int lastServer;
 
@@ -216,7 +213,7 @@ public class VanillaSync {
                 double respawnX;
                 double respawnY;
                 double respawnZ;
-                if (respawnPos != null && respawnLevel != null) {
+                if (respawnPos != null) {
                     ServerLevel level = server.getLevel(respawnLevel);
                     respawnX = respawnPos.getX();
                     respawnY = respawnPos.getY();
@@ -225,7 +222,7 @@ public class VanillaSync {
                         joinedPlayer.teleportTo(level, respawnX, respawnY + 1, respawnZ, 0, 0);
                     }
                 } else {
-                    PlayerSync.LOGGER.debug("Player " + player_uuid + " has no respawn point");
+                    PlayerSync.LOGGER.debug("Player {} has no respawn point", player_uuid);
                 }
             } else {
                 PlayerSync.LOGGER.warn("Trying to get server,but got a null");
@@ -236,14 +233,14 @@ public class VanillaSync {
                 JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
                 JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
             } catch (SQLException e) {
-                PlayerSync.LOGGER.error("An error occurred while trying to execute a dead or dying player" + e.getMessage());
+                PlayerSync.LOGGER.error("An error occurred while trying to execute a dead or dying player{}", e.getMessage());
             }
             joinedPlayer.connection.disconnect(Component.translatableWithFallback("playersync.wrong_entity_status","An error occurred while creating playerEntity in the world,please login again."));
             return;
         }
 
         try {
-            PlayerSync.LOGGER.info("Starting synchronization for player " + player_uuid);
+            PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
 
             // First query: check basic player data
             syncNotCompletedPlayer.add(player_uuid);
@@ -378,8 +375,34 @@ public class VanillaSync {
             return ItemStack.EMPTY;
         }
 
-        String nbtString = deserializeString(serializedNbt);
-        CompoundTag compoundTag = TagParser.parseTag(nbtString);
+        CompoundTag compoundTag;
+        String nbtString = serializedNbt; // Will be overwritten with decoded SNBT for legacy formats
+
+        // Try binary NBT format first (new format, avoids SNBT round-trip issues)
+        if (serializedNbt.startsWith("BNBT:")) {
+            try {
+                compoundTag = deserializeBinaryBase64Tag(serializedNbt);
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error("Failed to deserialize binary NBT data, skipping item.", e);
+                return ItemStack.EMPTY;
+            }
+        } else {
+            // Legacy SNBT-based deserialization (B64: or old custom format)
+            nbtString = deserializeString(serializedNbt);
+            try {
+                compoundTag = TagParser.parseTag(nbtString);
+            } catch (CommandSyntaxException e) {
+                // TagParser may fail on certain 1.21.1 component SNBT formats (e.g. nested lists [[{...}]])
+                // Try NbtUtils.snbtToStructure as a fallback
+                PlayerSync.LOGGER.warn("TagParser.parseTag failed, trying NbtUtils.snbtToStructure fallback. SNBT: {}", nbtString);
+                try {
+                    compoundTag = NbtUtils.snbtToStructure(nbtString);
+                } catch (CommandSyntaxException e2) {
+                    PlayerSync.LOGGER.error("Both SNBT parsers failed for data: {}", nbtString);
+                    throw e; // re-throw original exception
+                }
+            }
+        }
 
         if (compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
             return ItemStack.EMPTY; // Invalid or empty tag
@@ -397,7 +420,7 @@ public class VanillaSync {
             try {
                 ItemStack restoredItem = ItemStack.parse(ServerLifecycleHooks.getCurrentServer().registryAccess(),compoundTag).get();
                 // Only return the restored item if the ItemStack.of did not unexpectedly
-                // returned an empty item
+                // return an empty item
                 // Either the item is not empty, or it is empty and the original tag was also
                 // empty or it was an empty inventory slot
                 if (!restoredItem.isEmpty() || compoundTag.isEmpty()
@@ -433,7 +456,7 @@ public class VanillaSync {
         String placeholderItemTitleOverride = JdbcConfig.ITEM_PLACEHOLDER_TITLE_OVERRIDE.get();
         placeholder.set(DataComponents.ITEM_NAME,
                 Component
-                        .literal(placeholderItemTitleOverride != null && !placeholderItemTitleOverride.isBlank()
+                        .literal(!placeholderItemTitleOverride.isBlank()
                                 ? placeholderItemTitleOverride
                                 : Component.translatable("playersync.item_placeholder_title").getString())
                         .setStyle(Style.EMPTY.withColor(ChatFormatting.RED).withItalic(true)));
@@ -455,7 +478,7 @@ public class VanillaSync {
         loreList.add(Component.literal(""));
 
         String placeholderItemDescriptionOverride = JdbcConfig.ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE.get();
-        String placeholderItemDescriptionLines = placeholderItemDescriptionOverride != null && ! placeholderItemDescriptionOverride.isBlank()
+        String placeholderItemDescriptionLines = ! placeholderItemDescriptionOverride.isBlank()
                 ? placeholderItemDescriptionOverride
                 : Component.translatable("playersync.item_placeholder_description").getString();
 
@@ -483,7 +506,7 @@ public class VanillaSync {
             try {
                 return new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
             } catch (IllegalArgumentException ex) {
-                PlayerSync.LOGGER.error("Base64 decoding failed for data: " + encoded, ex);
+                PlayerSync.LOGGER.error("Base64 decoding failed for data: {}", encoded, ex);
                 // fallback to legacy decoding below
             }
         }
@@ -581,9 +604,40 @@ public class VanillaSync {
             // It's our placeholder, retrieve the original NBT string
             return itemStack.getComponents().get(DataComponents.CUSTOM_DATA).copyTag().getString("playersync:original_item_nbt");
         } else {
-            // It's a normal item or empty, serialize its current NBT
-            return serialize(serializeNBT(itemStack).toString());
+            // It's a normal item or empty, serialize using binary NBT to avoid SNBT round-trip issues
+            Tag tag = serializeNBT(itemStack);
+            if (tag instanceof CompoundTag compoundTag) {
+                return serializeTagToBinaryBase64(compoundTag);
+            }
+            // Fallback to SNBT-based serialization for non-compound tags
+            return serialize(tag.toString());
         }
+    }
+
+    /**
+     * Serializes a CompoundTag to a Base64-encoded binary NBT string.
+     * This avoids SNBT round-trip issues where Tag.toString() produces SNBT
+     * that TagParser.parseTag() cannot parse back (e.g. with nested lists [[{...}]]).
+     */
+    public static String serializeTagToBinaryBase64(CompoundTag tag) {
+        try {
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+            net.minecraft.nbt.NbtIo.writeCompressed(tag, baos);
+            return "BNBT:" + Base64.getEncoder().encodeToString(baos.toByteArray());
+        } catch (IOException e) {
+            PlayerSync.LOGGER.error("Failed to serialize NBT to binary, falling back to SNBT", e);
+            return serialize(tag.toString());
+        }
+    }
+
+    /**
+     * Deserializes a Base64-encoded binary NBT string back to a CompoundTag.
+     */
+    public static CompoundTag deserializeBinaryBase64Tag(String encoded) throws IOException {
+        String base64 = encoded.substring(5); // Remove "BNBT:" prefix
+        byte[] bytes = Base64.getDecoder().decode(base64);
+        java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bytes);
+        return net.minecraft.nbt.NbtIo.readCompressed(bais, net.minecraft.nbt.NbtAccounter.unlimitedHeap());
     }
 
     public static Tag serializeNBT(ItemStack itemStack) {
@@ -599,7 +653,7 @@ public class VanillaSync {
 
     public static void store(Player player, boolean init) throws SQLException, IOException {
         String player_uuid = player.getUUID().toString();
-        PlayerSync.LOGGER.info("Storing data for player " + player_uuid + " (init=" + init + ")");
+        PlayerSync.LOGGER.info("Storing data for player {} (init={})", player_uuid, init);
 
         // Basic Attributes
         int XP = getTotalExperience(player);
@@ -666,18 +720,18 @@ public class VanillaSync {
                 }
             }
             if (!advancements.exists()) {
-                PlayerSync.LOGGER.warn("Advancements file for " + player_uuid + " does not exist (yet).");
+                PlayerSync.LOGGER.warn("Advancements file for {} does not exist (yet).", player_uuid);
             }
 
             if (advancements.exists()) {
-                PlayerSync.LOGGER.debug("Storing advancements for " + player_uuid + " from " + advancements.toPath());
+                PlayerSync.LOGGER.debug("Storing advancements for {} from {}", player_uuid, advancements.toPath());
                 advancementBytes = Files.readAllBytes(advancements.toPath());
             } else {
-                PlayerSync.LOGGER.error("Unable to save advancements for player " + player_uuid);
+                PlayerSync.LOGGER.error("Unable to save advancements for player {}", player_uuid);
             }
         }
         String json = new String(advancementBytes, StandardCharsets.UTF_8);
-        PlayerSync.LOGGER.trace("Storing advancements for player " + player_uuid + ": " + json);
+        PlayerSync.LOGGER.trace("Storing advancements for player {}: {}", player_uuid, json);
 
         // SQL Operation for player data
         if (init) {
@@ -690,7 +744,7 @@ public class VanillaSync {
     private static String getSyncWorldForServer() {
         if (!JdbcConfig.SYNC_WORLD.get().isEmpty()) {
             PlayerSync.LOGGER.warn("Using configuration 'sync_world' on servers is deprecated. Please leave the array empty. Falling back to first entry.");
-            return JdbcConfig.SYNC_WORLD.get().get(0);
+            return JdbcConfig.SYNC_WORLD.get().getFirst();
         }
 
         final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
@@ -701,7 +755,7 @@ public class VanillaSync {
 
         final WorldData worldData = server.getWorldData();
         final String levelName = worldData.getLevelName();
-        PlayerSync.LOGGER.debug("Using server level-name: " + levelName);
+        PlayerSync.LOGGER.debug("Using server level-name: {}", levelName);
 
         return levelName;
     }
@@ -753,14 +807,14 @@ public class VanillaSync {
                             // Call the same store method used in logout and file save events.
                             store(player, false);
                         } catch (Exception e) {
-                            PlayerSync.LOGGER.error("Error auto-saving player " + player.getUUID(), e);
+                            PlayerSync.LOGGER.error("Error auto-saving player {}", player.getUUID(), e);
                         }
                     });
                     executorService.submit(() -> {
                         try {
                             new ModsSupport().StoreCurios(player, false);
                         } catch (SQLException e) {
-                            PlayerSync.LOGGER.error("Error auto-saving Curios data for player " + player.getUUID(), e);
+                            PlayerSync.LOGGER.error("Error auto-saving Curios data for player {}", player.getUUID(), e);
                         }
                     });
 
@@ -773,7 +827,7 @@ public class VanillaSync {
                 try {
                     CuriosCache.RemoveExpiredCuriosCache();
                 } catch (Exception e) {
-                    PlayerSync.LOGGER.error("An error occurred while cleaning curios cache:" + e.getMessage());
+                    PlayerSync.LOGGER.error("An error occurred while cleaning curios cache:{}", e.getMessage());
                 }
             });
         }
@@ -797,10 +851,7 @@ public class VanillaSync {
                 ? (float) databaseXp / serverPlayer.getXpNeededForNextLevel()
                 : 0f;
 
-        PlayerSync.LOGGER.debug("Giving player "
-                + serverPlayer.experienceLevel + " levels and "
-                + serverPlayer.experienceProgress * 100 + "% experience progress, calculated from "
-                + serverPlayer.totalExperience + " XP.");
+        PlayerSync.LOGGER.debug("Giving player {} levels and {}% experience progress, calculated from {} XP.", serverPlayer.experienceLevel, serverPlayer.experienceProgress * 100, serverPlayer.totalExperience);
     }
 
     private static int getTotalExperience(final Player player) {
@@ -819,10 +870,7 @@ public class VanillaSync {
         // Add partial level progress
         totalXp += Math.round(player.getXpNeededForNextLevel() * player.experienceProgress);
 
-        PlayerSync.LOGGER.debug("Experience calcuation for "
-                + player.experienceLevel + " levels and "
-                + player.experienceProgress * 100 + "% experience progress yields "
-                + totalXp + " XP.");
+        PlayerSync.LOGGER.debug("Experience calcuation for {} levels and {}% experience progress yields {} XP.", player.experienceLevel, player.experienceProgress * 100, totalXp);
 
         return totalXp;
     }
