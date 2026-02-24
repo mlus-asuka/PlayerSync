@@ -375,34 +375,8 @@ public class VanillaSync {
             return ItemStack.EMPTY;
         }
 
-        CompoundTag compoundTag;
-        String nbtString = serializedNbt; // Will be overwritten with decoded SNBT for legacy formats
-
-        // Try binary NBT format first (new format, avoids SNBT round-trip issues)
-        if (serializedNbt.startsWith("BNBT:")) {
-            try {
-                compoundTag = deserializeBinaryBase64Tag(serializedNbt);
-            } catch (Exception e) {
-                PlayerSync.LOGGER.error("Failed to deserialize binary NBT data, skipping item.", e);
-                return ItemStack.EMPTY;
-            }
-        } else {
-            // Legacy SNBT-based deserialization (B64: or old custom format)
-            nbtString = deserializeString(serializedNbt);
-            try {
-                compoundTag = TagParser.parseTag(nbtString);
-            } catch (CommandSyntaxException e) {
-                // TagParser may fail on certain 1.21.1 component SNBT formats (e.g. nested lists [[{...}]])
-                // Try NbtUtils.snbtToStructure as a fallback
-                PlayerSync.LOGGER.warn("TagParser.parseTag failed, trying NbtUtils.snbtToStructure fallback. SNBT: {}", nbtString);
-                try {
-                    compoundTag = NbtUtils.snbtToStructure(nbtString);
-                } catch (CommandSyntaxException e2) {
-                    PlayerSync.LOGGER.error("Both SNBT parsers failed for data: {}", nbtString);
-                    throw e; // re-throw original exception
-                }
-            }
-        }
+        String nbtString = deserializeString(serializedNbt);
+        CompoundTag compoundTag = TagParser.parseTag(nbtString);
 
         if (compoundTag.isEmpty() || !compoundTag.contains("id", Tag.TAG_STRING)) {
             return ItemStack.EMPTY; // Invalid or empty tag
@@ -604,40 +578,9 @@ public class VanillaSync {
             // It's our placeholder, retrieve the original NBT string
             return itemStack.getComponents().get(DataComponents.CUSTOM_DATA).copyTag().getString("playersync:original_item_nbt");
         } else {
-            // It's a normal item or empty, serialize using binary NBT to avoid SNBT round-trip issues
-            Tag tag = serializeNBT(itemStack);
-            if (tag instanceof CompoundTag compoundTag) {
-                return serializeTagToBinaryBase64(compoundTag);
-            }
-            // Fallback to SNBT-based serialization for non-compound tags
-            return serialize(tag.toString());
+            // It's a normal item or empty, serialize its current NBT
+            return serialize(serializeNBT(itemStack).toString());
         }
-    }
-
-    /**
-     * Serializes a CompoundTag to a Base64-encoded binary NBT string.
-     * This avoids SNBT round-trip issues where Tag.toString() produces SNBT
-     * that TagParser.parseTag() cannot parse back (e.g. with nested lists [[{...}]]).
-     */
-    public static String serializeTagToBinaryBase64(CompoundTag tag) {
-        try {
-            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-            net.minecraft.nbt.NbtIo.writeCompressed(tag, baos);
-            return "BNBT:" + Base64.getEncoder().encodeToString(baos.toByteArray());
-        } catch (IOException e) {
-            PlayerSync.LOGGER.error("Failed to serialize NBT to binary, falling back to SNBT", e);
-            return serialize(tag.toString());
-        }
-    }
-
-    /**
-     * Deserializes a Base64-encoded binary NBT string back to a CompoundTag.
-     */
-    public static CompoundTag deserializeBinaryBase64Tag(String encoded) throws IOException {
-        String base64 = encoded.substring(5); // Remove "BNBT:" prefix
-        byte[] bytes = Base64.getDecoder().decode(base64);
-        java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bytes);
-        return net.minecraft.nbt.NbtIo.readCompressed(bais, net.minecraft.nbt.NbtAccounter.unlimitedHeap());
     }
 
     public static Tag serializeNBT(ItemStack itemStack) {

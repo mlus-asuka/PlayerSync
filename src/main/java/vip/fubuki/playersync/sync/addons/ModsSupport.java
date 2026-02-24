@@ -42,18 +42,8 @@ public class ModsSupport {
                         ResultSet rsBackpack = qrBackpack.resultSet();
                         if (rsBackpack.next()) {
                             String serialized = rsBackpack.getString("backpack_nbt");
-                            CompoundTag backpackNbt;
-                            if (serialized.startsWith("BNBT:")) {
-                                backpackNbt = VanillaSync.deserializeBinaryBase64Tag(serialized);
-                            } else {
-                                String nbtString = VanillaSync.deserializeString(serialized);
-                                try {
-                                    backpackNbt = TagParser.parseTag(nbtString);
-                                } catch (CommandSyntaxException ex) {
-                                    PlayerSync.LOGGER.warn("TagParser.parseTag failed for backpack UUID {}, trying fallback", contentsUuid);
-                                    backpackNbt = net.minecraft.nbt.NbtUtils.snbtToStructure(nbtString);
-                                }
-                            }
+                            String nbtString = VanillaSync.deserializeString(serialized);
+                            CompoundTag backpackNbt = TagParser.parseTag(nbtString);
                             // Update BackpackStorage with the retrieved NBT
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
                             PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
@@ -64,8 +54,6 @@ public class ModsSupport {
                         PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
                     } catch (CommandSyntaxException e) {
                         PlayerSync.LOGGER.error("Error parsing backpack NBT for UUID {}. Skipping backpack.", contentsUuid, e);
-                    } catch (IOException e) {
-                        PlayerSync.LOGGER.error("Error reading binary backpack NBT for UUID {}. Skipping backpack.", contentsUuid, e);
                     }
                 } else {
                     PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
@@ -194,7 +182,7 @@ public class ModsSupport {
                 UUID contentsUuid = uuidOpt.get();
                 // Get internal backpack data from BackpackStorage (creates it if missing)
                 CompoundTag backpackNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
-                String serialized = VanillaSync.serializeTagToBinaryBase64(backpackNbt);
+                String serialized = VanillaSync.serialize(backpackNbt.toString());
                 try {
                     // Use REPLACE INTO so existing records are updated
                     JDBCsetUp.executeUpdate("REPLACE INTO backpack_data (uuid, backpack_nbt) VALUES ('" + contentsUuid + "', '" + serialized + "')");

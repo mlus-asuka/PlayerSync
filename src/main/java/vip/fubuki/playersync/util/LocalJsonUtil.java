@@ -46,8 +46,8 @@ public class LocalJsonUtil {
     public static String cleanSnbt(String snbt) {
         if (snbt == null) return null;
 
-        return snbt.replaceAll(",\\s*\\{\"\":\"\"}", "")
-                .replaceAll("\\{\"\":\"\"}\\s*,", "")
-                .replaceAll("\\{\"\":\"\"}", "");
+        return snbt.replace("{\"\":", "{\"_\":")
+                .replace(",\"\":", ",\"_\":")
+                .replace("[\"\":", "[\"_\":");
     }
 }
