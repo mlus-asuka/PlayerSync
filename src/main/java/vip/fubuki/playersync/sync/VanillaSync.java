@@ -731,11 +731,17 @@ public class VanillaSync {
                         if (ModList.get().isLoaded("refinedstorage")) {
                             ModsSupport.storeRefinedStorageDisks(player);
                         }
-                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", puuid);
                         PlayerSync.LOGGER.info("Saved player {} data on server shutdown", player.getUUID());
                     } catch (Exception e) {
                         PlayerSync.LOGGER.error("Error saving player {} on shutdown", player.getUUID(), e);
                     } finally {
+                        // CRITICAL: online=0 MUST be in finally - if any save throws,
+                        // player gets permanently locked as online=1
+                        try {
+                            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", puuid);
+                        } catch (Exception e2) {
+                            PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline on shutdown", puuid, e2);
+                        }
                         lock.unlock();
                     }
                 }
@@ -794,10 +800,16 @@ public class VanillaSync {
                 ModCompatSync.storeAll(player);
                 // Save main inventory + effects + advancements (main thread - safe)
                 store(player, false);
-                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
             } catch (Exception e) {
                 PlayerSync.LOGGER.error("Error during player logout save for {}", player_uuid, e);
             } finally {
+                // CRITICAL: online=0 MUST be in finally - if store() throws, player gets
+                // permanently locked as online=1 and can never reconnect.
+                try {
+                    JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+                } catch (Exception e2) {
+                    PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline", player_uuid, e2);
+                }
                 lock.unlock();
                 removePlayerLock(player_uuid);
             }
@@ -1137,11 +1149,16 @@ public class VanillaSync {
                         }
 
                         // === BACKGROUND THREAD: Write main snapshot to DB (slow, off main thread) ===
+                        // Use tryLock in the background task to skip if logout already saved newer data
                         executorService.submit(() -> {
+                            ReentrantLock bgLock = getPlayerLock(puuid);
+                            if (!bgLock.tryLock()) return; // logout won the race, skip stale snapshot
                             try {
                                 writeSnapshotToDB(snapshot);
                             } catch (Exception e) {
                                 PlayerSync.LOGGER.error("Error auto-saving player {}", puuid, e);
+                            } finally {
+                                bgLock.unlock();
                             }
                         });
                     } catch (Exception e) {
