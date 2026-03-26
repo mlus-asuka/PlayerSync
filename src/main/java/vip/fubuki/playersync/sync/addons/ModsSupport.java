@@ -204,8 +204,8 @@ public class ModsSupport {
             // Use cached data from death event
             PlayerSync.LOGGER.info("Using cached curios data for dead player {}", playerUuid);
             JDBCsetUp.executePreparedUpdate(
-                    "UPDATE curios SET curios_item=? WHERE uuid=?",
-                    cached.serializedData, playerUuid.toString());
+                    "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
+                    playerUuid.toString(), cached.serializedData);
             CuriosCache.curiosCache.remove(playerUuid);
         } else {
             // Fallback: try to read from API (may be empty for dead players)
@@ -234,16 +234,11 @@ public class ModsSupport {
 
         String serializedData = flatMap.toString();
 
-        // Use prepared statements to prevent SQL injection / data corruption
-        if (init) {
-            JDBCsetUp.executePreparedUpdate(
-                    "INSERT INTO curios (uuid, curios_item) VALUES (?, ?)",
-                    player.getUUID().toString(), serializedData);
-        } else {
-            JDBCsetUp.executePreparedUpdate(
-                    "UPDATE curios SET curios_item=? WHERE uuid=?",
-                    serializedData, player.getUUID().toString());
-        }
+        // FIX: Use REPLACE INTO instead of separate INSERT/UPDATE to prevent silent
+        // no-ops when the row doesn't exist yet (e.g. new player who died before first save)
+        JDBCsetUp.executePreparedUpdate(
+                "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
+                player.getUUID().toString(), serializedData);
     }
 
     // ============================
@@ -461,12 +456,9 @@ public class ModsSupport {
                     com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(sp.serverLevel());
 
             for (UUID uuid : diskUuids) {
-                // Check if storage already exists on this server (don't overwrite)
-                if (repo.get(uuid).isPresent()) {
-                    PlayerSync.LOGGER.debug("RS2 storage {} already exists on this server, skipping restore", uuid);
-                    continue;
-                }
-
+                // FIX: Always overwrite with DB data (source of truth). Previously skipped if storage
+                // existed locally, causing stale data to persist when a player modified a disk on
+                // another server and came back.
                 restoreStorageContents(uuid, (nbt) -> {
                     try {
                         injectRS2StorageEntry(repo, nbt, sp);

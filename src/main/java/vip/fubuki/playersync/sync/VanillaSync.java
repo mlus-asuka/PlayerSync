@@ -219,56 +219,47 @@ public class VanillaSync {
     public static Set<String> syncNotCompletedPlayer = ConcurrentHashMap.newKeySet();
 
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
-        ServerPlayer joinedPlayer = (ServerPlayer) event.getEntity();
-        String player_uuid = joinedPlayer.getUUID().toString();
-        if (joinedPlayer.isDeadOrDying()) {
-            deadPlayerWhileLogging.add(player_uuid);
-            joinedPlayer.removeTag("player_synced");
+        ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
+        String player_uuid = serverPlayer.getUUID().toString();
+        MinecraftServer server = serverPlayer.getServer();
 
-            // Simulate normal death behavior
-            MinecraftServer server = joinedPlayer.getServer();
-            if (server != null) {
-                ResourceKey<Level> respawnLevel = joinedPlayer.getRespawnDimension();
-                BlockPos respawnPos = joinedPlayer.getRespawnPosition();
-                double respawnX;
-                double respawnY;
-                double respawnZ;
+        if (server == null) {
+            PlayerSync.LOGGER.error("Server is null for player {}", player_uuid);
+            return;
+        }
+
+        if (serverPlayer.isDeadOrDying()) {
+            deadPlayerWhileLogging.add(player_uuid);
+            serverPlayer.removeTag("player_synced");
+            server.execute(() -> {
+                ResourceKey<Level> respawnLevel = serverPlayer.getRespawnDimension();
+                BlockPos respawnPos = serverPlayer.getRespawnPosition();
                 if (respawnPos != null) {
                     ServerLevel level = server.getLevel(respawnLevel);
-                    respawnX = respawnPos.getX();
-                    respawnY = respawnPos.getY();
-                    respawnZ = respawnPos.getZ();
                     if (level != null) {
-                        joinedPlayer.teleportTo(level, respawnX, respawnY + 1, respawnZ, 0, 0);
+                        serverPlayer.teleportTo(level, respawnPos.getX(), respawnPos.getY() + 1, respawnPos.getZ(), 0, 0);
                     }
-                } else {
-                    PlayerSync.LOGGER.debug("Player {} has no respawn point", player_uuid);
                 }
-            } else {
-                PlayerSync.LOGGER.warn("Trying to get server,but got a null");
-            }
-
-            joinedPlayer.setHealth(1);
+                serverPlayer.setHealth(1);
+                serverPlayer.connection.disconnect(Component.translatableWithFallback("playersync.wrong_entity_status","An error occurred while creating playerEntity in the world,please login again."));
+            });
             try {
                 JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
                 JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=1, last_server=? WHERE uuid=?", JdbcConfig.SERVER_ID.get(), player_uuid);
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("An error occurred while handling dead/dying player {}", e.getMessage());
             }
-            joinedPlayer.connection.disconnect(Component.translatableWithFallback("playersync.wrong_entity_status","An error occurred while creating playerEntity in the world,please login again."));
             return;
         }
 
-        // Acquire per-player lock to prevent concurrent save/restore (anti-duplication)
         ReentrantLock lock = getPlayerLock(player_uuid);
         lock.lock();
         try {
             PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
-
             syncNotCompletedPlayer.add(player_uuid);
-            ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
 
-            // First query: check if player exists in DB
+            // === PHASE 1: DB reads on background thread (thread-safe) ===
+
             boolean playerExists;
             try (JDBCsetUp.QueryResult qr1 = JDBCsetUp.executePreparedQuery(
                     "SELECT uuid FROM player_data WHERE uuid=?", player_uuid)) {
@@ -276,28 +267,56 @@ public class VanillaSync {
             }
 
             if (!playerExists) {
-                // New player - init and save
-                ModsSupport modsSupport = new ModsSupport();
-                modsSupport.doCuriosRestore(serverPlayer);
-                store(event.getEntity(), true);
-                JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
-                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=1, last_server=? WHERE uuid=?", JdbcConfig.SERVER_ID.get(), player_uuid);
-                PlayerSync.LOGGER.info("New player detected, init completed.");
-                syncNotCompletedPlayer.remove(player_uuid);
+                server.execute(() -> {
+                    try {
+                        new ModsSupport().doCuriosRestore(serverPlayer);
+                        store(serverPlayer, true);
+                        JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
+                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=1, last_server=? WHERE uuid=?", JdbcConfig.SERVER_ID.get(), player_uuid);
+                        serverPlayer.addTag("player_synced");
+                    } catch (Exception e) {
+                        PlayerSync.LOGGER.error("Error initializing new player {}", player_uuid, e);
+                    } finally {
+                        syncNotCompletedPlayer.remove(player_uuid);
+                    }
+                });
                 return;
             }
 
-            // Mark player as online immediately to prevent race conditions
             JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
             JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=1, last_server=? WHERE uuid=?", JdbcConfig.SERVER_ID.get(), player_uuid);
 
-            // Retrieve full player data
+            // Read all DB data into local variables (background thread - safe)
+            final int health, foodLevel, xp, score;
+            final String leftHand, cursors, armorData, inventoryData, enderChestData, effectData;
+
             try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
                     "SELECT * FROM player_data WHERE uuid=?", player_uuid)) {
                 ResultSet rs2 = qr2.resultSet();
+                if (!rs2.next()) {
+                    PlayerSync.LOGGER.warn("No data found for existing player {}", player_uuid);
+                    syncNotCompletedPlayer.remove(player_uuid);
+                    return;
+                }
+                health = rs2.getInt("health");
+                foodLevel = rs2.getInt("food_level");
+                xp = rs2.getInt("xp");
+                score = rs2.getInt("score");
+                leftHand = rs2.getString("left_hand");
+                cursors = rs2.getString("cursors");
+                armorData = rs2.getString("armor");
+                inventoryData = rs2.getString("inventory");
+                enderChestData = rs2.getString("enderchest");
+                effectData = rs2.getString("effects");
+            }
 
-                if (rs2.next()) {
-                    // === ANTI-DUPLICATION: Clear all inventories BEFORE restoring from DB ===
+            // === PHASE 2: Apply to player on MAIN SERVER THREAD ===
+            // Minecraft entities are NOT thread-safe. Modifying inventory/health/effects
+            // from a background thread causes duplication exploits and corruption.
+            CountDownLatch applyLatch = new CountDownLatch(1);
+            server.execute(() -> {
+                try {
+                    // ANTI-DUPLICATION: Clear all inventories BEFORE restoring
                     serverPlayer.getInventory().clearContent();
                     serverPlayer.getEnderChestInventory().clearContent();
                     serverPlayer.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
@@ -307,47 +326,27 @@ public class VanillaSync {
                     }
 
                     // Restore basic attributes
-                    int health = rs2.getInt("health");
-                    if (health <= 0) {
-                        serverPlayer.setHealth(1);
-                    } else {
-                        serverPlayer.setHealth(health);
-                    }
-                    serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
+                    serverPlayer.setHealth(health <= 0 ? 1 : health);
+                    serverPlayer.getFoodData().setFoodLevel(foodLevel);
+                    setXpForPlayer(serverPlayer, xp);
+                    serverPlayer.setScore(score);
 
-                    setXpForPlayer(serverPlayer, rs2.getInt("xp"));
-                    serverPlayer.setScore(rs2.getInt("score"));
+                    // Restore items
+                    serverPlayer.setItemInHand(InteractionHand.OFF_HAND, deserializeAndCreatePlaceholderIfNeeded(leftHand));
+                    serverPlayer.containerMenu.setCarried(deserializeAndCreatePlaceholderIfNeeded(cursors));
 
-                    // Restore left-hand item
-                    String leftHandEncoded = rs2.getString("left_hand");
-                    serverPlayer.setItemInHand(InteractionHand.OFF_HAND,
-                            deserializeAndCreatePlaceholderIfNeeded(leftHandEncoded));
-
-                    // Restore cursor item
-                    String cursorsEncoded = rs2.getString("cursors");
-                    serverPlayer.containerMenu.setCarried(
-                            deserializeAndCreatePlaceholderIfNeeded(cursorsEncoded));
-
-                    // Restore armor
-                    String armor_data = rs2.getString("armor");
-                    if (armor_data != null && armor_data.length() > 2) {
-                        Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
+                    if (armorData != null && armorData.length() > 2) {
+                        Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armorData);
                         for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
                             serverPlayer.getInventory().armor.set(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
                         }
                     }
-
-                    // Restore inventory
-                    String inventoryData = rs2.getString("inventory");
                     if (inventoryData != null && inventoryData.length() > 2) {
                         Map<Integer, String> inventory = LocalJsonUtil.StringToEntryMap(inventoryData);
                         for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
                             serverPlayer.getInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
                         }
                     }
-
-                    // Restore Ender Chest
-                    String enderChestData = rs2.getString("enderchest");
                     if (enderChestData != null && enderChestData.length() > 2) {
                         Map<Integer, String> ender_chest = LocalJsonUtil.StringToEntryMap(enderChestData);
                         for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
@@ -355,12 +354,8 @@ public class VanillaSync {
                         }
                     }
 
-                    // FIX: ALWAYS clear effects before restoring to prevent stale local effects
-                    // from persisting when DB has no saved effects (e.g. player had no effects on previous server)
+                    // Always clear effects, then restore from DB
                     serverPlayer.removeAllEffects();
-
-                    // Restore Effects from DB (if any)
-                    String effectData = rs2.getString("effects");
                     if (effectData != null && effectData.length() > 2) {
                         Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
                         for (Map.Entry<Integer, String> entry : effects.entrySet()) {
@@ -371,26 +366,34 @@ public class VanillaSync {
                             }
                         }
                     }
+
+                    // Restore mod data (these do their own DB reads internally, acceptable on main thread)
+                    ModsSupport modsSupport = new ModsSupport();
+                    modsSupport.doCuriosRestore(serverPlayer);
+                    modsSupport.doBackPackRestore(serverPlayer);
+                    if (ModList.get().isLoaded("sophisticatedstorage")) {
+                        ModsSupport.restoreSophisticatedStorageItems(serverPlayer);
+                    }
+                    if (ModList.get().isLoaded("refinedstorage")) {
+                        ModsSupport.restoreRefinedStorageDisks(serverPlayer);
+                    }
+                    ModCompatSync.restoreAll(serverPlayer);
+
+                    serverPlayer.addTag("player_synced");
+                    PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error applying sync data for player {}", player_uuid, e);
+                } finally {
+                    syncNotCompletedPlayer.remove(player_uuid);
+                    applyLatch.countDown();
                 }
-            }
+            });
 
-            // Restore mod data AFTER main inventory is restored
-            ModsSupport modsSupport = new ModsSupport();
-            modsSupport.doCuriosRestore(serverPlayer);
-            modsSupport.doBackPackRestore(serverPlayer);
-            if (ModList.get().isLoaded("sophisticatedstorage")) {
-                ModsSupport.restoreSophisticatedStorageItems(serverPlayer);
+            // Wait for main thread to finish applying (prevents lock release before data is applied)
+            if (!applyLatch.await(15, TimeUnit.SECONDS)) {
+                PlayerSync.LOGGER.error("Timeout waiting for main thread sync for player {}", player_uuid);
+                syncNotCompletedPlayer.remove(player_uuid);
             }
-            if (ModList.get().isLoaded("refinedstorage")) {
-                ModsSupport.restoreRefinedStorageDisks(serverPlayer);
-            }
-            // Restore mod compatibility data (Accessories/Aether, CosmeticArmor)
-            ModCompatSync.restoreAll(serverPlayer);
-
-            serverPlayer.addTag("player_synced");
-
-            PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
-            syncNotCompletedPlayer.remove(player_uuid);
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
             syncNotCompletedPlayer.remove(player_uuid);
@@ -648,6 +651,10 @@ public class VanillaSync {
         if (server != null) {
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
                 if (player.getTags().contains("player_synced") && !player.isDeadOrDying()) {
+                    String puuid = player.getUUID().toString();
+                    // FIX: Acquire per-player lock to prevent race with queued logout save
+                    ReentrantLock lock = getPlayerLock(puuid);
+                    lock.lock();
                     try {
                         store(player, false);
                         if (ModList.get().isLoaded("curios")) {
@@ -663,10 +670,12 @@ public class VanillaSync {
                         if (ModList.get().isLoaded("refinedstorage")) {
                             ModsSupport.storeRefinedStorageDisks(player);
                         }
-                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player.getUUID().toString());
+                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", puuid);
                         PlayerSync.LOGGER.info("Saved player {} data on server shutdown", player.getUUID());
                     } catch (Exception e) {
                         PlayerSync.LOGGER.error("Error saving player {} on shutdown", player.getUUID(), e);
+                    } finally {
+                        lock.unlock();
                     }
                 }
             }
@@ -674,14 +683,27 @@ public class VanillaSync {
         JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", JdbcConfig.SERVER_ID.get());
     }
 
+    /**
+     * FIX: All save operations (inventory, curios, mod-compat) are now under the per-player lock
+     * to prevent race conditions with concurrent auto-save tasks on the executor.
+     */
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        // Acquire per-player lock to prevent concurrent save/restore (anti-duplication)
+        Player player = event.getEntity();
         ReentrantLock lock = getPlayerLock(player_uuid);
         lock.lock();
         try {
-            // FIX: Save data BEFORE marking offline to prevent data loss on quick reconnect
-            store(event.getEntity(), false);
+            // Save ALL data under lock: curios, mod-compat, then main inventory, then mark offline
+            if (ModList.get().isLoaded("curios")) {
+                ModsSupport modsSupport = new ModsSupport();
+                if (player.isDeadOrDying()) {
+                    modsSupport.saveCuriosFromCacheOrApi(player);
+                } else {
+                    modsSupport.onPlayerLeave(player);
+                }
+            }
+            ModCompatSync.storeAll(player);
+            store(player, false);
             JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
         } finally {
             lock.unlock();
@@ -701,20 +723,8 @@ public class VanillaSync {
             JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
             syncNotCompletedPlayer.remove(player_uuid);
         } else {
-            // Mod support - save curios
-            ModsSupport modsSupport = new ModsSupport();
-            Player player = event.getEntity();
-
-            // FIX: If player is dead/dying, use curios cache instead of reading from API (which returns empty)
-            if (player.isDeadOrDying()) {
-                modsSupport.saveCuriosFromCacheOrApi(player);
-            } else {
-                modsSupport.onPlayerLeave(player);
-            }
-
-            // Save mod compatibility data (Accessories/Aether, CosmeticArmor)
-            ModCompatSync.storeAll(player);
-
+            // FIX: All saves moved inside doPlayerLogout under the per-player lock
+            // to prevent race conditions with auto-save
             executorService.submit(() -> {
                 try {
                     doPlayerLogout(event);

@@ -49,6 +49,13 @@ public class PlayerSync {
     public void onServerStarting(ServerStartingEvent event) throws SQLException {
         String dbName = JdbcConfig.DATABASE_NAME.get();
 
+        // FIX: Validate database name to prevent SQL injection via config.
+        // Only alphanumeric chars and underscores are allowed in MySQL identifiers.
+        if (!dbName.matches("[A-Za-z0-9_]+")) {
+            LOGGER.error("Invalid DATABASE_NAME '{}'. Only alphanumeric characters and underscores are allowed. Aborting.", dbName);
+            return;
+        }
+
         // Step 1: Create the database using a connection that does not select a database.
         JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `" + dbName + "`", 1);
 
@@ -84,16 +91,14 @@ public class PlayerSync {
         );
 
         // Check and alter player_data table if columns are missing
-        JDBCsetUp.QueryResult queryResult = JDBCsetUp.executeQuery(
-                "SELECT COUNT(*) AS column_count " +
-                        "FROM INFORMATION_SCHEMA.COLUMNS " +
-                        "WHERE TABLE_SCHEMA = '" + dbName + "' " +
-                        "AND TABLE_NAME = 'player_data';"
-        );
-        ResultSet resultSet = queryResult.resultSet();
         int columnCount = 0;
-        if (resultSet.next()) {
-            columnCount = resultSet.getInt("column_count");
+        try (JDBCsetUp.QueryResult queryResult = JDBCsetUp.executePreparedQuery(
+                "SELECT COUNT(*) AS column_count FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'player_data'",
+                dbName)) {
+            ResultSet resultSet = queryResult.resultSet();
+            if (resultSet.next()) {
+                columnCount = resultSet.getInt("column_count");
+            }
         }
         if (columnCount < 14) {
             JDBCsetUp.executeUpdate(
@@ -163,40 +168,31 @@ public class PlayerSync {
             );
 
             // Check if backpack_data table has the 'uuid' column
-            JDBCsetUp.QueryResult backpackColCheck = JDBCsetUp.executeQuery(
-                    "SELECT COUNT(*) AS colCount FROM INFORMATION_SCHEMA.COLUMNS " +
-                            "WHERE TABLE_SCHEMA = '" + dbName + "' " +
-                            "AND TABLE_NAME = 'backpack_data' " +
-                            "AND COLUMN_NAME = 'uuid';"
-            );
-            ResultSet rsBackpackCol = backpackColCheck.resultSet();
-            if (rsBackpackCol.next() && rsBackpackCol.getInt("colCount") == 0) {
-                LOGGER.info("Altering backpack_data table to add missing 'uuid' column.");
-                // Add the missing column and set it as primary key.
-                JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`backpack_data` ADD COLUMN uuid CHAR(36) NOT NULL", 1);
-                JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`backpack_data` ADD PRIMARY KEY (uuid)", 1);
+            try (JDBCsetUp.QueryResult backpackColCheck = JDBCsetUp.executePreparedQuery(
+                    "SELECT COUNT(*) AS colCount FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'backpack_data' AND COLUMN_NAME = 'uuid'",
+                    dbName)) {
+                ResultSet rsBackpackCol = backpackColCheck.resultSet();
+                if (rsBackpackCol.next() && rsBackpackCol.getInt("colCount") == 0) {
+                    LOGGER.info("Altering backpack_data table to add missing 'uuid' column.");
+                    JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`backpack_data` ADD COLUMN uuid CHAR(36) NOT NULL", 1);
+                    JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`backpack_data` ADD PRIMARY KEY (uuid)", 1);
+                }
             }
-            rsBackpackCol.close();
-            backpackColCheck.connection().close();
         }
 
         // Check and alter the 'advancements' column in player_data if necessary
-        JDBCsetUp.QueryResult advColCheck = JDBCsetUp.executeQuery(
-                "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS " +
-                        "WHERE TABLE_SCHEMA = '" + dbName + "' " +
-                        "AND TABLE_NAME = 'player_data' " +
-                        "AND COLUMN_NAME = 'advancements';"
-        );
-        ResultSet rsAdvCol = advColCheck.resultSet();
-        if (rsAdvCol.next()) {
-            String dataType = rsAdvCol.getString("DATA_TYPE");
-            if (!"mediumblob".equalsIgnoreCase(dataType)) {
-                LOGGER.info("Altering player_data table to modify 'advancements' column to MEDIUMBLOB.");
-                JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`player_data` MODIFY COLUMN advancements MEDIUMBLOB", 1);
+        try (JDBCsetUp.QueryResult advColCheck = JDBCsetUp.executePreparedQuery(
+                "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'player_data' AND COLUMN_NAME = 'advancements'",
+                dbName)) {
+            ResultSet rsAdvCol = advColCheck.resultSet();
+            if (rsAdvCol.next()) {
+                String dataType = rsAdvCol.getString("DATA_TYPE");
+                if (!"mediumblob".equalsIgnoreCase(dataType)) {
+                    LOGGER.info("Altering player_data table to modify 'advancements' column to MEDIUMBLOB.");
+                    JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`player_data` MODIFY COLUMN advancements MEDIUMBLOB", 1);
+                }
             }
         }
-        rsAdvCol.close();
-        // ----- END NEW BLOCK -----
 
         // Create generic mod_player_data table for mod compatibility (Accessories, CosmeticArmor, Aether, etc.)
         JDBCsetUp.executeUpdate(
