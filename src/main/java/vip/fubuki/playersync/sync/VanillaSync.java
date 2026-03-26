@@ -415,27 +415,69 @@ public class VanillaSync {
     }
 
     /**
-     * FIX: Secondary kick check during PlayerLoggedInEvent.
-     * PlayerNegotiationEvent fires very early and disconnect() may not always work.
-     * This provides a reliable fallback that kicks the player from the server thread.
-     * Also marks online=1 SYNCHRONOUSLY here to close the race condition window
-     * where doPlayerJoin (async) hasn't set online=1 yet.
+     * FIX: Full duplicate-login kick check during PlayerLoggedInEvent.
+     * PlayerNegotiationEvent.getConnection().disconnect() does NOT reliably disconnect
+     * the player in NeoForge 1.21.1. By the time PlayerLoggedInEvent fires, we have
+     * a full ServerPlayer with player.connection.disconnect() which is reliable.
+     *
+     * Also marks online=1 SYNCHRONOUSLY to close the race condition window.
      */
-    @SubscribeEvent
+    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.HIGHEST)
     public static void onPlayerLoggedInKickCheck(PlayerEvent.PlayerLoggedInEvent event) {
-        if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) return;
         ServerPlayer player = (ServerPlayer) event.getEntity();
         String player_uuid = player.getUUID().toString();
 
+        if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) {
+            // Still mark online even if kick is disabled
+            try {
+                JDBCsetUp.executePreparedUpdate(
+                        "UPDATE player_data SET online=1, last_server=? WHERE uuid=?",
+                        JdbcConfig.SERVER_ID.get(), player_uuid);
+            } catch (SQLException ignored) {}
+            return;
+        }
+
         try {
-            // Mark online=1 SYNCHRONOUSLY to prevent race conditions.
-            // Without this, a player joining Server B while still on Server A might slip through
-            // because the async doPlayerJoin on Server A hasn't set online=1 yet.
+            boolean online = false;
+            int lastServer = 0;
+
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
+                ResultSet rs = qr.resultSet();
+                if (rs.next()) {
+                    online = rs.getBoolean("online");
+                    lastServer = rs.getInt("last_server");
+                }
+            }
+
+            if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
+                // Check if the other server is still alive
+                try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
+                        "SELECT last_update, enable FROM server_info WHERE id=?", lastServer)) {
+                    ResultSet rs2 = qr2.resultSet();
+                    if (rs2.next()) {
+                        long lastUpdate = rs2.getLong("last_update");
+                        boolean enable = rs2.getBoolean("enable");
+                        if (enable && System.currentTimeMillis() < lastUpdate + 300000L) {
+                            // Other server is alive → KICK using ServerPlayer.connection which works reliably
+                            PlayerSync.LOGGER.warn("Kicking player {} - already online on server {}", player_uuid, lastServer);
+                            player.connection.disconnect(Component.translatableWithFallback(
+                                    "playersync.already_online",
+                                    "You can't join more than one synchronization server at the same time."));
+                            return;
+                        }
+                        // Other server is dead, disable it
+                        JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", lastServer);
+                    }
+                }
+            }
+
+            // Mark online=1 SYNCHRONOUSLY
             JDBCsetUp.executePreparedUpdate(
                     "UPDATE player_data SET online=1, last_server=? WHERE uuid=?",
                     JdbcConfig.SERVER_ID.get(), player_uuid);
-        } catch (SQLException e) {
-            PlayerSync.LOGGER.error("Error setting online flag for player {}", player_uuid, e);
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error during kick check for player {}", player_uuid, e);
         }
     }
 

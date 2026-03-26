@@ -286,29 +286,45 @@ public class ModsSupport {
      */
     public static void storeSophisticatedStorageItems(Player player) {
         PlayerSync.LOGGER.info("Scanning inventory for Sophisticated Storage items for player {}", player.getUUID());
-        Inventory inventory = player.getInventory();
+        scanAndStoreSophisticatedStorageInContainer(player.getInventory());
+        // Also scan ender chest
+        for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getEnderChestInventory().getItem(i);
+            if (stack.isEmpty()) continue;
+            storeSingleSophisticatedStorageItem(stack);
+        }
+    }
 
+    private static void scanAndStoreSophisticatedStorageInContainer(Inventory inventory) {
         for (int i = 0; i < inventory.getContainerSize(); i++) {
             ItemStack stack = inventory.getItem(i);
             if (stack.isEmpty()) continue;
+            storeSingleSophisticatedStorageItem(stack);
+        }
+    }
 
-            if (!isSophisticatedStorageItem(stack)) continue;
+    private static void storeSingleSophisticatedStorageItem(ItemStack stack) {
+        if (!isSophisticatedStorageItem(stack)) return;
 
-            // FIX: Extract UUID using both "contentsUuid" (backpacks) and "storageUuid" (storage items) keys
-            UUID contentsUuid = extractStorageUuid(stack);
-            if (contentsUuid == null) contentsUuid = extractContentsUuid(stack);
-            if (contentsUuid == null) continue;
+        try {
+            // FIX: Use the StackStorageWrapper API to get the UUID via DataComponent,
+            // NOT CustomData extraction. In 1.21.1, the UUID is a proper DataComponent
+            // managed by ModCoreDataComponents, not an NBT tag in CustomData.
+            net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper wrapper =
+                    net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper.fromStack(
+                            net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer().registryAccess(), stack);
+            Optional<UUID> uuidOpt = wrapper.getContentsUuid();
+            if (uuidOpt.isEmpty()) return;
 
-            try {
-                // FIX: Use ItemContentsStorage (Sophisticated Storage's own SavedData), NOT BackpackStorage
-                CompoundTag storageNbt = net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get().getOrCreateStorageContents(contentsUuid);
-                if (storageNbt != null && !storageNbt.isEmpty()) {
-                    saveStorageContents(contentsUuid, storageNbt);
-                    PlayerSync.LOGGER.info("Saved Sophisticated Storage item data for UUID {}", contentsUuid);
-                }
-            } catch (Exception e) {
-                PlayerSync.LOGGER.error("Error saving Sophisticated Storage data for UUID {}", contentsUuid, e);
+            UUID contentsUuid = uuidOpt.get();
+            CompoundTag storageNbt = net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get()
+                    .getOrCreateStorageContents(contentsUuid);
+            if (storageNbt != null && !storageNbt.isEmpty()) {
+                saveStorageContents(contentsUuid, storageNbt);
+                PlayerSync.LOGGER.info("Saved Sophisticated Storage item data for UUID {}", contentsUuid);
             }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error saving Sophisticated Storage data for item", e);
         }
     }
 
@@ -317,29 +333,45 @@ public class ModsSupport {
      */
     public static void restoreSophisticatedStorageItems(Player player) {
         PlayerSync.LOGGER.info("Restoring Sophisticated Storage items for player {}", player.getUUID());
-        Inventory inventory = player.getInventory();
+        restoreSophisticatedStorageInContainer(player.getInventory());
+        // Also restore ender chest items
+        for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getEnderChestInventory().getItem(i);
+            if (stack.isEmpty()) continue;
+            restoreSingleSophisticatedStorageItem(stack);
+        }
+    }
 
+    private static void restoreSophisticatedStorageInContainer(Inventory inventory) {
         for (int i = 0; i < inventory.getContainerSize(); i++) {
             ItemStack stack = inventory.getItem(i);
             if (stack.isEmpty()) continue;
+            restoreSingleSophisticatedStorageItem(stack);
+        }
+    }
 
-            if (!isSophisticatedStorageItem(stack)) continue;
+    private static void restoreSingleSophisticatedStorageItem(ItemStack stack) {
+        if (!isSophisticatedStorageItem(stack)) return;
 
-            // FIX: Try both UUID keys
-            UUID contentsUuid = extractStorageUuid(stack);
-            if (contentsUuid == null) contentsUuid = extractContentsUuid(stack);
-            if (contentsUuid == null) continue;
+        try {
+            net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper wrapper =
+                    net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper.fromStack(
+                            net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer().registryAccess(), stack);
+            Optional<UUID> uuidOpt = wrapper.getContentsUuid();
+            if (uuidOpt.isEmpty()) return;
 
-            final UUID finalUuid = contentsUuid;
-            restoreStorageContents(contentsUuid, (nbt) -> {
+            UUID finalUuid = uuidOpt.get();
+            restoreStorageContents(finalUuid, (nbt) -> {
                 try {
-                    // FIX: Use ItemContentsStorage, NOT BackpackStorage
-                    net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get().setStorageContents(finalUuid, nbt);
+                    net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get()
+                            .setStorageContents(finalUuid, nbt);
                     PlayerSync.LOGGER.info("Restored Sophisticated Storage item data for UUID {}", finalUuid);
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error restoring Sophisticated Storage data for UUID {}", finalUuid, e);
                 }
             });
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error restoring Sophisticated Storage item", e);
         }
     }
 
@@ -406,6 +438,11 @@ public class ModsSupport {
      * The actual storage data lives in a world-level SavedData (StorageRepositoryImpl).
      * We extract individual entries from the saved data and store them in our DB.
      */
+    /**
+     * Saves RS2 disk storage by reading the SavedData .dat file directly from disk.
+     * This avoids issues with the in-memory API format by reading the raw NBT that RS2 writes.
+     * The SavedData file name is "refinedstorage_storages" and is stored in the overworld's data/ folder.
+     */
     public static void storeRefinedStorageDisks(Player player) {
         if (!ModList.get().isLoaded("refinedstorage")) return;
         if (!(player instanceof net.minecraft.server.level.ServerPlayer sp)) return;
@@ -414,24 +451,35 @@ public class ModsSupport {
         if (diskUuids.isEmpty()) return;
 
         try {
+            // Force RS2's SavedData to flush to disk before reading
             com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
                     com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(sp.serverLevel());
+            if (repo instanceof net.minecraft.world.level.saveddata.SavedData sd) {
+                sd.setDirty();
+            }
+            sp.getServer().overworld().getDataStorage().save();
 
-            // Serialize the full repository to NBT via SavedData.save()
-            if (repo instanceof net.minecraft.world.level.saveddata.SavedData savedData) {
-                net.minecraft.nbt.CompoundTag fullNbt = new net.minecraft.nbt.CompoundTag();
-                savedData.save(fullNbt, sp.getServer().registryAccess());
+            // Read the .dat file directly (getDataFile is private, use reflection)
+            java.io.File datFile = getRS2DataFile(sp);
+            if (datFile == null || !datFile.exists()) {
+                PlayerSync.LOGGER.warn("RS2 storage data file not found: {}", datFile.getAbsolutePath());
+                return;
+            }
 
-                for (UUID uuid : diskUuids) {
-                    net.minecraft.nbt.CompoundTag entryNbt = extractRS2Entry(fullNbt, uuid);
-                    if (entryNbt != null && !entryNbt.isEmpty()) {
-                        // Store the entry NBT along with a wrapper that includes the UUID key
-                        // so we can reconstruct the map format on restore
-                        net.minecraft.nbt.CompoundTag wrapper = new net.minecraft.nbt.CompoundTag();
-                        wrapper.put(uuid.toString(), entryNbt);
-                        saveStorageContents(uuid, wrapper);
-                        PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {}", uuid);
-                    }
+            net.minecraft.nbt.CompoundTag fileNbt = net.minecraft.nbt.NbtIo.readCompressed(
+                    datFile.toPath(), net.minecraft.nbt.NbtAccounter.unlimitedHeap());
+            // .dat file structure: { "data": { ...codec-encoded map... }, "DataVersion": int }
+            net.minecraft.nbt.CompoundTag dataNbt = fileNbt.getCompound("data");
+
+            for (UUID uuid : diskUuids) {
+                String uuidStr = uuid.toString();
+                // Search for the UUID key in the data (may be top-level or nested)
+                net.minecraft.nbt.CompoundTag entryNbt = findRS2EntryInNbt(dataNbt, uuidStr);
+                if (entryNbt != null && !entryNbt.isEmpty()) {
+                    saveStorageContents(uuid, entryNbt);
+                    PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {} ({} tags)", uuid, entryNbt.getAllKeys().size());
+                } else {
+                    PlayerSync.LOGGER.warn("RS2 disk UUID {} not found in saved data. Keys: {}", uuid, dataNbt.getAllKeys());
                 }
             }
         } catch (Exception e) {
@@ -440,9 +488,8 @@ public class ModsSupport {
     }
 
     /**
-     * Restores RS2 disk storage contents from the database.
-     * Uses reflection to access the StorageRepositoryImpl's codec for proper deserialization,
-     * then calls the public set() method to inject entries into the live repository.
+     * Restores RS2 disk storage by writing entries back into the SavedData .dat file
+     * and reloading the repository. This ensures the data format matches exactly what RS2 expects.
      */
     public static void restoreRefinedStorageDisks(Player player) {
         if (!ModList.get().isLoaded("refinedstorage")) return;
@@ -452,20 +499,66 @@ public class ModsSupport {
         if (diskUuids.isEmpty()) return;
 
         try {
-            com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
-                    com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(sp.serverLevel());
+            // Read the current .dat file
+            var dataStorage = sp.getServer().overworld().getDataStorage();
+            java.io.File datFile = getRS2DataFile(sp);
 
+            net.minecraft.nbt.CompoundTag fileNbt;
+            if (datFile.exists()) {
+                fileNbt = net.minecraft.nbt.NbtIo.readCompressed(
+                        datFile.toPath(), net.minecraft.nbt.NbtAccounter.unlimitedHeap());
+            } else {
+                fileNbt = new net.minecraft.nbt.CompoundTag();
+                fileNbt.put("data", new net.minecraft.nbt.CompoundTag());
+            }
+            net.minecraft.nbt.CompoundTag dataNbt = fileNbt.getCompound("data");
+
+            boolean modified = false;
             for (UUID uuid : diskUuids) {
-                // FIX: Always overwrite with DB data (source of truth). Previously skipped if storage
-                // existed locally, causing stale data to persist when a player modified a disk on
-                // another server and came back.
-                restoreStorageContents(uuid, (nbt) -> {
-                    try {
-                        injectRS2StorageEntry(repo, nbt, sp);
-                    } catch (Exception e) {
-                        PlayerSync.LOGGER.error("Error injecting RS2 storage for UUID {}", uuid, e);
+                final UUID fUuid = uuid;
+                try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                        "SELECT backpack_nbt FROM backpack_data WHERE uuid=?", uuid.toString())) {
+                    java.sql.ResultSet rs = qr.resultSet();
+                    if (!rs.next()) continue;
+                    String serialized = rs.getString("backpack_nbt");
+                    if (serialized == null) continue;
+
+                    CompoundTag entryNbt;
+                    if (serialized.startsWith("BNBT:")) {
+                        entryNbt = VanillaSync.deserializeBinaryBase64Tag(serialized);
+                    } else {
+                        String nbtStr = VanillaSync.deserializeString(serialized);
+                        entryNbt = TagParser.parseTag(nbtStr);
                     }
-                });
+
+                    // Inject into the data NBT at the right location
+                    injectRS2EntryIntoNbt(dataNbt, uuid.toString(), entryNbt);
+                    modified = true;
+                    PlayerSync.LOGGER.info("Restored RS2 disk data for UUID {}", uuid);
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error restoring RS2 disk data for UUID {}", fUuid, e);
+                }
+            }
+
+            if (modified) {
+                // Write the modified .dat file back and force RS2 to reload
+                fileNbt.put("data", dataNbt);
+                net.minecraft.nbt.NbtIo.writeCompressed(fileNbt, datFile.toPath());
+                PlayerSync.LOGGER.info("Wrote modified RS2 storage data file");
+
+                // Force the StorageRepository to reload from disk
+                // The simplest way is via reflection on the data storage cache
+                try {
+                    // Remove the cached SavedData so RS2 reloads from file on next access
+                    java.lang.reflect.Field cacheField = dataStorage.getClass().getDeclaredField("cache");
+                    cacheField.setAccessible(true);
+                    @SuppressWarnings("unchecked")
+                    java.util.Map<String, ?> cache = (java.util.Map<String, ?>) cacheField.get(dataStorage);
+                    cache.remove("refinedstorage_storages");
+                    PlayerSync.LOGGER.info("Cleared RS2 storage cache to force reload");
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.warn("Could not clear RS2 cache, data may need server restart to take effect", e);
+                }
             }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error restoring RS2 disk data for player {}", player.getUUID(), e);
@@ -518,21 +611,61 @@ public class ModsSupport {
     }
 
     /**
-     * Extracts an individual storage entry from the full StorageRepository NBT by UUID.
-     * The save() format uses UUID strings as CompoundTag keys (unboundedMap codec).
+     * Gets the RS2 SavedData .dat file path using reflection on DimensionDataStorage.
      */
-    private static net.minecraft.nbt.CompoundTag extractRS2Entry(net.minecraft.nbt.CompoundTag fullNbt, UUID uuid) {
-        String uuidStr = uuid.toString();
-        // Direct key lookup (standard unboundedMap format)
-        if (fullNbt.contains(uuidStr, net.minecraft.nbt.Tag.TAG_COMPOUND)) {
-            return fullNbt.getCompound(uuidStr);
+    private static java.io.File getRS2DataFile(net.minecraft.server.level.ServerPlayer sp) {
+        try {
+            var dataStorage = sp.getServer().overworld().getDataStorage();
+            // DimensionDataStorage stores files in a "data" subfolder of the world directory
+            // Use reflection to get the dataFolder field
+            java.lang.reflect.Field dataFolderField = dataStorage.getClass().getDeclaredField("dataFolder");
+            dataFolderField.setAccessible(true);
+            java.io.File dataFolder = (java.io.File) dataFolderField.get(dataStorage);
+            return new java.io.File(dataFolder, "refinedstorage_storages.dat");
+        } catch (Exception e) {
+            // Fallback: construct the path manually from the world directory
+            try {
+                java.nio.file.Path worldDir = sp.getServer().getServerDirectory();
+                java.io.File levelName = worldDir.resolve(
+                        sp.getServer().getWorldData().getLevelName()).toFile();
+                return new java.io.File(new java.io.File(levelName, "data"), "refinedstorage_storages.dat");
+            } catch (Exception e2) {
+                PlayerSync.LOGGER.error("Failed to locate RS2 data file", e2);
+                return null;
+            }
         }
-        // Some SavedData implementations wrap data under a "data" key
-        for (String key : fullNbt.getAllKeys()) {
-            if (fullNbt.contains(key, net.minecraft.nbt.Tag.TAG_COMPOUND)) {
-                net.minecraft.nbt.CompoundTag sub = fullNbt.getCompound(key);
+    }
+
+    /**
+     * Searches for a UUID entry in the RS2 saved data NBT.
+     * Tries multiple levels of nesting since the codec format may vary.
+     */
+    private static net.minecraft.nbt.CompoundTag findRS2EntryInNbt(net.minecraft.nbt.CompoundTag dataNbt, String uuidStr) {
+        // Direct key at top level
+        if (dataNbt.contains(uuidStr, net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+            return dataNbt.getCompound(uuidStr);
+        }
+        // Search one level deep in all compound sub-tags
+        for (String key : dataNbt.getAllKeys()) {
+            if (dataNbt.contains(key, net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+                net.minecraft.nbt.CompoundTag sub = dataNbt.getCompound(key);
                 if (sub.contains(uuidStr, net.minecraft.nbt.Tag.TAG_COMPOUND)) {
                     return sub.getCompound(uuidStr);
+                }
+            }
+            // Also check ListTag entries (some codecs encode maps as lists of pairs)
+            if (dataNbt.contains(key, net.minecraft.nbt.Tag.TAG_LIST)) {
+                net.minecraft.nbt.ListTag list = dataNbt.getList(key, net.minecraft.nbt.Tag.TAG_COMPOUND);
+                for (int i = 0; i < list.size(); i++) {
+                    net.minecraft.nbt.CompoundTag entry = list.getCompound(i);
+                    // Check for {"uuid": "...", "data": {...}} pattern
+                    if (entry.getString("uuid").equals(uuidStr) && entry.contains("data", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+                        return entry.getCompound("data");
+                    }
+                    // Check for {"id": "...", ...} pattern
+                    if (entry.getString("id").equals(uuidStr)) {
+                        return entry;
+                    }
                 }
             }
         }
@@ -540,45 +673,11 @@ public class ModsSupport {
     }
 
     /**
-     * Injects a storage entry back into the RS2 StorageRepository.
-     * Uses the repository's codec (via reflection) to properly deserialize the entry,
-     * then calls set() to inject it into the live repository.
+     * Injects an RS2 storage entry back into the saved data NBT.
+     * Mirrors the structure found during save.
      */
-    @SuppressWarnings("unchecked")
-    private static void injectRS2StorageEntry(
-            com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo,
-            net.minecraft.nbt.CompoundTag wrapperNbt,
-            net.minecraft.server.level.ServerPlayer sp) throws Exception {
-
-        // The wrapper contains { "uuid-string": { ...entry data... } }
-        // We need to decode this using the same codec that StorageRepositoryImpl uses
-
-        // Get the map codec via reflection from StorageRepositoryImpl
-        java.lang.reflect.Method getMapCodecMethod =
-                repo.getClass().getDeclaredMethod("getMapCodec", Runnable.class);
-        getMapCodecMethod.setAccessible(true);
-
-        @SuppressWarnings("rawtypes")
-        com.mojang.serialization.Codec codec = (com.mojang.serialization.Codec)
-                getMapCodecMethod.invoke(null, (Runnable) () -> {});
-
-        // Decode the single-entry wrapper using the codec
-        var ops = sp.getServer().registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
-        com.mojang.serialization.DataResult<?> dataResult = codec.decode(ops, wrapperNbt);
-
-        Optional<?> resultOpt = dataResult.result();
-        if (resultOpt.isPresent()) {
-            // DataResult contains Pair<Map<UUID, SerializableStorage>, Tag>
-            com.mojang.datafixers.util.Pair<?, ?> pair = (com.mojang.datafixers.util.Pair<?, ?>) resultOpt.get();
-            @SuppressWarnings("unchecked")
-            Map<UUID, ?> decoded = (Map<UUID, ?>) pair.getFirst();
-            for (Map.Entry<UUID, ?> entry : decoded.entrySet()) {
-                repo.set(entry.getKey(),
-                        (com.refinedmods.refinedstorage.common.api.storage.SerializableStorage) entry.getValue());
-                PlayerSync.LOGGER.info("Restored RS2 disk storage for UUID {}", entry.getKey());
-            }
-        } else {
-            PlayerSync.LOGGER.warn("Failed to decode RS2 storage data from wrapper NBT: {}", wrapperNbt);
-        }
+    private static void injectRS2EntryIntoNbt(net.minecraft.nbt.CompoundTag dataNbt, String uuidStr, net.minecraft.nbt.CompoundTag entryNbt) {
+        // Put at top level (unboundedMap format)
+        dataNbt.put(uuidStr, entryNbt);
     }
 }
