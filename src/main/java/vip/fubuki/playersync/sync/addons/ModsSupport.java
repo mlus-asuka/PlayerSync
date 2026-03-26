@@ -288,18 +288,16 @@ public class ModsSupport {
             ItemStack stack = inventory.getItem(i);
             if (stack.isEmpty()) continue;
 
-            // Check if this item is from the sophisticatedstorage namespace
-            String itemId = stack.getItem().toString();
             if (!isSophisticatedStorageItem(stack)) continue;
 
-            // Try to extract contentsUuid from the item's custom data
-            UUID contentsUuid = extractContentsUuid(stack);
+            // FIX: Extract UUID using both "contentsUuid" (backpacks) and "storageUuid" (storage items) keys
+            UUID contentsUuid = extractStorageUuid(stack);
+            if (contentsUuid == null) contentsUuid = extractContentsUuid(stack);
             if (contentsUuid == null) continue;
 
             try {
-                // Read the storage contents from the world save data via BackpackStorage
-                // Sophisticated Storage uses the same BackpackStorage mechanism from sophisticatedcore
-                CompoundTag storageNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
+                // FIX: Use ItemContentsStorage (Sophisticated Storage's own SavedData), NOT BackpackStorage
+                CompoundTag storageNbt = net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get().getOrCreateStorageContents(contentsUuid);
                 if (storageNbt != null && !storageNbt.isEmpty()) {
                     saveStorageContents(contentsUuid, storageNbt);
                     PlayerSync.LOGGER.info("Saved Sophisticated Storage item data for UUID {}", contentsUuid);
@@ -323,15 +321,19 @@ public class ModsSupport {
 
             if (!isSophisticatedStorageItem(stack)) continue;
 
-            UUID contentsUuid = extractContentsUuid(stack);
+            // FIX: Try both UUID keys
+            UUID contentsUuid = extractStorageUuid(stack);
+            if (contentsUuid == null) contentsUuid = extractContentsUuid(stack);
             if (contentsUuid == null) continue;
 
+            final UUID finalUuid = contentsUuid;
             restoreStorageContents(contentsUuid, (nbt) -> {
                 try {
-                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, nbt);
-                    PlayerSync.LOGGER.info("Restored Sophisticated Storage item data for UUID {}", contentsUuid);
+                    // FIX: Use ItemContentsStorage, NOT BackpackStorage
+                    net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get().setStorageContents(finalUuid, nbt);
+                    PlayerSync.LOGGER.info("Restored Sophisticated Storage item data for UUID {}", finalUuid);
                 } catch (Exception e) {
-                    PlayerSync.LOGGER.error("Error restoring Sophisticated Storage data for UUID {}", contentsUuid, e);
+                    PlayerSync.LOGGER.error("Error restoring Sophisticated Storage data for UUID {}", finalUuid, e);
                 }
             });
         }
@@ -350,26 +352,42 @@ public class ModsSupport {
     }
 
     /**
-     * Extracts the contents UUID from an item's custom data (used by Sophisticated Core).
-     * Both Sophisticated Backpacks and Sophisticated Storage store a "contentsUuid" in the item's NBT.
+     * Extracts the contents UUID from an item's custom data.
+     * Used by Sophisticated Backpacks (key: "contentsUuid").
      */
     private static UUID extractContentsUuid(ItemStack stack) {
+        return extractUuidFromCustomData(stack, "contentsUuid");
+    }
+
+    /**
+     * Extracts the storage UUID from an item's custom data.
+     * Used by Sophisticated Storage items - shulkers, barrels, chests (key: "storageUuid").
+     */
+    private static UUID extractStorageUuid(ItemStack stack) {
+        return extractUuidFromCustomData(stack, "storageUuid");
+    }
+
+    /**
+     * Generic UUID extraction from an item's CustomData by tag key name.
+     * Handles both UUID compound format (most/leastSignificantBits) and string format.
+     */
+    private static UUID extractUuidFromCustomData(ItemStack stack, String tagKey) {
         try {
             if (!stack.has(DataComponents.CUSTOM_DATA)) return null;
             CustomData customData = stack.get(DataComponents.CUSTOM_DATA);
             if (customData == null) return null;
             CompoundTag tag = customData.copyTag();
-            if (tag.hasUUID("contentsUuid")) {
-                return tag.getUUID("contentsUuid");
+            if (tag.hasUUID(tagKey)) {
+                return tag.getUUID(tagKey);
             }
             // Some versions use a string format
-            if (tag.contains("contentsUuid")) {
+            if (tag.contains(tagKey)) {
                 try {
-                    return UUID.fromString(tag.getString("contentsUuid"));
+                    return UUID.fromString(tag.getString(tagKey));
                 } catch (IllegalArgumentException ignored) {}
             }
         } catch (Exception e) {
-            PlayerSync.LOGGER.debug("Could not extract contentsUuid from item: {}", e.getMessage());
+            PlayerSync.LOGGER.debug("Could not extract {} from item: {}", tagKey, e.getMessage());
         }
         return null;
     }

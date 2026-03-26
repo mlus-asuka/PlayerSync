@@ -117,6 +117,7 @@ dependencies {
     compileOnly "curse.maven:curios-309927:6529130"
     compileOnly "curse.maven:sophisticated-backpacks-422301:7169832"
     compileOnly "curse.maven:sophisticated-core-618298:7168230"
+    compileOnly "curse.maven:sophisticated-storage-619320:7744168"
 
     compileOnly "thedarkcolour:kotlinforforge:5.10.0"
     compileOnly "curse.maven:cobblemon-687131:7273151"
