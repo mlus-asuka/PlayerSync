@@ -543,8 +543,14 @@ public class ModsSupport {
             if (modified) {
                 // Write the modified .dat file back and force RS2 to reload
                 fileNbt.put("data", dataNbt);
-                net.minecraft.nbt.NbtIo.writeCompressed(fileNbt, datFile.toPath());
-                PlayerSync.LOGGER.info("Wrote modified RS2 storage data file");
+                // FIX C-6: Atomic write - write to temp file then rename.
+                // Direct write can corrupt the ENTIRE RS2 storage for the server on crash mid-write.
+                java.nio.file.Path tmpPath = datFile.toPath().resolveSibling(datFile.getName() + ".tmp");
+                net.minecraft.nbt.NbtIo.writeCompressed(fileNbt, tmpPath);
+                java.nio.file.Files.move(tmpPath, datFile.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                PlayerSync.LOGGER.info("Wrote modified RS2 storage data file (atomic)");
 
                 // Force the StorageRepository to reload from disk
                 // The simplest way is via reflection on the data storage cache
@@ -599,6 +605,7 @@ public class ModsSupport {
         try {
             net.minecraft.resources.ResourceLocation loc =
                     net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (loc == null) return null; // FIX C-5: null check prevents NPE on unregistered items
             if (!loc.getNamespace().equals("refinedstorage") && !loc.getNamespace().equals("extradisks")) {
                 return null;
             }

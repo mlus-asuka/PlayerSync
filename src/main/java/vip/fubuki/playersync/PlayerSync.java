@@ -117,16 +117,15 @@ public class PlayerSync {
                         "PRIMARY KEY (`id`)" +
                         ");"
         );
+        // FIX H-8: Use prepared statements for server_id to prevent SQL injection from config
         long current = System.currentTimeMillis();
-        JDBCsetUp.executeUpdate(
-                "INSERT INTO `" + dbName + "`.`server_info`(id,enable,last_update) " +
-                        "VALUES(" + JdbcConfig.SERVER_ID.get() + ",true," + current + ") " +
-                        "ON DUPLICATE KEY UPDATE id= " + JdbcConfig.SERVER_ID.get() + ",enable = 1," +
-                        "last_update=" + current + ";"
+        JDBCsetUp.executePreparedUpdate(
+                "INSERT INTO `" + dbName + "`.`server_info`(id,enable,last_update) VALUES(?,true,?) ON DUPLICATE KEY UPDATE id=VALUES(id),enable=1,last_update=VALUES(last_update)",
+                JdbcConfig.SERVER_ID.get(), current
         );
-        JDBCsetUp.executeUpdate(
-                "UPDATE `" + dbName + "`.`server_info` SET last_update=" + System.currentTimeMillis() +
-                        " WHERE id='" + JdbcConfig.SERVER_ID.get() + "'"
+        JDBCsetUp.executePreparedUpdate(
+                "UPDATE `" + dbName + "`.`server_info` SET last_update=? WHERE id=?",
+                System.currentTimeMillis(), JdbcConfig.SERVER_ID.get()
         );
 
         // Create curios table if the Curios mod is loaded

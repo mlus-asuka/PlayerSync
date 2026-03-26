@@ -36,8 +36,11 @@ public class CuriosCache {
     //Create a method to store temporary curios data when player is dead.
     //Then check player status in the logged out event,and take a normal sync if player is alive.
     //If player is dead or dying,the cache will be used to prevent the empty data from the failure of getting handlerOpt.
+    // FIX H-5: Cache curios on death regardless of keepInventory. Without this,
+    // players on servers WITHOUT keepInventory who die then disconnect before respawning
+    // would have their curios data overwritten with empty data (Curios API returns empty for dead players).
     public static void tryStoreCuriosToCache(net.minecraft.world.entity.player.Player player) {
-        if (!ModList.get().isLoaded("curios") || !CuriosCache.isKeepInventoryActive(player)) {
+        if (!ModList.get().isLoaded("curios")) {
             return;
         }
 

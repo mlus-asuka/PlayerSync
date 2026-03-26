@@ -389,16 +389,22 @@ public class VanillaSync {
                 }
             });
 
-            // Wait for main thread to finish applying (prevents lock release before data is applied)
+            // FIX H-3: Release lock BEFORE waiting on latch to prevent deadlock.
+            // If we hold the lock while waiting, onServerShutdown trying to acquire
+            // the same lock will deadlock (shutdown blocks main thread, preventing
+            // server.execute() from draining, preventing latch countdown).
+            lock.unlock();
+
             if (!applyLatch.await(15, TimeUnit.SECONDS)) {
                 PlayerSync.LOGGER.error("Timeout waiting for main thread sync for player {}", player_uuid);
                 syncNotCompletedPlayer.remove(player_uuid);
             }
+            return; // Lock already released, skip finally
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
             syncNotCompletedPlayer.remove(player_uuid);
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) lock.unlock();
         }
     }
 
@@ -726,54 +732,54 @@ public class VanillaSync {
     }
 
     /**
-     * FIX: All save operations (inventory, curios, mod-compat) are now under the per-player lock
-     * to prevent race conditions with concurrent auto-save tasks on the executor.
+     * FIX C-2: All save operations run on the MAIN THREAD (onPlayerLogout fires on main thread).
+     * Entity state (inventory, curios, effects) is read safely on the correct thread.
+     * DB writes block briefly but this is required for correctness.
      */
-    public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
-        String player_uuid = event.getEntity().getUUID().toString();
-        Player player = event.getEntity();
-        ReentrantLock lock = getPlayerLock(player_uuid);
-        lock.lock();
-        try {
-            // Save ALL data under lock: curios, mod-compat, then main inventory, then mark offline
-            if (ModList.get().isLoaded("curios")) {
-                ModsSupport modsSupport = new ModsSupport();
-                if (player.isDeadOrDying()) {
-                    modsSupport.saveCuriosFromCacheOrApi(player);
-                } else {
-                    modsSupport.onPlayerLeave(player);
-                }
-            }
-            ModCompatSync.storeAll(player);
-            store(player, false);
-            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
-        } finally {
-            lock.unlock();
-            removePlayerLock(player_uuid);
-        }
-    }
-
     @SubscribeEvent
-    public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException {
+    public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         String player_uuid = event.getEntity().getUUID().toString();
         if (deadPlayerWhileLogging.contains(player_uuid)) {
             PlayerSync.LOGGER.warn("A dead or dying player was kicked, uuid: {}", player_uuid);
-            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+            try {
+                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+            } catch (SQLException e) {
+                PlayerSync.LOGGER.error("Error marking dead player offline: {}", player_uuid, e);
+            }
             deadPlayerWhileLogging.remove(player_uuid);
         } else if (syncNotCompletedPlayer.contains(player_uuid)) {
             PlayerSync.LOGGER.warn("Player {} logged out with uncompleted sync. Data won't be saved for safety.", player_uuid);
-            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+            try {
+                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+            } catch (SQLException e) {
+                PlayerSync.LOGGER.error("Error marking unsynced player offline: {}", player_uuid, e);
+            }
             syncNotCompletedPlayer.remove(player_uuid);
         } else {
-            // FIX: All saves moved inside doPlayerLogout under the per-player lock
-            // to prevent race conditions with auto-save
-            executorService.submit(() -> {
-                try {
-                    doPlayerLogout(event);
-                } catch (Exception e) {
-                    PlayerSync.LOGGER.error("Error during player logout save for {}", player_uuid, e);
+            Player player = event.getEntity();
+            ReentrantLock lock = getPlayerLock(player_uuid);
+            lock.lock();
+            try {
+                // Save curios (main thread - safe to read Curios API)
+                if (ModList.get().isLoaded("curios")) {
+                    ModsSupport modsSupport = new ModsSupport();
+                    if (player.isDeadOrDying()) {
+                        modsSupport.saveCuriosFromCacheOrApi(player);
+                    } else {
+                        modsSupport.onPlayerLeave(player);
+                    }
                 }
-            });
+                // Save mod compat data (main thread - safe to read Accessories/CosmeticArmor)
+                ModCompatSync.storeAll(player);
+                // Save main inventory + effects + advancements (main thread - safe)
+                store(player, false);
+                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error("Error during player logout save for {}", player_uuid, e);
+            } finally {
+                lock.unlock();
+                removePlayerLock(player_uuid);
+            }
         }
     }
 
@@ -1002,42 +1008,34 @@ public class VanillaSync {
         }
 
         // Auto-save all online players
+        // FIX C-1/C-2/C-4: onServerTick runs on the MAIN THREAD. We call store() and mod saves
+        // directly here to safely read entity state (inventory, curios, effects, etc.).
+        // The DB writes inside store() block briefly (~1-5ms per player) but this is acceptable
+        // for a 60-second interval. This eliminates all off-thread entity access duplication exploits.
         if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
             autoSaveTickCounter = 0;
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server != null) {
                 for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                    // Skip dead players and players whose sync hasn't completed yet
                     if (player.isDeadOrDying() || syncNotCompletedPlayer.contains(player.getUUID().toString())) {
                         continue;
                     }
-                    executorService.submit(() -> {
-                        try {
-                            store(player, false);
-                        } catch (Exception e) {
-                            PlayerSync.LOGGER.error("Error auto-saving player {}", player.getUUID(), e);
+                    String puuid = player.getUUID().toString();
+                    ReentrantLock lock = getPlayerLock(puuid);
+                    if (!lock.tryLock()) continue; // Skip if already being saved (logout in progress)
+                    try {
+                        store(player, false);
+                        if (ModList.get().isLoaded("curios") && !player.isDeadOrDying()) {
+                            new ModsSupport().StoreCurios(player, false);
                         }
-                    });
-                    executorService.submit(() -> {
-                        try {
-                            // Only auto-save curios for alive players to prevent saving empty data
-                            if (!player.isDeadOrDying()) {
-                                new ModsSupport().StoreCurios(player, false);
-                            }
-                        } catch (SQLException e) {
-                            PlayerSync.LOGGER.error("Error auto-saving Curios data for player {}", player.getUUID(), e);
+                        if (!player.isDeadOrDying()) {
+                            ModCompatSync.storeAll(player);
                         }
-                    });
-                    // Auto-save mod compatibility data (Accessories, CosmeticArmor)
-                    executorService.submit(() -> {
-                        try {
-                            if (!player.isDeadOrDying()) {
-                                ModCompatSync.storeAll(player);
-                            }
-                        } catch (Exception e) {
-                            PlayerSync.LOGGER.error("Error auto-saving mod compat data for player {}", player.getUUID(), e);
-                        }
-                    });
+                    } catch (Exception e) {
+                        PlayerSync.LOGGER.error("Error auto-saving player {}", player.getUUID(), e);
+                    } finally {
+                        lock.unlock();
+                    }
                 }
             }
         }

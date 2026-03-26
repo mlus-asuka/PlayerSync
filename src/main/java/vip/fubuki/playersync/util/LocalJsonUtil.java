@@ -30,7 +30,13 @@ public class LocalJsonUtil {
 
             String key = trim.substring(0, equalIndex);
             String value = trim.substring(equalIndex + 1);
-            map.put(keyParser.apply(key), value);
+            // FIX M-1: Catch parse exceptions per-entry to prevent one malformed key
+            // from emptying the entire map (e.g. cosmetic armor slots all lost)
+            try {
+                map.put(keyParser.apply(key), value);
+            } catch (Exception e) {
+                // Skip malformed entries instead of crashing the whole parse
+            }
         }
         return map;
     }
