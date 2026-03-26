@@ -574,8 +574,14 @@ public class ModsSupport {
             for (UUID uuid : diskUuids) {
                 restoreStorageContents(uuid, (storedNbt) -> {
                     try {
+                        // FIX: storedNbt is the INNER data ({type, capacity, resources}).
+                        // The map codec expects {uuid-string: {type, capacity, resources}}.
+                        // Wrap the data back in a UUID-keyed CompoundTag before decoding.
+                        net.minecraft.nbt.CompoundTag wrapped = new net.minecraft.nbt.CompoundTag();
+                        wrapped.put(uuid.toString(), storedNbt);
+
                         @SuppressWarnings("unchecked")
-                        com.mojang.serialization.DataResult<?> dataResult = fCodec.decode(ops, storedNbt);
+                        com.mojang.serialization.DataResult<?> dataResult = fCodec.decode(ops, wrapped);
                         Optional<?> opt = dataResult.result();
                         if (opt.isPresent()) {
                             com.mojang.datafixers.util.Pair<?, ?> pair = (com.mojang.datafixers.util.Pair<?, ?>) opt.get();

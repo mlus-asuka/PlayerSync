@@ -397,7 +397,7 @@ public class VanillaSync {
             // server.execute() from draining, preventing latch countdown).
             lock.unlock();
 
-            if (!applyLatch.await(15, TimeUnit.SECONDS)) {
+            if (!applyLatch.await(60, TimeUnit.SECONDS)) {
                 PlayerSync.LOGGER.error("Timeout waiting for main thread sync for player {}", player_uuid);
                 syncNotCompletedPlayer.remove(player_uuid);
             }
