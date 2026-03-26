@@ -37,7 +37,7 @@ import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerNegotiationEvent;
-import net.neoforged.neoforge.event.server.ServerStoppedEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
@@ -60,6 +60,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.ReentrantLock;
 
 @EventBusSubscriber(modid = PlayerSync.MODID)
 public class VanillaSync {
@@ -67,6 +68,17 @@ public class VanillaSync {
     public static void register() {}
 
     static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
+
+    // Per-player locks to prevent concurrent save/restore operations (anti-duplication)
+    private static final ConcurrentHashMap<String, ReentrantLock> playerLocks = new ConcurrentHashMap<>();
+
+    private static ReentrantLock getPlayerLock(String uuid) {
+        return playerLocks.computeIfAbsent(uuid, k -> new ReentrantLock());
+    }
+
+    public static void removePlayerLock(String uuid) {
+        playerLocks.remove(uuid);
+    }
 
     @SubscribeEvent
     public static void onDataPackSyncEvent(OnDatapackSyncEvent event) throws SQLException, IOException {
@@ -236,6 +248,9 @@ public class VanillaSync {
             return;
         }
 
+        // Acquire per-player lock to prevent concurrent save/restore (anti-duplication)
+        ReentrantLock lock = getPlayerLock(player_uuid);
+        lock.lock();
         try {
             PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
 
@@ -362,6 +377,8 @@ public class VanillaSync {
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
             syncNotCompletedPlayer.remove(player_uuid);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -582,15 +599,49 @@ public class VanillaSync {
     }
 
     @SubscribeEvent
-    public static void onServerShutdown(ServerStoppedEvent event) throws SQLException {
+    public static void onServerShutdown(ServerStoppingEvent event) throws SQLException {
+        // Save ALL online players before shutdown to prevent data loss
+        // Uses ServerStoppingEvent (not ServerStoppedEvent) because players are still connected
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server != null) {
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                if (player.getTags().contains("player_synced") && !player.isDeadOrDying()) {
+                    try {
+                        store(player, false);
+                        if (ModList.get().isLoaded("curios")) {
+                            new ModsSupport().StoreCurios(player, false);
+                        }
+                        ModCompatSync.storeAll(player);
+                        if (ModList.get().isLoaded("sophisticatedbackpacks")) {
+                            ModsSupport.storeSophisticatedBackpacks(player);
+                        }
+                        if (ModList.get().isLoaded("sophisticatedstorage")) {
+                            ModsSupport.storeSophisticatedStorageItems(player);
+                        }
+                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player.getUUID().toString());
+                        PlayerSync.LOGGER.info("Saved player {} data on server shutdown", player.getUUID());
+                    } catch (Exception e) {
+                        PlayerSync.LOGGER.error("Error saving player {} on shutdown", player.getUUID(), e);
+                    }
+                }
+            }
+        }
         JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", JdbcConfig.SERVER_ID.get());
     }
 
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        // FIX: Save data BEFORE marking offline to prevent data loss on quick reconnect
-        store(event.getEntity(), false);
-        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+        // Acquire per-player lock to prevent concurrent save/restore (anti-duplication)
+        ReentrantLock lock = getPlayerLock(player_uuid);
+        lock.lock();
+        try {
+            // FIX: Save data BEFORE marking offline to prevent data loss on quick reconnect
+            store(event.getEntity(), false);
+            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+        } finally {
+            lock.unlock();
+            removePlayerLock(player_uuid);
+        }
     }
 
     @SubscribeEvent
