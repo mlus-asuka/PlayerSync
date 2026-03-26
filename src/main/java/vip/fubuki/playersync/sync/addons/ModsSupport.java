@@ -462,7 +462,7 @@ public class ModsSupport {
             // Read the .dat file directly (getDataFile is private, use reflection)
             java.io.File datFile = getRS2DataFile(sp);
             if (datFile == null || !datFile.exists()) {
-                PlayerSync.LOGGER.warn("RS2 storage data file not found: {}", datFile.getAbsolutePath());
+                PlayerSync.LOGGER.warn("RS2 storage data file not found: {}", datFile != null ? datFile.getAbsolutePath() : "<null>");
                 return;
             }
 

@@ -204,7 +204,7 @@ public class PlayerSync {
         );
 
         try {
-            JDBCsetUp.executeUpdate("UPDATE player_data SET online=0 WHERE last_server=" + JdbcConfig.SERVER_ID.get() +" AND online=1 LIMIT 1000");
+            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE last_server=? AND online=1 LIMIT 1000", JdbcConfig.SERVER_ID.get());
         } catch (Exception e) {
             LOGGER.error("An exception occurred while trying change wrong player-status\n" + e.getMessage());
         }

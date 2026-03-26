@@ -269,12 +269,13 @@ public class VanillaSync {
             }
 
             if (!playerExists) {
+                // FIX CRITICAL-1/2: online=1 is already set by onPlayerLoggedInKickCheck (synchronous).
+                // Do NOT write online=1 again from background/queued threads - if the player disconnects
+                // quickly, the background write races with logout's online=0 and permanently locks the player.
                 server.execute(() -> {
                     try {
                         new ModsSupport().doCuriosRestore(serverPlayer);
-                        store(serverPlayer, true);
-                        JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
-                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=1, last_server=? WHERE uuid=?", JdbcConfig.SERVER_ID.get(), player_uuid);
+                        store(serverPlayer, true); // INSERT with online=1 handled by store() init path
                         serverPlayer.addTag("player_synced");
                     } catch (Exception e) {
                         PlayerSync.LOGGER.error("Error initializing new player {}", player_uuid, e);
@@ -285,8 +286,7 @@ public class VanillaSync {
                 return;
             }
 
-            JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
-            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=1, last_server=? WHERE uuid=?", JdbcConfig.SERVER_ID.get(), player_uuid);
+            // online=1 already set by onPlayerLoggedInKickCheck - no duplicate write here
 
             // Read all DB data into local variables (background thread - safe)
             final int health, foodLevel, xp, score;

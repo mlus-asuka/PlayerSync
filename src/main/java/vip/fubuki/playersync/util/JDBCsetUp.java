@@ -90,8 +90,8 @@ public class JDBCsetUp {
      */
     public static void update(String sql, String... argument) throws SQLException {
         LOGGER.trace(sql);
-        try (Connection connection = getConnection()) {  // With database selected
-            PreparedStatement updateStatement = connection.prepareStatement(sql);
+        try (Connection connection = getConnection();
+             PreparedStatement updateStatement = connection.prepareStatement(sql)) {
             for (int i = 0; i < argument.length; i++) {
                 updateStatement.setString(i + 1, argument[i]);
             }
