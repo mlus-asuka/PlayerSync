@@ -456,8 +456,8 @@ public class ModsSupport {
 
             // Use save() to serialize the in-memory state to a CompoundTag (does NOT touch disk)
             if (!(repo instanceof net.minecraft.world.level.saveddata.SavedData sd)) return;
-            net.minecraft.nbt.CompoundTag fullNbt = new net.minecraft.nbt.CompoundTag();
-            sd.save(fullNbt, sp.getServer().registryAccess());
+            // FIX: save() RETURNS the data in a new CompoundTag, it does NOT fill the input parameter
+            net.minecraft.nbt.CompoundTag fullNbt = sd.save(new net.minecraft.nbt.CompoundTag(), sp.getServer().registryAccess());
 
             // Log the top-level structure once for debugging
             PlayerSync.LOGGER.debug("RS2 save() NBT keys: {}", fullNbt.getAllKeys());
