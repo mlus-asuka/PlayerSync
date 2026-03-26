@@ -234,6 +234,28 @@ public class ModsSupport {
         }
     }
 
+    /**
+     * Snapshots Curios data into a serialized string on the main thread (no DB write).
+     * Returns the serialized data string, or null if no curios data.
+     */
+    public static String snapshotCuriosData(Player player) {
+        if (!ModList.get().isLoaded("curios")) return null;
+        Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
+        Map<String, String> flatMap = new HashMap<>();
+        handlerOpt.ifPresent(handler -> {
+            handler.getCurios().forEach((slotType, stacksHandler) -> {
+                IDynamicStackHandler dynStacks = stacksHandler.getStacks();
+                for (int i = 0; i < dynStacks.getSlots(); i++) {
+                    ItemStack stack = dynStacks.getStackInSlot(i);
+                    if (!stack.isEmpty()) {
+                        flatMap.put(slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
+                    }
+                }
+            });
+        });
+        return flatMap.toString();
+    }
+
     public void StoreCurios(Player player, boolean init) throws SQLException {
         if (!ModList.get().isLoaded("curios")) return;
 

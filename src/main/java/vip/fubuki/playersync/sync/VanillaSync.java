@@ -1037,11 +1037,9 @@ public class VanillaSync {
             }
         }
 
-        // Mod data snapshots - also on main thread (reads entity state safely)
-        // Sophisticated Backpacks/Storage/RS2 are saved via their own store methods
-        if (ModList.get().isLoaded("sophisticatedbackpacks")) ModsSupport.storeSophisticatedBackpacks(player);
-        if (ModList.get().isLoaded("sophisticatedstorage")) ModsSupport.storeSophisticatedStorageItems(player);
-        if (ModList.get().isLoaded("refinedstorage")) ModsSupport.storeRefinedStorageDisks(player);
+        // NOTE: Sophisticated Backpacks/Storage/RS2 saves are NOT done here anymore.
+        // They are done in the background thread (their entity reads are on SavedData which is thread-safe,
+        // and their DB writes should not block the main thread).
 
         return new PlayerDataSnapshot(
                 uuid, XP, score, foodLevel, health,
@@ -1099,7 +1097,7 @@ public class VanillaSync {
     private static int heartbeatTickCounter = 0;
     private static final int HEARTBEAT_INTERVAL_TICKS = 600; // Every 30 seconds (20 tps * 30s)
     private static int autoSaveTickCounter = 0;
-    private static final int AUTO_SAVE_INTERVAL_TICKS = 1200; // Every minute
+    private static final int AUTO_SAVE_INTERVAL_TICKS = 2400; // Every 2 minutes (was 1min, doubled to reduce main thread load)
     private static int autoCleanCuriosCacheTickCounter = 0;
     private static final int AUTO_CLEAN_CURIOS_CACHE_INTERVAL_TICKS = 36000; // Every 30 min
 
@@ -1137,24 +1135,40 @@ public class VanillaSync {
                     ReentrantLock lock = getPlayerLock(puuid);
                     if (!lock.tryLock()) continue;
                     try {
-                        // === MAIN THREAD: Snapshot entity data + mod data (reads are fast) ===
+                        // === MAIN THREAD: Snapshot ALL data (entity reads only, no DB I/O) ===
                         final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
-                        // Curios/Accessories/CosmeticArmor/Attachments have their own DB writes internally,
-                        // but they READ entity state here on the main thread (safe)
+
+                        // Snapshot Curios data on main thread (entity read), DB write deferred
+                        final String curiosSnapshot;
                         if (ModList.get().isLoaded("curios") && !player.isDeadOrDying()) {
-                            new ModsSupport().StoreCurios(player, false);
-                        }
-                        if (!player.isDeadOrDying()) {
-                            ModCompatSync.storeAll(player);
+                            curiosSnapshot = ModsSupport.snapshotCuriosData(player);
+                        } else {
+                            curiosSnapshot = null;
                         }
 
-                        // === BACKGROUND THREAD: Write main snapshot to DB (slow, off main thread) ===
-                        // Use tryLock in the background task to skip if logout already saved newer data
+                        // === BACKGROUND THREAD: ALL DB writes in one batch ===
                         executorService.submit(() -> {
                             ReentrantLock bgLock = getPlayerLock(puuid);
-                            if (!bgLock.tryLock()) return; // logout won the race, skip stale snapshot
+                            if (!bgLock.tryLock()) return;
                             try {
                                 writeSnapshotToDB(snapshot);
+                                // Write curios data
+                                if (curiosSnapshot != null) {
+                                    JDBCsetUp.executePreparedUpdate(
+                                            "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
+                                            puuid, curiosSnapshot);
+                                }
+                                // Mod compat + storage saves (all DB writes, off main thread)
+                                ModCompatSync.storeAll(player);
+                                if (ModList.get().isLoaded("sophisticatedbackpacks")) {
+                                    ModsSupport.storeSophisticatedBackpacks(player);
+                                }
+                                if (ModList.get().isLoaded("sophisticatedstorage")) {
+                                    ModsSupport.storeSophisticatedStorageItems(player);
+                                }
+                                if (ModList.get().isLoaded("refinedstorage")) {
+                                    ModsSupport.storeRefinedStorageDisks(player);
+                                }
                             } catch (Exception e) {
                                 PlayerSync.LOGGER.error("Error auto-saving player {}", puuid, e);
                             } finally {
