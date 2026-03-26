@@ -355,10 +355,13 @@ public class VanillaSync {
                         }
                     }
 
-                    // Restore Effects
+                    // FIX: ALWAYS clear effects before restoring to prevent stale local effects
+                    // from persisting when DB has no saved effects (e.g. player had no effects on previous server)
+                    serverPlayer.removeAllEffects();
+
+                    // Restore Effects from DB (if any)
                     String effectData = rs2.getString("effects");
                     if (effectData != null && effectData.length() > 2) {
-                        serverPlayer.removeAllEffects();
                         Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
                         for (Map.Entry<Integer, String> entry : effects.entrySet()) {
                             CompoundTag effectTag = NbtUtils.snbtToStructure(deserializeString(entry.getValue()));
