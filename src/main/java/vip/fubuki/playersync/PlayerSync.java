@@ -198,6 +198,16 @@ public class PlayerSync {
         rsAdvCol.close();
         // ----- END NEW BLOCK -----
 
+        // Create generic mod_player_data table for mod compatibility (Accessories, CosmeticArmor, Aether, etc.)
+        JDBCsetUp.executeUpdate(
+                "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`mod_player_data` (" +
+                        "`uuid` CHAR(36) NOT NULL," +
+                        "`mod_id` VARCHAR(64) NOT NULL," +
+                        "`data_value` MEDIUMBLOB," +
+                        "PRIMARY KEY (`uuid`, `mod_id`)" +
+                        ");"
+        );
+
         try {
             JDBCsetUp.executeUpdate("UPDATE player_data SET online=0 WHERE last_server=" + JdbcConfig.SERVER_ID.get() +" AND online=1 LIMIT 1000");
         } catch (Exception e) {

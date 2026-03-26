@@ -121,6 +121,15 @@ dependencies {
     compileOnly "thedarkcolour:kotlinforforge:5.10.0"
     compileOnly "curse.maven:cobblemon-687131:7273151"
 
+    // Mod compatibility - Cosmetic Armor Reworked
+    compileOnly "curse.maven:cosmetic-armor-reworked-237307:5610814"
+    // Mod compatibility - Apotheosis + Placebo
+    compileOnly "curse.maven:apotheosis-313970:7444906"
+    compileOnly "curse.maven:placebo-283644:6926281"
+    // Mod compatibility - The Aether + Accessories API
+    compileOnly "curse.maven:aether-255308:7043502"
+    compileOnly "curse.maven:accessories-938917:7046407"
+
     runtimeOnly "curse.maven:curios-309927:6529130"
     runtimeOnly "curse.maven:sophisticated-backpacks-422301:7169832"
     runtimeOnly "curse.maven:sophisticated-core-618298:7168230"

@@ -43,6 +43,7 @@ import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.sync.addons.CuriosCache;
+import vip.fubuki.playersync.sync.addons.ModCompatSync;
 import vip.fubuki.playersync.sync.addons.ModsSupport;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
@@ -351,6 +352,8 @@ public class VanillaSync {
             if (ModList.get().isLoaded("sophisticatedstorage")) {
                 ModsSupport.restoreSophisticatedStorageItems(serverPlayer);
             }
+            // Restore mod compatibility data (Accessories/Aether, CosmeticArmor)
+            ModCompatSync.restoreAll(serverPlayer);
 
             serverPlayer.addTag("player_synced");
 
@@ -613,6 +616,9 @@ public class VanillaSync {
                 modsSupport.onPlayerLeave(player);
             }
 
+            // Save mod compatibility data (Accessories/Aether, CosmeticArmor)
+            ModCompatSync.storeAll(player);
+
             executorService.submit(() -> {
                 try {
                     doPlayerLogout(event);
@@ -857,6 +863,16 @@ public class VanillaSync {
                             }
                         } catch (SQLException e) {
                             PlayerSync.LOGGER.error("Error auto-saving Curios data for player {}", player.getUUID(), e);
+                        }
+                    });
+                    // Auto-save mod compatibility data (Accessories, CosmeticArmor)
+                    executorService.submit(() -> {
+                        try {
+                            if (!player.isDeadOrDying()) {
+                                ModCompatSync.storeAll(player);
+                            }
+                        } catch (Exception e) {
+                            PlayerSync.LOGGER.error("Error auto-saving mod compat data for player {}", player.getUUID(), e);
                         }
                     });
                 }
