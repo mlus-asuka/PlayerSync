@@ -451,13 +451,14 @@ public class ModsSupport {
         if (diskUuids.isEmpty()) return;
 
         try {
-            // Force RS2's SavedData to flush to disk before reading
+            // Mark RS2's SavedData as dirty so it gets saved on the next world save.
+            // Do NOT call dataStorage.save() directly - it conflicts with fastasyncworldsave
+            // and other mods that mixin into DimensionDataStorage, causing ConcurrentModificationException.
             com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
                     com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(sp.serverLevel());
             if (repo instanceof net.minecraft.world.level.saveddata.SavedData sd) {
                 sd.setDirty();
             }
-            sp.getServer().overworld().getDataStorage().save();
 
             // Read the .dat file directly (getDataFile is private, use reflection)
             java.io.File datFile = getRS2DataFile(sp);
