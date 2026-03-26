@@ -582,8 +582,31 @@ public class ModsSupport {
                             @SuppressWarnings("unchecked")
                             java.util.Map<UUID, ?> decoded = (java.util.Map<UUID, ?>) pair.getFirst();
                             for (java.util.Map.Entry<UUID, ?> entry : decoded.entrySet()) {
-                                repo.set(entry.getKey(),
-                                        (com.refinedmods.refinedstorage.common.api.storage.SerializableStorage) entry.getValue());
+                                // FIX: repo.set() throws IllegalArgumentException if UUID already exists.
+                                // Remove first, then set. Also inject directly into the entries map
+                                // via reflection as a fallback if the public API fails.
+                                try {
+                                    repo.remove(entry.getKey());
+                                } catch (Exception ignored) {}
+                                try {
+                                    repo.set(entry.getKey(),
+                                            (com.refinedmods.refinedstorage.common.api.storage.SerializableStorage) entry.getValue());
+                                } catch (Exception setEx) {
+                                    // Fallback: inject directly into the entries map
+                                    PlayerSync.LOGGER.debug("repo.set() failed, using reflection fallback", setEx);
+                                    try {
+                                        java.lang.reflect.Field entriesField = repo.getClass().getDeclaredField("entries");
+                                        entriesField.setAccessible(true);
+                                        @SuppressWarnings("unchecked")
+                                        java.util.Map<UUID, Object> entries = (java.util.Map<UUID, Object>) entriesField.get(repo);
+                                        entries.put(entry.getKey(), entry.getValue());
+                                        if (repo instanceof net.minecraft.world.level.saveddata.SavedData sdRef) {
+                                            sdRef.setDirty();
+                                        }
+                                    } catch (Exception reflectEx) {
+                                        PlayerSync.LOGGER.error("RS2 reflection fallback also failed for UUID {}", entry.getKey(), reflectEx);
+                                    }
+                                }
                                 PlayerSync.LOGGER.info("Restored RS2 disk data for UUID {}", entry.getKey());
                             }
                         } else {
