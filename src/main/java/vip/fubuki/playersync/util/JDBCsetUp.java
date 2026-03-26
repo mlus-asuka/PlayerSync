@@ -99,6 +99,36 @@ public class JDBCsetUp {
         }
     }
 
+    /**
+     * Executes a parameterized update using PreparedStatement with proper escaping.
+     * This prevents SQL injection and data corruption from special characters in values.
+     */
+    public static void executePreparedUpdate(String sql, Object... params) throws SQLException {
+        LOGGER.trace(sql);
+        try (Connection connection = getConnection();
+             PreparedStatement stmt = connection.prepareStatement(sql)) {
+            for (int i = 0; i < params.length; i++) {
+                stmt.setObject(i + 1, params[i]);
+            }
+            stmt.executeUpdate();
+        }
+    }
+
+    /**
+     * Executes a parameterized query using PreparedStatement with proper escaping.
+     * Caller MUST close the returned QueryResult (use try-with-resources).
+     */
+    public static QueryResult executePreparedQuery(String sql, Object... params) throws SQLException {
+        LOGGER.trace(sql);
+        Connection connection = getConnection();
+        PreparedStatement stmt = connection.prepareStatement(sql);
+        for (int i = 0; i < params.length; i++) {
+            stmt.setObject(i + 1, params[i]);
+        }
+        ResultSet rs = stmt.executeQuery();
+        return new QueryResult(connection, stmt, rs);
+    }
+
     public record QueryResult(Connection connection,PreparedStatement preparedStatement, ResultSet resultSet) implements AutoCloseable {
         @Override
         public void close() {
