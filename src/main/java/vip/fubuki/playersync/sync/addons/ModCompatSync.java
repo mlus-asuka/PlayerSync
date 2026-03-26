@@ -253,6 +253,85 @@ public class ModCompatSync {
     }
 
     // ============================
+    // Generic NeoForge Attachment Sync
+    // ============================
+
+    /**
+     * Saves ALL NeoForge player attachments to the database.
+     * This covers per-player data from ALL mods, including:
+     * - Ars Nouveau (mana, glyph knowledge)
+     * - Iron's Spellbooks (mana, learned spells)
+     * - Pehkui (player scale)
+     * - Spice of Life: Onion (food diversity)
+     * - Any other mod using NeoForge's attachment system
+     *
+     * Uses player.saveWithoutId() to extract the attachments tag from the
+     * player's full serialized NBT, ensuring we capture ALL mod data.
+     */
+    public static void storeNeoForgeAttachments(Player player) {
+        try {
+            if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return;
+
+            net.minecraft.nbt.CompoundTag playerNbt = new net.minecraft.nbt.CompoundTag();
+            serverPlayer.saveWithoutId(playerNbt);
+
+            // NeoForge stores all attachment data under this key
+            if (playerNbt.contains("neoforge:attachments", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+                net.minecraft.nbt.CompoundTag attachments = playerNbt.getCompound("neoforge:attachments");
+                if (!attachments.isEmpty()) {
+                    String serialized = VanillaSync.serializeTagToBinaryBase64(attachments);
+                    JDBCsetUp.executePreparedUpdate(
+                            "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                            player.getUUID().toString(), "neoforge_attachments", serialized);
+                    PlayerSync.LOGGER.debug("Saved NeoForge attachments for player {} ({} keys)",
+                            player.getUUID(), attachments.getAllKeys().size());
+                }
+            }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error saving NeoForge attachments for player {}", player.getUUID(), e);
+        }
+    }
+
+    /**
+     * Restores NeoForge player attachments from the database.
+     * Uses reflection to call NeoForge's internal deserializeAttachments method,
+     * which ensures the exact same deserialization path as a normal player load.
+     */
+    public static void restoreNeoForgeAttachments(Player player) {
+        try {
+            String serialized;
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
+                    player.getUUID().toString(), "neoforge_attachments")) {
+                ResultSet rs = qr.resultSet();
+                if (!rs.next()) return;
+                serialized = rs.getString("data_value");
+            }
+
+            if (serialized == null || !serialized.startsWith("BNBT:")) return;
+
+            net.minecraft.nbt.CompoundTag attachments = VanillaSync.deserializeBinaryBase64Tag(serialized);
+            if (attachments.isEmpty()) return;
+
+            // Create a wrapper CompoundTag with the attachments key
+            net.minecraft.nbt.CompoundTag wrapper = new net.minecraft.nbt.CompoundTag();
+            wrapper.put("neoforge:attachments", attachments);
+
+            // Use reflection to call the package-private deserializeAttachments method
+            // This ensures we use NeoForge's exact deserialization logic
+            java.lang.reflect.Method deserializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
+                    .getDeclaredMethod("deserializeAttachments", net.minecraft.nbt.CompoundTag.class);
+            deserializeMethod.setAccessible(true);
+            deserializeMethod.invoke(player, wrapper);
+
+            PlayerSync.LOGGER.info("Restored NeoForge attachments for player {} ({} keys)",
+                    player.getUUID(), attachments.getAllKeys().size());
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error restoring NeoForge attachments for player {}", player.getUUID(), e);
+        }
+    }
+
+    // ============================
     // Convenience methods
     // ============================
 
@@ -263,6 +342,7 @@ public class ModCompatSync {
     public static void storeAll(Player player) {
         storeAccessories(player);
         storeCosmeticArmor(player);
+        storeNeoForgeAttachments(player);
     }
 
     /**
@@ -272,5 +352,6 @@ public class ModCompatSync {
     public static void restoreAll(Player player) {
         restoreAccessories(player);
         restoreCosmeticArmor(player);
+        restoreNeoForgeAttachments(player);
     }
 }
