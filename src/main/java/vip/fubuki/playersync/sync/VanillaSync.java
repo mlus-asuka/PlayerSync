@@ -258,7 +258,7 @@ public class VanillaSync {
         lock.lock();
         try {
             PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
-            syncNotCompletedPlayer.add(player_uuid);
+            // syncNotCompletedPlayer.add() already done in onPlayerJoin before submit
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
 
@@ -494,11 +494,18 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
+        // FIX: Mark sync as pending BEFORE submitting to thread pool.
+        // Without this, a player who disconnects instantly can trigger onPlayerLogout
+        // before the background thread starts, bypassing the syncNotCompleted guard
+        // and saving invalid entity state.
+        String puuid = ((ServerPlayer) event.getEntity()).getUUID().toString();
+        syncNotCompletedPlayer.add(puuid);
         executorService.submit(() -> {
             try {
                 doPlayerJoin(event);
             } catch (Exception e) {
                 e.printStackTrace();
+                syncNotCompletedPlayer.remove(puuid);
             }
         });
     }
@@ -685,15 +692,16 @@ public class VanillaSync {
         store(event.getEntity(), false);
     }
 
+    // FIX: SaveToFile already fires on the main thread. Running store() off-thread via
+    // executorService read player entity state (inventory, armor, effects) from a background
+    // thread, causing duplication/corruption. Run directly on the main thread.
     @SubscribeEvent
     public static void onPlayerSaveToFile(PlayerEvent.SaveToFile event) {
-        executorService.submit(() -> {
-            try {
-                doPlayerSaveToFile(event);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        });
+        try {
+            doPlayerSaveToFile(event);
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error during player save-to-file", e);
+        }
     }
 
     @SubscribeEvent
