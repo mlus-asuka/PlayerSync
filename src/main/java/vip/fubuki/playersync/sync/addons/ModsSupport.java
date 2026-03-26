@@ -443,6 +443,7 @@ public class ModsSupport {
      * This avoids stale .dat file issues and doesn't call dataStorage.save() which crashes
      * with fastasyncworldsave.
      */
+    @SuppressWarnings("unchecked")
     public static void storeRefinedStorageDisks(Player player) {
         if (!ModList.get().isLoaded("refinedstorage")) return;
         if (!(player instanceof net.minecraft.server.level.ServerPlayer sp)) return;
@@ -453,29 +454,65 @@ public class ModsSupport {
         try {
             com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
                     com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(sp.serverLevel());
-
-            // Use save() to serialize the in-memory state to a CompoundTag (does NOT touch disk)
             if (!(repo instanceof net.minecraft.world.level.saveddata.SavedData sd)) return;
-            // FIX: save() RETURNS the data in a new CompoundTag, it does NOT fill the input parameter
+
+            // STRATEGY: Use save() to get the full serialized NBT, search for UUID entries.
+            // If save() format doesn't match our parsing, fall back to reflection on the
+            // internal entries map + codec to serialize individual entries.
             net.minecraft.nbt.CompoundTag fullNbt = sd.save(new net.minecraft.nbt.CompoundTag(), sp.getServer().registryAccess());
 
-            // Log the top-level structure once for debugging
-            PlayerSync.LOGGER.debug("RS2 save() NBT keys: {}", fullNbt.getAllKeys());
+            // Log structure for debugging
+            PlayerSync.LOGGER.info("RS2 save() NBT: {} keys, types: {}", fullNbt.getAllKeys().size(), describeNbtStructure(fullNbt));
 
             for (UUID uuid : diskUuids) {
                 String uuidStr = uuid.toString();
-                // Search in the full NBT (try direct, then nested under any key)
                 net.minecraft.nbt.CompoundTag entryNbt = findRS2EntryInNbt(fullNbt, uuidStr);
                 if (entryNbt != null && !entryNbt.isEmpty()) {
                     saveStorageContents(uuid, entryNbt);
-                    PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {}", uuid);
-                } else {
-                    // Fallback: check if repo.get() returns data (means codec format is different)
-                    if (repo.get(uuid).isPresent()) {
-                        PlayerSync.LOGGER.warn("RS2 disk UUID {} exists in repo but NOT found in save() NBT. Keys at top: {}", uuid, fullNbt.getAllKeys());
+                    PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {} via save() NBT", uuid);
+                    continue;
+                }
+
+                // Fallback: use reflection to get the codec and serialize the single entry
+                if (!repo.get(uuid).isPresent()) {
+                    PlayerSync.LOGGER.debug("RS2 disk UUID {} has no storage data (empty disk)", uuid);
+                    continue;
+                }
+
+                PlayerSync.LOGGER.info("RS2 UUID {} not in save() NBT, using codec fallback", uuid);
+                try {
+                    // Get the map codec from StorageRepositoryImpl
+                    java.lang.reflect.Method getMapCodecMethod =
+                            repo.getClass().getDeclaredMethod("getMapCodec", Runnable.class);
+                    getMapCodecMethod.setAccessible(true);
+                    @SuppressWarnings("rawtypes")
+                    com.mojang.serialization.Codec codec = (com.mojang.serialization.Codec)
+                            getMapCodecMethod.invoke(null, (Runnable) () -> {});
+
+                    // Get the entries map via reflection
+                    java.lang.reflect.Field entriesField = repo.getClass().getDeclaredField("entries");
+                    entriesField.setAccessible(true);
+                    java.util.Map<UUID, ?> entries = (java.util.Map<UUID, ?>) entriesField.get(repo);
+
+                    Object storageEntry = entries.get(uuid);
+                    if (storageEntry == null) continue;
+
+                    // Encode a single-entry map to NBT using the codec
+                    java.util.Map<UUID, Object> singleEntry = java.util.Map.of(uuid, storageEntry);
+                    var ops = sp.getServer().registryAccess().createSerializationContext(
+                            net.minecraft.nbt.NbtOps.INSTANCE);
+                    var encodeResult = codec.encodeStart(ops, singleEntry);
+                    if (encodeResult.result().isPresent()) {
+                        net.minecraft.nbt.Tag encodedTag = (net.minecraft.nbt.Tag) encodeResult.result().get();
+                        if (encodedTag instanceof net.minecraft.nbt.CompoundTag encodedCompound) {
+                            saveStorageContents(uuid, encodedCompound);
+                            PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {} via codec reflection", uuid);
+                        }
                     } else {
-                        PlayerSync.LOGGER.debug("RS2 disk UUID {} has no storage data (empty disk)", uuid);
+                        PlayerSync.LOGGER.error("RS2 codec encode failed for UUID {}: {}", uuid, encodeResult.error());
                     }
+                } catch (Exception reflectEx) {
+                    PlayerSync.LOGGER.error("RS2 reflection fallback failed for UUID {}", uuid, reflectEx);
                 }
             }
         } catch (Exception e) {
@@ -483,10 +520,28 @@ public class ModsSupport {
         }
     }
 
+    /** Describes the top-level NBT structure for debugging */
+    private static String describeNbtStructure(net.minecraft.nbt.CompoundTag tag) {
+        StringBuilder sb = new StringBuilder("{");
+        for (String key : tag.getAllKeys()) {
+            net.minecraft.nbt.Tag val = tag.get(key);
+            sb.append(key).append("=").append(val != null ? val.getType().getName() : "null");
+            if (val instanceof net.minecraft.nbt.CompoundTag ct) {
+                sb.append("(").append(ct.getAllKeys().size()).append(" keys)");
+            } else if (val instanceof net.minecraft.nbt.ListTag lt) {
+                sb.append("[").append(lt.size()).append(" entries]");
+            }
+            sb.append(", ");
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
     /**
-     * Restores RS2 disk storage using the codec to decode entries and set() to inject them.
-     * Uses in-memory API only - no .dat file manipulation.
+     * Restores RS2 disk storage using the codec to decode entries and repo.set() to inject.
+     * The saved data was encoded via the map codec during save, so we decode with the same codec.
      */
+    @SuppressWarnings("unchecked")
     public static void restoreRefinedStorageDisks(Player player) {
         if (!ModList.get().isLoaded("refinedstorage")) return;
         if (!(player instanceof net.minecraft.server.level.ServerPlayer sp)) return;
@@ -497,65 +552,43 @@ public class ModsSupport {
         try {
             com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
                     com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(sp.serverLevel());
-            if (!(repo instanceof net.minecraft.world.level.saveddata.SavedData sd)) return;
+
+            // Get the map codec via reflection (same codec used for save)
+            @SuppressWarnings("rawtypes")
+            com.mojang.serialization.Codec mapCodec;
+            try {
+                java.lang.reflect.Method getMapCodecMethod =
+                        repo.getClass().getDeclaredMethod("getMapCodec", Runnable.class);
+                getMapCodecMethod.setAccessible(true);
+                mapCodec = (com.mojang.serialization.Codec) getMapCodecMethod.invoke(null, (Runnable) () -> {});
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error("Cannot get RS2 map codec, disk restore will fail", e);
+                return;
+            }
+
+            var ops = sp.getServer().registryAccess().createSerializationContext(
+                    net.minecraft.nbt.NbtOps.INSTANCE);
+            @SuppressWarnings("rawtypes")
+            final com.mojang.serialization.Codec fCodec = mapCodec;
 
             for (UUID uuid : diskUuids) {
-                restoreStorageContents(uuid, (entryNbt) -> {
+                restoreStorageContents(uuid, (storedNbt) -> {
                     try {
-                        // Strategy: create a full-format CompoundTag with just this entry,
-                        // then use the codec (via a temp load) to decode and set
-                        // Wrap the entry in the same format that save() produces
-                        net.minecraft.nbt.CompoundTag singleEntry = new net.minecraft.nbt.CompoundTag();
-                        singleEntry.put(uuid.toString(), entryNbt);
-
-                        // Try to decode using the repo's codec via reflection
-                        try {
-                            java.lang.reflect.Method getMapCodecMethod =
-                                    repo.getClass().getDeclaredMethod("getMapCodec", Runnable.class);
-                            getMapCodecMethod.setAccessible(true);
-                            @SuppressWarnings("rawtypes")
-                            com.mojang.serialization.Codec codec = (com.mojang.serialization.Codec)
-                                    getMapCodecMethod.invoke(null, (Runnable) () -> {});
-
-                            var ops = sp.getServer().registryAccess().createSerializationContext(
-                                    net.minecraft.nbt.NbtOps.INSTANCE);
-                            var result = codec.decode(ops, singleEntry);
-                            java.util.Optional<?> opt = result.result();
-                            if (opt.isPresent()) {
-                                com.mojang.datafixers.util.Pair<?, ?> pair =
-                                        (com.mojang.datafixers.util.Pair<?, ?>) opt.get();
-                                @SuppressWarnings("unchecked")
-                                java.util.Map<UUID, ?> decoded = (java.util.Map<UUID, ?>) pair.getFirst();
-                                for (java.util.Map.Entry<UUID, ?> entry : decoded.entrySet()) {
-                                    repo.set(entry.getKey(),
-                                            (com.refinedmods.refinedstorage.common.api.storage.SerializableStorage)
-                                                    entry.getValue());
-                                    PlayerSync.LOGGER.info("Restored RS2 disk data for UUID {} via codec", entry.getKey());
-                                }
-                                return;
+                        @SuppressWarnings("unchecked")
+                        com.mojang.serialization.DataResult<?> dataResult = fCodec.decode(ops, storedNbt);
+                        Optional<?> opt = dataResult.result();
+                        if (opt.isPresent()) {
+                            com.mojang.datafixers.util.Pair<?, ?> pair = (com.mojang.datafixers.util.Pair<?, ?>) opt.get();
+                            @SuppressWarnings("unchecked")
+                            java.util.Map<UUID, ?> decoded = (java.util.Map<UUID, ?>) pair.getFirst();
+                            for (java.util.Map.Entry<UUID, ?> entry : decoded.entrySet()) {
+                                repo.set(entry.getKey(),
+                                        (com.refinedmods.refinedstorage.common.api.storage.SerializableStorage) entry.getValue());
+                                PlayerSync.LOGGER.info("Restored RS2 disk data for UUID {}", entry.getKey());
                             }
-                        } catch (Exception codecEx) {
-                            PlayerSync.LOGGER.debug("RS2 codec restore failed, falling back to direct NBT injection", codecEx);
+                        } else {
+                            PlayerSync.LOGGER.error("RS2 codec decode failed for UUID {}", uuid);
                         }
-
-                        // Fallback: inject directly into the SavedData's internal state via save/load cycle
-                        // Get current full data, inject our entry, then reload
-                        net.minecraft.nbt.CompoundTag fullNbt = new net.minecraft.nbt.CompoundTag();
-                        sd.save(fullNbt, sp.getServer().registryAccess());
-                        fullNbt.put(uuid.toString(), entryNbt); // inject at top level
-                        // Use reflection to call the load method
-                        try {
-                            java.lang.reflect.Method loadMethod = repo.getClass().getDeclaredMethod(
-                                    "load", net.minecraft.nbt.CompoundTag.class,
-                                    net.minecraft.core.HolderLookup.Provider.class);
-                            loadMethod.setAccessible(true);
-                            // Create a new instance and copy entries
-                            // Actually, just reload from the modified NBT
-                        } catch (Exception loadEx) {
-                            PlayerSync.LOGGER.debug("RS2 load reflection failed", loadEx);
-                        }
-
-                        PlayerSync.LOGGER.warn("RS2 disk UUID {} - could not restore via any method", uuid);
                     } catch (Exception e) {
                         PlayerSync.LOGGER.error("Error restoring RS2 disk data for UUID {}", uuid, e);
                     }
