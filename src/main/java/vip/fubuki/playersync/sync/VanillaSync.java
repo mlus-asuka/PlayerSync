@@ -217,6 +217,8 @@ public class VanillaSync {
     // Use string uuid as key
     public static Set<String> deadPlayerWhileLogging = ConcurrentHashMap.newKeySet();
     public static Set<String> syncNotCompletedPlayer = ConcurrentHashMap.newKeySet();
+    // Players kicked for being already online on another server - their logout must NOT set online=0
+    public static Set<String> kickedForDuplicateLogin = ConcurrentHashMap.newKeySet();
 
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
@@ -466,6 +468,9 @@ public class VanillaSync {
                         boolean enable = rs2.getBoolean("enable");
                         if (enable && System.currentTimeMillis() < lastUpdate + 300000L) {
                             // Other server is alive → KICK using ServerPlayer.connection which works reliably
+                            // CRITICAL: Mark as kicked BEFORE disconnect so onPlayerLogout does NOT set online=0.
+                            // Without this, the logout handler resets online=0, allowing immediate reconnect bypass.
+                            kickedForDuplicateLogin.add(player_uuid);
                             PlayerSync.LOGGER.warn("Kicking player {} - already online on server {}", player_uuid, lastServer);
                             player.connection.disconnect(Component.translatableWithFallback(
                                     "playersync.already_online",
@@ -739,7 +744,15 @@ public class VanillaSync {
     @SubscribeEvent
     public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         String player_uuid = event.getEntity().getUUID().toString();
-        if (deadPlayerWhileLogging.contains(player_uuid)) {
+        // FIX: Players kicked for duplicate login must NOT set online=0.
+        // They are still online on the OTHER server. Setting online=0 here would allow
+        // them to bypass the kick by immediately reconnecting (DB says offline while
+        // they're still on the other server).
+        if (kickedForDuplicateLogin.contains(player_uuid)) {
+            PlayerSync.LOGGER.info("Player {} was kicked for duplicate login, NOT marking offline (still on other server)", player_uuid);
+            kickedForDuplicateLogin.remove(player_uuid);
+            return;
+        } else if (deadPlayerWhileLogging.contains(player_uuid)) {
             PlayerSync.LOGGER.warn("A dead or dying player was kicked, uuid: {}", player_uuid);
             try {
                 JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
