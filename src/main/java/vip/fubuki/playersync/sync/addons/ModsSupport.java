@@ -89,7 +89,28 @@ public class ModsSupport {
      * Generic method to save storage contents to DB for a given UUID.
      * Used for both Sophisticated Backpacks and Sophisticated Storage items.
      */
+    /**
+     * Saves storage contents to DB, but ONLY if the NBT contains real data.
+     * If the NBT is empty/default (wrapper didn't flush to SavedData yet),
+     * we skip the save to avoid overwriting real data in the DB with empty content.
+     * This prevents data loss when the in-memory SavedData doesn't have the latest
+     * wrapper state (common with Sophisticated Backpacks/Storage).
+     */
     private static void saveStorageContents(UUID contentsUuid, CompoundTag nbt) {
+        // Skip empty/minimal NBT to avoid overwriting real data in DB
+        if (nbt == null || nbt.isEmpty() || nbt.size() <= 1) {
+            // Check if DB already has data for this UUID - if so, don't overwrite with empty
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT LENGTH(backpack_nbt) AS len FROM backpack_data WHERE uuid=?", contentsUuid.toString())) {
+                java.sql.ResultSet rs = qr.resultSet();
+                if (rs.next() && rs.getInt("len") > 50) {
+                    PlayerSync.LOGGER.debug("Skipping save of empty/minimal NBT for UUID {} - DB has {} bytes of real data",
+                            contentsUuid, rs.getInt("len"));
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
+
         String serialized = VanillaSync.serializeTagToBinaryBase64(nbt);
         try {
             JDBCsetUp.executePreparedUpdate(
