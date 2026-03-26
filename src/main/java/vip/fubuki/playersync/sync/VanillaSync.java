@@ -378,6 +378,9 @@ public class VanillaSync {
             if (ModList.get().isLoaded("sophisticatedstorage")) {
                 ModsSupport.restoreSophisticatedStorageItems(serverPlayer);
             }
+            if (ModList.get().isLoaded("refinedstorage")) {
+                ModsSupport.restoreRefinedStorageDisks(serverPlayer);
+            }
             // Restore mod compatibility data (Accessories/Aether, CosmeticArmor)
             ModCompatSync.restoreAll(serverPlayer);
 
@@ -629,6 +632,9 @@ public class VanillaSync {
                         if (ModList.get().isLoaded("sophisticatedstorage")) {
                             ModsSupport.storeSophisticatedStorageItems(player);
                         }
+                        if (ModList.get().isLoaded("refinedstorage")) {
+                            ModsSupport.storeRefinedStorageDisks(player);
+                        }
                         JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player.getUUID().toString());
                         PlayerSync.LOGGER.info("Saved player {} data on server shutdown", player.getUUID());
                     } catch (Exception e) {
@@ -784,6 +790,9 @@ public class VanillaSync {
         }
         if(ModList.get().isLoaded("sophisticatedstorage")){
             ModsSupport.storeSophisticatedStorageItems(player);
+        }
+        if(ModList.get().isLoaded("refinedstorage")){
+            ModsSupport.storeRefinedStorageDisks(player);
         }
 
         // Effects

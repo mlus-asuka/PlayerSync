@@ -129,6 +129,9 @@ dependencies {
     // Mod compatibility - The Aether + Accessories API
     compileOnly "curse.maven:aether-255308:7043502"
     compileOnly "curse.maven:accessories-938917:7046407"
+    // Mod compatibility - Refined Storage 2 + Extra Disks
+    compileOnly "curse.maven:refined-storage-243076:7610477"
+    compileOnly "curse.maven:extra-disks-351491:7032487"
 
     runtimeOnly "curse.maven:curios-309927:6529130"
     runtimeOnly "curse.maven:sophisticated-backpacks-422301:7169832"
