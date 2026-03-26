@@ -835,6 +835,18 @@ public class VanillaSync {
         File advancements = null;
         byte[] advancementBytes = new byte[0];
         if (JdbcConfig.SYNC_ADVANCEMENTS.get()) {
+            // FIX: Force Minecraft to flush the player's advancements to disk BEFORE reading the file.
+            // Without this, recently earned advancements may not be in the file yet (Minecraft only
+            // flushes advancements during auto-save ~every 5 min). If the player switches servers
+            // before the next auto-save, the stale file is read and new advancements are lost.
+            if (player instanceof ServerPlayer sp) {
+                try {
+                    sp.getAdvancements().save();
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.warn("Failed to flush advancements to disk for player {}", player_uuid, e);
+                }
+            }
+
             Path path = player.getServer().getServerDirectory().resolve(getSyncWorldForServer());
             File gameDir = path.toFile();
             final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
