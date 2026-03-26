@@ -970,6 +970,88 @@ public class VanillaSync {
         }
     }
 
+    /**
+     * Immutable snapshot of all player data, captured on the main thread.
+     * Can be safely passed to a background thread for DB writes.
+     */
+    record PlayerDataSnapshot(
+            String uuid, int xp, int score, int foodLevel, int health,
+            String leftHand, String cursors,
+            String equipment, String inventory, String enderChest, String effects,
+            String advancements,
+            // Mod data snapshots (serialized strings, thread-safe)
+            String curiosData, String accessoriesData, String cosmeticArmorData, String attachmentsData
+    ) {}
+
+    /**
+     * Captures all player data into an immutable snapshot on the MAIN THREAD.
+     * This is fast (no DB I/O, just serialization to strings).
+     */
+    private static PlayerDataSnapshot snapshotPlayerData(Player player) throws Exception {
+        String uuid = player.getUUID().toString();
+        int XP = getTotalExperience(player);
+        int score = player.getScore();
+        int foodLevel = player.getFoodData().getFoodLevel();
+        int health = (int) player.getHealth();
+        String leftHand = getNbtForStorage(player.getItemInHand(net.minecraft.world.InteractionHand.OFF_HAND));
+        String cursors = getNbtForStorage(player.containerMenu.getCarried());
+
+        Map<Integer, String> equipmentMap = new HashMap<>();
+        for (int i = 0; i < player.getInventory().armor.size(); i++) {
+            equipmentMap.put(i, getNbtForStorage(player.getInventory().armor.get(i)));
+        }
+        Map<Integer, String> inventoryMap = new HashMap<>();
+        for (int i = 0; i < player.getInventory().items.size(); i++) {
+            inventoryMap.put(i, getNbtForStorage(player.getInventory().items.get(i)));
+        }
+        Map<Integer, String> enderChestMap = new HashMap<>();
+        for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
+            enderChestMap.put(i, getNbtForStorage(player.getEnderChestInventory().getItem(i)));
+        }
+        Map<Integer, String> effectMap = new HashMap<>();
+        for (Map.Entry<Holder<MobEffect>, MobEffectInstance> entry : player.getActiveEffectsMap().entrySet()) {
+            Tag effectTag = entry.getValue().save();
+            effectMap.put(BuiltInRegistries.MOB_EFFECT.getId(entry.getKey().value()), serialize(effectTag.toString()));
+        }
+
+        // Advancements (file read, fast)
+        String advancements = "";
+        if (JdbcConfig.SYNC_ADVANCEMENTS.get() && player instanceof ServerPlayer sp) {
+            try { sp.getAdvancements().save(); } catch (Exception ignored) {}
+            Path path = sp.getServer().getServerDirectory().resolve(getSyncWorldForServer());
+            File advFile = new File(path.toFile(), "/advancements/" + uuid + ".json");
+            if (advFile.exists()) {
+                advancements = new String(Files.readAllBytes(advFile.toPath()), StandardCharsets.UTF_8);
+            }
+        }
+
+        // Mod data snapshots - also on main thread (reads entity state safely)
+        // Sophisticated Backpacks/Storage/RS2 are saved via their own store methods
+        if (ModList.get().isLoaded("sophisticatedbackpacks")) ModsSupport.storeSophisticatedBackpacks(player);
+        if (ModList.get().isLoaded("sophisticatedstorage")) ModsSupport.storeSophisticatedStorageItems(player);
+        if (ModList.get().isLoaded("refinedstorage")) ModsSupport.storeRefinedStorageDisks(player);
+
+        return new PlayerDataSnapshot(
+                uuid, XP, score, foodLevel, health,
+                leftHand, cursors,
+                equipmentMap.toString(), inventoryMap.toString(), enderChestMap.toString(), effectMap.toString(),
+                advancements,
+                null, null, null, null // Curios/Accessories/CosmeticArmor/Attachments handled by their own DB writes
+        );
+    }
+
+    /**
+     * Writes a snapshot to the DB. Runs on BACKGROUND THREAD (no entity access).
+     */
+    private static void writeSnapshotToDB(PlayerDataSnapshot s) throws Exception {
+        JDBCsetUp.executePreparedUpdate(
+                "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=?, left_hand=?, cursors=? WHERE uuid=?",
+                s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), s.uuid());
+
+        // Curios, Accessories, CosmeticArmor, Attachments are already written by their own store methods
+        // during the snapshot phase (they do their own DB writes internally)
+    }
+
     private static String getSyncWorldForServer() {
         if (!JdbcConfig.SYNC_WORLD.get().isEmpty()) {
             PlayerSync.LOGGER.warn("Using configuration 'sync_world' on servers is deprecated. Please leave the array empty. Falling back to first entry.");
@@ -1028,11 +1110,9 @@ public class VanillaSync {
             });
         }
 
-        // Auto-save all online players
-        // FIX C-1/C-2/C-4: onServerTick runs on the MAIN THREAD. We call store() and mod saves
-        // directly here to safely read entity state (inventory, curios, effects, etc.).
-        // The DB writes inside store() block briefly (~1-5ms per player) but this is acceptable
-        // for a 60-second interval. This eliminates all off-thread entity access duplication exploits.
+        // Auto-save: Snapshot entity data on MAIN THREAD (fast), then write to DB on BACKGROUND THREAD.
+        // Previously, store() ran entirely on main thread including DB writes, blocking the tick loop
+        // for ~5ms per player per save (~5.66% server thread usage from Spark profiling).
         if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
             autoSaveTickCounter = 0;
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
@@ -1043,17 +1123,29 @@ public class VanillaSync {
                     }
                     String puuid = player.getUUID().toString();
                     ReentrantLock lock = getPlayerLock(puuid);
-                    if (!lock.tryLock()) continue; // Skip if already being saved (logout in progress)
+                    if (!lock.tryLock()) continue;
                     try {
-                        store(player, false);
+                        // === MAIN THREAD: Snapshot entity data + mod data (reads are fast) ===
+                        final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
+                        // Curios/Accessories/CosmeticArmor/Attachments have their own DB writes internally,
+                        // but they READ entity state here on the main thread (safe)
                         if (ModList.get().isLoaded("curios") && !player.isDeadOrDying()) {
                             new ModsSupport().StoreCurios(player, false);
                         }
                         if (!player.isDeadOrDying()) {
                             ModCompatSync.storeAll(player);
                         }
+
+                        // === BACKGROUND THREAD: Write main snapshot to DB (slow, off main thread) ===
+                        executorService.submit(() -> {
+                            try {
+                                writeSnapshotToDB(snapshot);
+                            } catch (Exception e) {
+                                PlayerSync.LOGGER.error("Error auto-saving player {}", puuid, e);
+                            }
+                        });
                     } catch (Exception e) {
-                        PlayerSync.LOGGER.error("Error auto-saving player {}", player.getUUID(), e);
+                        PlayerSync.LOGGER.error("Error snapshotting player {}", puuid, e);
                     } finally {
                         lock.unlock();
                     }
