@@ -483,7 +483,7 @@ public class ModsSupport {
                 try {
                     // Get the map codec from StorageRepositoryImpl
                     java.lang.reflect.Method getMapCodecMethod =
-                            repo.getClass().getDeclaredMethod("getMapCodec", Runnable.class);
+                            repo.getClass().getDeclaredMethod("createCodec", Runnable.class);
                     getMapCodecMethod.setAccessible(true);
                     @SuppressWarnings("rawtypes")
                     com.mojang.serialization.Codec codec = (com.mojang.serialization.Codec)
@@ -558,7 +558,7 @@ public class ModsSupport {
             com.mojang.serialization.Codec mapCodec;
             try {
                 java.lang.reflect.Method getMapCodecMethod =
-                        repo.getClass().getDeclaredMethod("getMapCodec", Runnable.class);
+                        repo.getClass().getDeclaredMethod("createCodec", Runnable.class);
                 getMapCodecMethod.setAccessible(true);
                 mapCodec = (com.mojang.serialization.Codec) getMapCodecMethod.invoke(null, (Runnable) () -> {});
             } catch (Exception e) {
