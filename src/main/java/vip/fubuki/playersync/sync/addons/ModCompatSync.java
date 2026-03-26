@@ -272,20 +272,21 @@ public class ModCompatSync {
         try {
             if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return;
 
-            net.minecraft.nbt.CompoundTag playerNbt = new net.minecraft.nbt.CompoundTag();
-            serverPlayer.saveWithoutId(playerNbt);
+            // FIX: Use serializeAttachments(Provider) directly instead of saveWithoutId()
+            // This is the exact method NeoForge uses to save attachments, no full player save needed
+            java.lang.reflect.Method serializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
+                    .getDeclaredMethod("serializeAttachments", net.minecraft.core.HolderLookup.Provider.class);
+            serializeMethod.setAccessible(true);
+            net.minecraft.nbt.CompoundTag attachments = (net.minecraft.nbt.CompoundTag)
+                    serializeMethod.invoke(player, serverPlayer.getServer().registryAccess());
 
-            // NeoForge stores all attachment data under this key
-            if (playerNbt.contains("neoforge:attachments", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
-                net.minecraft.nbt.CompoundTag attachments = playerNbt.getCompound("neoforge:attachments");
-                if (!attachments.isEmpty()) {
-                    String serialized = VanillaSync.serializeTagToBinaryBase64(attachments);
-                    JDBCsetUp.executePreparedUpdate(
-                            "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
-                            player.getUUID().toString(), "neoforge_attachments", serialized);
-                    PlayerSync.LOGGER.debug("Saved NeoForge attachments for player {} ({} keys)",
-                            player.getUUID(), attachments.getAllKeys().size());
-                }
+            if (attachments != null && !attachments.isEmpty()) {
+                String serialized = VanillaSync.serializeTagToBinaryBase64(attachments);
+                JDBCsetUp.executePreparedUpdate(
+                        "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                        player.getUUID().toString(), "neoforge_attachments", serialized);
+                PlayerSync.LOGGER.debug("Saved NeoForge attachments for player {} ({} keys)",
+                        player.getUUID(), attachments.getAllKeys().size());
             }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error saving NeoForge attachments for player {}", player.getUUID(), e);
@@ -296,9 +297,15 @@ public class ModCompatSync {
      * Restores NeoForge player attachments from the database.
      * Uses reflection to call NeoForge's internal deserializeAttachments method,
      * which ensures the exact same deserialization path as a normal player load.
+     *
+     * FIX: The method signature is deserializeAttachments(HolderLookup.Provider, CompoundTag),
+     * NOT deserializeAttachments(CompoundTag). The old code passed wrong parameters causing
+     * silent failure - no NeoForge attachment data (SOL Onion, Ars Nouveau, etc.) was restored.
      */
     public static void restoreNeoForgeAttachments(Player player) {
         try {
+            if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return;
+
             String serialized;
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
                     "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
@@ -313,16 +320,17 @@ public class ModCompatSync {
             net.minecraft.nbt.CompoundTag attachments = VanillaSync.deserializeBinaryBase64Tag(serialized);
             if (attachments.isEmpty()) return;
 
-            // Create a wrapper CompoundTag with the attachments key
+            // FIX: Correct method signature is (HolderLookup.Provider, CompoundTag), not (CompoundTag)
+            // The wrapper must contain the "neoforge:attachments" key for the method to find the data
             net.minecraft.nbt.CompoundTag wrapper = new net.minecraft.nbt.CompoundTag();
             wrapper.put("neoforge:attachments", attachments);
 
-            // Use reflection to call the package-private deserializeAttachments method
-            // This ensures we use NeoForge's exact deserialization logic
             java.lang.reflect.Method deserializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
-                    .getDeclaredMethod("deserializeAttachments", net.minecraft.nbt.CompoundTag.class);
+                    .getDeclaredMethod("deserializeAttachments",
+                            net.minecraft.core.HolderLookup.Provider.class,
+                            net.minecraft.nbt.CompoundTag.class);
             deserializeMethod.setAccessible(true);
-            deserializeMethod.invoke(player, wrapper);
+            deserializeMethod.invoke(player, serverPlayer.getServer().registryAccess(), wrapper);
 
             PlayerSync.LOGGER.info("Restored NeoForge attachments for player {} ({} keys)",
                     player.getUUID(), attachments.getAllKeys().size());

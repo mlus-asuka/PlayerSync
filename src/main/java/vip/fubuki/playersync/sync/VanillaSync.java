@@ -411,6 +411,31 @@ public class VanillaSync {
         }
     }
 
+    /**
+     * FIX: Secondary kick check during PlayerLoggedInEvent.
+     * PlayerNegotiationEvent fires very early and disconnect() may not always work.
+     * This provides a reliable fallback that kicks the player from the server thread.
+     * Also marks online=1 SYNCHRONOUSLY here to close the race condition window
+     * where doPlayerJoin (async) hasn't set online=1 yet.
+     */
+    @SubscribeEvent
+    public static void onPlayerLoggedInKickCheck(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) return;
+        ServerPlayer player = (ServerPlayer) event.getEntity();
+        String player_uuid = player.getUUID().toString();
+
+        try {
+            // Mark online=1 SYNCHRONOUSLY to prevent race conditions.
+            // Without this, a player joining Server B while still on Server A might slip through
+            // because the async doPlayerJoin on Server A hasn't set online=1 yet.
+            JDBCsetUp.executePreparedUpdate(
+                    "UPDATE player_data SET online=1, last_server=? WHERE uuid=?",
+                    JdbcConfig.SERVER_ID.get(), player_uuid);
+        } catch (SQLException e) {
+            PlayerSync.LOGGER.error("Error setting online flag for player {}", player_uuid, e);
+        }
+    }
+
     @SubscribeEvent
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         executorService.submit(() -> {

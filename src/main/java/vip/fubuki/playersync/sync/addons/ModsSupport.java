@@ -259,6 +259,15 @@ public class ModsSupport {
             Optional<UUID> uuidOpt = backpackWrapper.getContentsUuid();
             if (uuidOpt.isPresent()) {
                 UUID contentsUuid = uuidOpt.get();
+
+                // FIX: Read the full contents NBT from the wrapper's in-memory state,
+                // not from BackpackStorage which may have stale data if the wrapper
+                // hasn't flushed recent changes (e.g. upgrade modifications).
+                // refreshInventoryForInputOutput triggers an internal save to BackpackStorage.
+                try {
+                    backpackWrapper.refreshInventoryForInputOutput();
+                } catch (Exception ignored) {}
+
                 CompoundTag backpackNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
                 saveStorageContents(contentsUuid, backpackNbt);
                 PlayerSync.LOGGER.info("Saved backpack data for UUID {}", contentsUuid);
