@@ -340,12 +340,117 @@ public class ModCompatSync {
     }
 
     // ============================
+    // Snapshot methods (main thread - entity reads only, NO DB writes)
+    // These are used by auto-save and SaveToFile to capture entity state on the
+    // main thread, then the actual DB writes happen on a background thread.
+    // ============================
+
+    /**
+     * Captures Accessories slot data on the main thread.
+     * Returns serialized string or null if mod not loaded / no data.
+     */
+    public static String snapshotAccessories(Player player) {
+        if (!ModList.get().isLoaded("accessories")) return null;
+        try {
+            io.wispforest.accessories.api.AccessoriesCapability cap =
+                    io.wispforest.accessories.api.AccessoriesCapability.get(player);
+            if (cap == null) return null;
+            Map<String, String> flatMap = new HashMap<>();
+            for (Map.Entry<String, io.wispforest.accessories.api.AccessoriesContainer> entry : cap.getContainers().entrySet()) {
+                String slotType = entry.getKey();
+                var accessories = entry.getValue().getAccessories();
+                for (int i = 0; i < accessories.getContainerSize(); i++) {
+                    ItemStack stack = accessories.getItem(i);
+                    if (!stack.isEmpty()) {
+                        flatMap.put(slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
+                    }
+                }
+            }
+            return flatMap.isEmpty() ? null : flatMap.toString();
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error snapshotting Accessories for player {}", player.getUUID(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Captures Cosmetic Armor slot data on the main thread.
+     * Returns serialized string or null if mod not loaded / no data.
+     */
+    public static String snapshotCosmeticArmor(Player player) {
+        if (!ModList.get().isLoaded("cosmeticarmorreworked")) return null;
+        try {
+            lain.mods.cos.impl.inventory.InventoryCosArmor cosInv =
+                    lain.mods.cos.impl.ModObjects.invMan.getCosArmorInventory(player.getUUID());
+            if (cosInv == null) return null;
+            Map<Integer, String> flatMap = new HashMap<>();
+            for (int i = 0; i < cosInv.getContainerSize(); i++) {
+                ItemStack stack = cosInv.getItem(i);
+                if (!stack.isEmpty()) {
+                    flatMap.put(i, VanillaSync.getNbtForStorage(stack));
+                }
+            }
+            return flatMap.isEmpty() ? null : flatMap.toString();
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error snapshotting CosmeticArmor for player {}", player.getUUID(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Captures NeoForge attachment data on the main thread via reflection.
+     * Returns BNBT-serialized string or null if no data.
+     */
+    public static String snapshotAttachments(Player player) {
+        try {
+            if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return null;
+            java.lang.reflect.Method serializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
+                    .getDeclaredMethod("serializeAttachments", net.minecraft.core.HolderLookup.Provider.class);
+            serializeMethod.setAccessible(true);
+            net.minecraft.nbt.CompoundTag attachments = (net.minecraft.nbt.CompoundTag)
+                    serializeMethod.invoke(player, serverPlayer.getServer().registryAccess());
+            if (attachments == null || attachments.isEmpty()) return null;
+            return VanillaSync.serializeTagToBinaryBase64(attachments);
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error snapshotting NeoForge attachments for player {}", player.getUUID(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Writes pre-snapshotted mod data to the DB.
+     * NO entity access — safe to call from a background thread.
+     *
+     * @param uuid            player UUID string
+     * @param accessoriesData serialized Accessories slots (may be null → skipped)
+     * @param cosmeticArmor   serialized Cosmetic Armor slots (may be null → skipped)
+     * @param attachments     serialized NeoForge attachments (may be null → skipped)
+     */
+    public static void writeModSnapshot(String uuid, String accessoriesData, String cosmeticArmor, String attachments) throws SQLException {
+        if (accessoriesData != null) {
+            JDBCsetUp.executePreparedUpdate(
+                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    uuid, "accessories", accessoriesData);
+        }
+        if (cosmeticArmor != null) {
+            JDBCsetUp.executePreparedUpdate(
+                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    uuid, "cosmeticarmor", cosmeticArmor);
+        }
+        if (attachments != null) {
+            JDBCsetUp.executePreparedUpdate(
+                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    uuid, "neoforge_attachments", attachments);
+        }
+    }
+
+    // ============================
     // Convenience methods
     // ============================
 
     /**
-     * Saves all mod-specific data for a player.
-     * Called on logout and auto-save.
+     * Saves all mod-specific data for a player synchronously.
+     * Called on logout and server shutdown (main thread — entity reads are safe here).
      */
     public static void storeAll(Player player) {
         storeAccessories(player);

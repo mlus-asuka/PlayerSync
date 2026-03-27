@@ -686,21 +686,72 @@ public class VanillaSync {
         return "B64:" + Base64.getEncoder().encodeToString(object.getBytes(StandardCharsets.UTF_8));
     }
 
-    public static void doPlayerSaveToFile(PlayerEvent.SaveToFile event) throws SQLException, IOException {
-        JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
-        if (!event.getEntity().getTags().contains("player_synced")) return;
-        store(event.getEntity(), false);
-    }
-
-    // FIX: SaveToFile already fires on the main thread. Running store() off-thread via
-    // executorService read player entity state (inventory, armor, effects) from a background
-    // thread, causing duplication/corruption. Run directly on the main thread.
+    /**
+     * FIX CRITICAL (performance): PlayerEvent.SaveToFile fires on the MAIN THREAD
+     * during Minecraft's own autosave cycle (every 6000 ticks) and on player logout.
+     * The previous implementation called store() synchronously, which includes:
+     *   - Full inventory serialization
+     *   - Multiple JDBC UPDATE/INSERT statements (each one a synchronous network round-trip
+     *     to MySQL — 5ms to 4846ms depending on network latency)
+     * With 35 players this caused MSPT spikes of up to 4846ms (97× the 50ms limit).
+     *
+     * NEW APPROACH:
+     *   1. Update server heartbeat ASYNCHRONOUSLY (no main-thread DB call).
+     *   2. If the player has been synced, snapshot all entity state on the main thread
+     *      (fast — pure memory serialization, no I/O).
+     *   3. Submit all DB writes to the background executor thread pool.
+     *   4. The main thread NEVER waits for MySQL — it returns immediately.
+     *
+     * Safety: backpack / SophisticatedStorage / RS2 contents are NOT saved here
+     * (they are saved completely on logout and shutdown, which is the correct moment).
+     * The snapshot covers inventory, effects, XP, curios, accessories, cosmetic armor,
+     * and NeoForge attachments — everything that changes frequently during gameplay.
+     */
     @SubscribeEvent
     public static void onPlayerSaveToFile(PlayerEvent.SaveToFile event) {
+        // Always update server heartbeat — async, never blocks main thread
+        executorService.submit(() -> {
+            try {
+                JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?",
+                        System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
+            } catch (SQLException e) {
+                PlayerSync.LOGGER.error("Error updating server heartbeat on SaveToFile", e);
+            }
+        });
+
+        Player player = event.getEntity();
+        String puuid = player.getUUID().toString();
+
+        if (!player.getTags().contains("player_synced")) return;
+        if (syncNotCompletedPlayer.contains(puuid)) return;
+        if (player.isDeadOrDying()) return;
+
+        // Use tryLock: if a logout save or another SaveToFile save is already writing
+        // this player's data, skip — the other operation already has fresh data.
+        ReentrantLock lock = getPlayerLock(puuid);
+        if (!lock.tryLock()) return;
+
         try {
-            doPlayerSaveToFile(event);
+            // === MAIN THREAD: snapshot all entity state (no DB I/O, pure memory ops) ===
+            final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
+
+            // === BACKGROUND THREAD: all DB writes — main thread continues immediately ===
+            executorService.submit(() -> {
+                ReentrantLock bgLock = getPlayerLock(puuid);
+                if (!bgLock.tryLock()) return; // another save started, skip
+                try {
+                    writeSnapshotToDB(snapshot);
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error writing async SaveToFile snapshot for player {}", puuid, e);
+                } finally {
+                    bgLock.unlock();
+                }
+            });
+
         } catch (Exception e) {
-            PlayerSync.LOGGER.error("Error during player save-to-file", e);
+            PlayerSync.LOGGER.error("Error snapshotting player {} for SaveToFile", puuid, e);
+        } finally {
+            lock.unlock(); // main thread releases → background thread can now acquire
         }
     }
 
@@ -1037,29 +1088,47 @@ public class VanillaSync {
             }
         }
 
-        // NOTE: Sophisticated Backpacks/Storage/RS2 saves are NOT done here anymore.
-        // They are done in the background thread (their entity reads are on SavedData which is thread-safe,
-        // and their DB writes should not block the main thread).
+        // Mod data snapshots — entity reads, MUST be on main thread.
+        // These are included in the snapshot so the background writer can persist them
+        // without touching the entity again.
+        String curiosData = ModList.get().isLoaded("curios") && !player.isDeadOrDying()
+                ? ModsSupport.snapshotCuriosData(player) : null;
+        String accessoriesData = ModCompatSync.snapshotAccessories(player);
+        String cosmeticArmorData = ModCompatSync.snapshotCosmeticArmor(player);
+        String attachmentsData = ModCompatSync.snapshotAttachments(player);
+
+        // NOTE: Sophisticated Backpacks/Storage/RS2 saves are intentionally NOT in the
+        // periodic snapshot — their contents live in server-side SavedData and are
+        // always saved completely on logout / server shutdown.
 
         return new PlayerDataSnapshot(
                 uuid, XP, score, foodLevel, health,
                 leftHand, cursors,
                 equipmentMap.toString(), inventoryMap.toString(), enderChestMap.toString(), effectMap.toString(),
                 advancements,
-                null, null, null, null // Curios/Accessories/CosmeticArmor/Attachments handled by their own DB writes
+                curiosData, accessoriesData, cosmeticArmorData, attachmentsData
         );
     }
 
     /**
-     * Writes a snapshot to the DB. Runs on BACKGROUND THREAD (no entity access).
+     * Writes a snapshot to the DB. Runs on BACKGROUND THREAD — no entity access.
+     * All data (basic + curios + mod compat) is written here in one pass.
      */
     private static void writeSnapshotToDB(PlayerDataSnapshot s) throws Exception {
+        // Core player data
         JDBCsetUp.executePreparedUpdate(
                 "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=?, left_hand=?, cursors=? WHERE uuid=?",
                 s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), s.uuid());
 
-        // Curios, Accessories, CosmeticArmor, Attachments are already written by their own store methods
-        // during the snapshot phase (they do their own DB writes internally)
+        // Curios (snapshotted on main thread, written here off-thread)
+        if (s.curiosData() != null) {
+            JDBCsetUp.executePreparedUpdate(
+                    "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
+                    s.uuid(), s.curiosData());
+        }
+
+        // Mod compat: Accessories + CosmeticArmor + NeoForge attachments
+        ModCompatSync.writeModSnapshot(s.uuid(), s.accessoriesData(), s.cosmeticArmorData(), s.attachmentsData());
     }
 
     private static String getSyncWorldForServer() {
@@ -1120,9 +1189,18 @@ public class VanillaSync {
             });
         }
 
-        // Auto-save: Snapshot entity data on MAIN THREAD (fast), then write to DB on BACKGROUND THREAD.
-        // Previously, store() ran entirely on main thread including DB writes, blocking the tick loop
-        // for ~5ms per player per save (~5.66% server thread usage from Spark profiling).
+        // Auto-save: snapshot ALL entity data on MAIN THREAD (fast, no I/O), then write
+        // to DB on a BACKGROUND THREAD.
+        //
+        // FIX: Previously the background task called ModCompatSync.storeAll(player),
+        // storeSophisticatedBackpacks(player), etc. from off-thread — accessing entity
+        // state (inventory, Accessories API, CosmeticArmor, NeoForge attachments) in a
+        // non-thread-safe way.  All entity reads are now done in snapshotPlayerData()
+        // on the main thread, and the background task only does DB writes.
+        //
+        // Backpack / SophisticatedStorage / RS2 contents live in server-side SavedData
+        // and are always saved completely on player logout + server shutdown — no need
+        // to include them in the periodic auto-save.
         if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
             autoSaveTickCounter = 0;
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
@@ -1135,40 +1213,17 @@ public class VanillaSync {
                     ReentrantLock lock = getPlayerLock(puuid);
                     if (!lock.tryLock()) continue;
                     try {
-                        // === MAIN THREAD: Snapshot ALL data (entity reads only, no DB I/O) ===
+                        // === MAIN THREAD: snapshot ALL entity state (no DB I/O) ===
+                        // snapshotPlayerData now includes curios, accessories,
+                        // cosmeticarmor, and neoforge attachments.
                         final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
 
-                        // Snapshot Curios data on main thread (entity read), DB write deferred
-                        final String curiosSnapshot;
-                        if (ModList.get().isLoaded("curios") && !player.isDeadOrDying()) {
-                            curiosSnapshot = ModsSupport.snapshotCuriosData(player);
-                        } else {
-                            curiosSnapshot = null;
-                        }
-
-                        // === BACKGROUND THREAD: ALL DB writes in one batch ===
+                        // === BACKGROUND THREAD: DB writes only (no entity access) ===
                         executorService.submit(() -> {
                             ReentrantLock bgLock = getPlayerLock(puuid);
                             if (!bgLock.tryLock()) return;
                             try {
                                 writeSnapshotToDB(snapshot);
-                                // Write curios data
-                                if (curiosSnapshot != null) {
-                                    JDBCsetUp.executePreparedUpdate(
-                                            "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
-                                            puuid, curiosSnapshot);
-                                }
-                                // Mod compat + storage saves (all DB writes, off main thread)
-                                ModCompatSync.storeAll(player);
-                                if (ModList.get().isLoaded("sophisticatedbackpacks")) {
-                                    ModsSupport.storeSophisticatedBackpacks(player);
-                                }
-                                if (ModList.get().isLoaded("sophisticatedstorage")) {
-                                    ModsSupport.storeSophisticatedStorageItems(player);
-                                }
-                                if (ModList.get().isLoaded("refinedstorage")) {
-                                    ModsSupport.storeRefinedStorageDisks(player);
-                                }
                             } catch (Exception e) {
                                 PlayerSync.LOGGER.error("Error auto-saving player {}", puuid, e);
                             } finally {
