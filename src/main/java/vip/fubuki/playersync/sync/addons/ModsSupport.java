@@ -97,14 +97,19 @@ public class ModsSupport {
      * wrapper state (common with Sophisticated Backpacks/Storage).
      */
     private static void saveStorageContents(UUID contentsUuid, CompoundTag nbt) {
-        // Skip empty/minimal NBT to avoid overwriting real data in DB
-        if (nbt == null || nbt.isEmpty() || nbt.size() <= 1) {
-            // Check if DB already has data for this UUID - if so, don't overwrite with empty
+        // Only skip truly empty CompoundTag (no keys at all) — this happens when
+        // getOrCreateStorageContents() creates a blank entry because the wrapper
+        // hasn't flushed to SavedData yet. A backpack/shulker that the player
+        // legitimately emptied still has structural keys (e.g. empty "items" list),
+        // so nbt.isEmpty() is false and the save proceeds correctly.
+        // Previous guard used nbt.size() <= 1 which also blocked legitimately emptied
+        // containers, causing item duplication on the next login.
+        if (nbt == null || nbt.isEmpty()) {
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
                     "SELECT LENGTH(backpack_nbt) AS len FROM backpack_data WHERE uuid=?", contentsUuid.toString())) {
                 java.sql.ResultSet rs = qr.resultSet();
                 if (rs.next() && rs.getInt("len") > 50) {
-                    PlayerSync.LOGGER.debug("Skipping save of empty/minimal NBT for UUID {} - DB has {} bytes of real data",
+                    PlayerSync.LOGGER.debug("Skipping save of empty NBT for UUID {} - DB has {} bytes of real data",
                             contentsUuid, rs.getInt("len"));
                     return;
                 }
@@ -256,6 +261,59 @@ public class ModsSupport {
         return flatMap.toString();
     }
 
+    /**
+     * Applies pre-read curios data to the player entity (NO DB access).
+     * Used by doPlayerJoin to avoid DB reads on the main thread.
+     */
+    public static void applyCuriosFromData(Player player, String curiosData) {
+        if (!ModList.get().isLoaded("curios")) return;
+        if (curiosData == null || curiosData.length() <= 2) return;
+
+        Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
+        if (handlerOpt.isEmpty()) {
+            PlayerSync.LOGGER.warn("Could not get Curios handler for player {} during apply", player.getUUID());
+            return;
+        }
+
+        Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
+        if (storedMap.isEmpty()) return;
+
+        ICuriosItemHandler handler = handlerOpt.get();
+
+        // Clear all curios slots BEFORE restoring
+        for (Map.Entry<String, ICurioStacksHandler> entry : handler.getCurios().entrySet()) {
+            IDynamicStackHandler stacks = entry.getValue().getStacks();
+            for (int i = 0; i < stacks.getSlots(); i++) {
+                stacks.setStackInSlot(i, ItemStack.EMPTY);
+            }
+        }
+
+        // Restore items from pre-read data
+        for (Map.Entry<String, String> entry : storedMap.entrySet()) {
+            String compositeKey = entry.getKey();
+            int lastColon = compositeKey.lastIndexOf(':');
+            if (lastColon < 0) continue;
+            String slotType = compositeKey.substring(0, lastColon);
+            int slotIndex;
+            try { slotIndex = Integer.parseInt(compositeKey.substring(lastColon + 1)); }
+            catch (NumberFormatException e) { continue; }
+
+            try {
+                ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(entry.getValue());
+                ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);
+                if (stacksHandler != null) {
+                    IDynamicStackHandler stacks = stacksHandler.getStacks();
+                    if (slotIndex < stacks.getSlots()) {
+                        stacks.setStackInSlot(slotIndex, stack);
+                    }
+                }
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error("Error applying curios slot {}:{}", slotType, slotIndex, e);
+            }
+        }
+        PlayerSync.LOGGER.info("Applied curios data for player {} from pre-read data", player.getUUID());
+    }
+
     public void StoreCurios(Player player, boolean init) throws SQLException {
         if (!ModList.get().isLoaded("curios")) return;
 
@@ -314,6 +372,45 @@ public class ModsSupport {
             }
             return false;
         });
+    }
+
+    /**
+     * Collects Sophisticated Backpack UUIDs from the player's inventory.
+     * Must be called on the MAIN THREAD (reads inventory items).
+     * Also refreshes wrappers to flush in-memory state to SavedData.
+     */
+    public static List<UUID> collectBackpackUuids(Player player) {
+        List<UUID> uuids = new ArrayList<>();
+        if (!ModList.get().isLoaded("sophisticatedbackpacks")) return uuids;
+        try {
+            net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player,
+                    (ItemStack backpackItem, String handler, String identifier, int slot) -> {
+                        net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper wrapper =
+                                net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper.fromStack(backpackItem);
+                        try { wrapper.refreshInventoryForInputOutput(); } catch (Exception ignored) {}
+                        wrapper.getContentsUuid().ifPresent(uuids::add);
+                        return false;
+                    });
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error collecting backpack UUIDs for player {}", player.getUUID(), e);
+        }
+        return uuids;
+    }
+
+    /**
+     * Saves backpack contents by UUID. Reads SavedData and writes to DB.
+     * Can be called from a background thread (no entity access).
+     */
+    public static void saveBackpacksByUuids(List<UUID> uuids) {
+        for (UUID uuid : uuids) {
+            try {
+                CompoundTag nbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get()
+                        .getOrCreateBackpackContents(uuid);
+                saveStorageContents(uuid, nbt);
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error("Error saving backpack data for UUID {}", uuid, e);
+            }
+        }
     }
 
     // ============================
@@ -427,6 +524,59 @@ public class ModsSupport {
             return loc != null && loc.getNamespace().equals("sophisticatedstorage");
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    /**
+     * Collects Sophisticated Storage item UUIDs from the player's inventory and ender chest.
+     * Must be called on the MAIN THREAD (reads inventory items).
+     */
+    public static List<UUID> collectSSUuids(Player player) {
+        List<UUID> uuids = new ArrayList<>();
+        if (!ModList.get().isLoaded("sophisticatedstorage")) return uuids;
+        try {
+            var registryAccess = net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer().registryAccess();
+            // Scan main inventory
+            for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                ItemStack stack = player.getInventory().getItem(i);
+                if (stack.isEmpty() || !isSophisticatedStorageItem(stack)) continue;
+                try {
+                    net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper wrapper =
+                            net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper.fromStack(registryAccess, stack);
+                    wrapper.getContentsUuid().ifPresent(uuids::add);
+                } catch (Exception ignored) {}
+            }
+            // Scan ender chest
+            for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
+                ItemStack stack = player.getEnderChestInventory().getItem(i);
+                if (stack.isEmpty() || !isSophisticatedStorageItem(stack)) continue;
+                try {
+                    net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper wrapper =
+                            net.p3pp3rf1y.sophisticatedstorage.item.StackStorageWrapper.fromStack(registryAccess, stack);
+                    wrapper.getContentsUuid().ifPresent(uuids::add);
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error collecting SS UUIDs for player {}", player.getUUID(), e);
+        }
+        return uuids;
+    }
+
+    /**
+     * Saves Sophisticated Storage contents by UUID. Reads SavedData and writes to DB.
+     * Can be called from a background thread (no entity access).
+     */
+    public static void saveSSByUuids(List<UUID> uuids) {
+        for (UUID uuid : uuids) {
+            try {
+                CompoundTag nbt = net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get()
+                        .getOrCreateStorageContents(uuid);
+                if (nbt != null && !nbt.isEmpty()) {
+                    saveStorageContents(uuid, nbt);
+                }
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error("Error saving SS data for UUID {}", uuid, e);
+            }
         }
     }
 
@@ -563,6 +713,32 @@ public class ModsSupport {
         }
     }
 
+    /**
+     * Saves RS2 disk storage contents by UUID using a pre-captured ServerLevel reference.
+     * Can be called from a background thread (SavedData read + DB write, no entity access).
+     */
+    public static void saveRS2DisksByLevel(List<UUID> diskUuids, net.minecraft.server.level.ServerLevel level,
+                                           net.minecraft.core.HolderLookup.Provider registryAccess) {
+        if (diskUuids.isEmpty()) return;
+        try {
+            com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
+                    com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(level);
+            if (!(repo instanceof net.minecraft.world.level.saveddata.SavedData sd)) return;
+
+            net.minecraft.nbt.CompoundTag fullNbt = sd.save(new net.minecraft.nbt.CompoundTag(), registryAccess);
+
+            for (UUID uuid : diskUuids) {
+                net.minecraft.nbt.CompoundTag entryNbt = findRS2EntryInNbt(fullNbt, uuid.toString());
+                if (entryNbt != null && !entryNbt.isEmpty()) {
+                    saveStorageContents(uuid, entryNbt);
+                    PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {} (async save)", uuid);
+                }
+            }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error saving RS2 disks by level", e);
+        }
+    }
+
     /** Describes the top-level NBT structure for debugging */
     private static String describeNbtStructure(net.minecraft.nbt.CompoundTag tag) {
         StringBuilder sb = new StringBuilder("{");
@@ -674,7 +850,7 @@ public class ModsSupport {
     /**
      * Collects all RS2/ExtraDisks storage reference UUIDs from the player's inventory and ender chest.
      */
-    private static List<UUID> collectRS2DiskUuids(Player player) {
+    public static List<UUID> collectRS2DiskUuids(Player player) {
         List<UUID> uuids = new ArrayList<>();
         // Check main inventory
         collectRS2DiskUuidsFromContainer(player.getInventory(), uuids);

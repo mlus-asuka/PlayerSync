@@ -56,10 +56,19 @@ public class PlayerSync {
             return;
         }
 
-        // Step 1: Create the database using a connection that does not select a database.
+        // Step 1: Create the database using a raw DriverManager connection (no pool yet).
         JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `" + dbName + "`", 1);
 
-        // Step 2: Explicitly select the database on a connection obtained without default database.
+        // Step 2: Initialise HikariCP pool now that the database exists.
+        // All subsequent queries use the pool — no more isValid() ping on every borrow.
+        try {
+            JDBCsetUp.initPool();
+        } catch (Exception e) {
+            LOGGER.error("[PlayerSync] Failed to initialise connection pool — check MySQL config.", e);
+            return;
+        }
+
+        // Step 3: Explicitly select the database on a raw connection (DDL only).
         try (Connection conn = JDBCsetUp.getConnection(false);
              Statement st = conn.createStatement()) {
             st.execute("USE `" + dbName + "`");
@@ -68,7 +77,7 @@ public class PlayerSync {
             throw e;
         }
 
-        // Step 3: Create and alter tables using fully qualified names.
+        // Step 4: Create and alter tables using fully qualified names.
         // Create player_data table
         JDBCsetUp.executeUpdate(
                 "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`player_data` (" +
@@ -204,7 +213,7 @@ public class PlayerSync {
         );
 
         try {
-            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE last_server=? AND online=1 LIMIT 1000", JdbcConfig.SERVER_ID.get());
+            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE last_server=? AND online=1", JdbcConfig.SERVER_ID.get());
         } catch (Exception e) {
             LOGGER.error("An exception occurred while trying change wrong player-status\n" + e.getMessage());
         }
@@ -212,8 +221,12 @@ public class PlayerSync {
     }
 
     @SubscribeEvent
-    public void onServerStopping(ServerStoppingEvent event){
+    public void onServerStopping(ServerStoppingEvent event) {
         ChatSync.shutdown();
+        // DO NOT call JDBCsetUp.shutdownPool() here!
+        // VanillaSync.onServerShutdown also subscribes to ServerStoppingEvent and
+        // needs the pool to save all player data. Event firing order is not guaranteed.
+        // The pool is shut down at the very end of VanillaSync.onServerShutdown instead.
     }
 
 }

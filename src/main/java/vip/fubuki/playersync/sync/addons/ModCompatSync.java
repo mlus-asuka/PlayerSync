@@ -149,6 +149,57 @@ public class ModCompatSync {
         }
     }
 
+    /**
+     * Applies pre-read Accessories data to the player entity (NO DB access).
+     * Used by doPlayerJoin to avoid DB reads on the main thread.
+     */
+    public static void applyAccessoriesFromData(Player player, String accessoriesData) {
+        if (!ModList.get().isLoaded("accessories")) return;
+        if (accessoriesData == null || accessoriesData.length() <= 2) return;
+        try {
+            io.wispforest.accessories.api.AccessoriesCapability cap =
+                    io.wispforest.accessories.api.AccessoriesCapability.get(player);
+            if (cap == null) return;
+
+            Map<String, String> storedMap = LocalJsonUtil.StringToMap(accessoriesData);
+            if (storedMap.isEmpty()) return;
+
+            Map<String, io.wispforest.accessories.api.AccessoriesContainer> containers = cap.getContainers();
+
+            for (io.wispforest.accessories.api.AccessoriesContainer container : containers.values()) {
+                var accessories = container.getAccessories();
+                for (int i = 0; i < accessories.getContainerSize(); i++) {
+                    accessories.setItem(i, ItemStack.EMPTY);
+                }
+            }
+
+            for (Map.Entry<String, String> entry : storedMap.entrySet()) {
+                String compositeKey = entry.getKey();
+                int lastColon = compositeKey.lastIndexOf(':');
+                if (lastColon < 0) continue;
+                String slotType = compositeKey.substring(0, lastColon);
+                int slotIndex;
+                try { slotIndex = Integer.parseInt(compositeKey.substring(lastColon + 1)); }
+                catch (NumberFormatException ex) { continue; }
+
+                try {
+                    ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(entry.getValue());
+                    if (containers.containsKey(slotType)) {
+                        var acc = containers.get(slotType).getAccessories();
+                        if (slotIndex < acc.getContainerSize()) {
+                            acc.setItem(slotIndex, stack);
+                        }
+                    }
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error applying Accessories data for key {}", compositeKey, e);
+                }
+            }
+            PlayerSync.LOGGER.info("Applied Accessories data for player {}", player.getUUID());
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error applying Accessories data for player {}", player.getUUID(), e);
+        }
+    }
+
     // ============================
     // Cosmetic Armor Reworked
     // ============================
@@ -252,6 +303,42 @@ public class ModCompatSync {
         }
     }
 
+    /**
+     * Applies pre-read CosmeticArmor data to the player entity (NO DB access).
+     */
+    public static void applyCosmeticArmorFromData(Player player, String cosmeticArmorData) {
+        if (!ModList.get().isLoaded("cosmeticarmorreworked")) return;
+        if (cosmeticArmorData == null || cosmeticArmorData.length() <= 2) return;
+        try {
+            lain.mods.cos.impl.inventory.InventoryCosArmor cosInv =
+                    lain.mods.cos.impl.ModObjects.invMan.getCosArmorInventory(player.getUUID());
+            if (cosInv == null) return;
+
+            Map<Integer, String> storedMap = LocalJsonUtil.StringToEntryMap(cosmeticArmorData);
+            if (storedMap.isEmpty()) return;
+
+            for (int i = 0; i < cosInv.getContainerSize(); i++) {
+                cosInv.setItem(i, ItemStack.EMPTY);
+            }
+
+            for (Map.Entry<Integer, String> entry : storedMap.entrySet()) {
+                int slot = entry.getKey();
+                try {
+                    ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(entry.getValue());
+                    if (slot < cosInv.getContainerSize()) {
+                        cosInv.setItem(slot, stack);
+                    }
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error applying CosmeticArmor slot {}", slot, e);
+                }
+            }
+            cosInv.setChanged();
+            PlayerSync.LOGGER.info("Applied CosmeticArmor data for player {}", player.getUUID());
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error applying CosmeticArmor data for player {}", player.getUUID(), e);
+        }
+    }
+
     // ============================
     // Generic NeoForge Attachment Sync
     // ============================
@@ -336,6 +423,34 @@ public class ModCompatSync {
                     player.getUUID(), attachments.getAllKeys().size());
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error restoring NeoForge attachments for player {}", player.getUUID(), e);
+        }
+    }
+
+    /**
+     * Applies pre-read NeoForge attachments data to the player entity (NO DB access).
+     */
+    public static void applyAttachmentsFromData(Player player, String serialized) {
+        if (serialized == null || !serialized.startsWith("BNBT:")) return;
+        try {
+            if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return;
+
+            net.minecraft.nbt.CompoundTag attachments = VanillaSync.deserializeBinaryBase64Tag(serialized);
+            if (attachments.isEmpty()) return;
+
+            net.minecraft.nbt.CompoundTag wrapper = new net.minecraft.nbt.CompoundTag();
+            wrapper.put("neoforge:attachments", attachments);
+
+            java.lang.reflect.Method deserializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
+                    .getDeclaredMethod("deserializeAttachments",
+                            net.minecraft.core.HolderLookup.Provider.class,
+                            net.minecraft.nbt.CompoundTag.class);
+            deserializeMethod.setAccessible(true);
+            deserializeMethod.invoke(player, serverPlayer.getServer().registryAccess(), wrapper);
+
+            PlayerSync.LOGGER.info("Applied NeoForge attachments for player {} ({} keys)",
+                    player.getUUID(), attachments.getAllKeys().size());
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error applying NeoForge attachments for player {}", player.getUUID(), e);
         }
     }
 
