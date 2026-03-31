@@ -83,12 +83,28 @@ public class VanillaSync {
     // Per-player locks to prevent concurrent save/restore operations (anti-duplication)
     private static final ConcurrentHashMap<String, ReentrantLock> playerLocks = new ConcurrentHashMap<>();
 
+    // FIX: Track in-progress logout saves so doPlayerJoin can wait for them.
+    // Without this, a fast disconnect+reconnect can read stale DB data while the
+    // previous session's save is still in flight.
+    private static final ConcurrentHashMap<String, CompletableFuture<Void>> pendingLogoutSaves = new ConcurrentHashMap<>();
+
     private static ReentrantLock getPlayerLock(String uuid) {
         return playerLocks.computeIfAbsent(uuid, k -> new ReentrantLock());
     }
 
     public static void removePlayerLock(String uuid) {
         playerLocks.remove(uuid);
+    }
+
+    /**
+     * Checks if a player is still in the server's online player list.
+     * Used to avoid applying sync data to a player entity that already disconnected.
+     */
+    private static boolean isPlayerOnline(MinecraftServer server, String uuid) {
+        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
+            if (p.getUUID().toString().equals(uuid)) return true;
+        }
+        return false;
     }
 
     @SubscribeEvent
@@ -227,13 +243,17 @@ public class VanillaSync {
 
         if (server == null) {
             PlayerSync.LOGGER.error("Server is null for player {}", player_uuid);
+            syncNotCompletedPlayer.remove(player_uuid);
             return;
         }
 
+        // FIX: If the player entity spawned dead/dying, kick+respawn them.
+        // All entity modifications (removeTag, teleport, disconnect) are scheduled on the
+        // main thread — the old code called removeTag from this background thread which is unsafe.
         if (serverPlayer.isDeadOrDying()) {
             deadPlayerWhileLogging.add(player_uuid);
-            serverPlayer.removeTag("player_synced");
             server.execute(() -> {
+                serverPlayer.removeTag("player_synced");
                 ResourceKey<Level> respawnLevel = serverPlayer.getRespawnDimension();
                 BlockPos respawnPos = serverPlayer.getRespawnPosition();
                 if (respawnPos != null) {
@@ -245,20 +265,49 @@ public class VanillaSync {
                 serverPlayer.setHealth(1);
                 serverPlayer.connection.disconnect(Component.translatableWithFallback("playersync.wrong_entity_status","An error occurred while creating playerEntity in the world,please login again."));
             });
-            try {
-                JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?", System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
-                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=1, last_server=? WHERE uuid=?", JdbcConfig.SERVER_ID.get(), player_uuid);
-            } catch (SQLException e) {
-                PlayerSync.LOGGER.error("An error occurred while handling dead/dying player {}", e.getMessage());
-            }
+            // online=1 already set by onPlayerLoggedInKickCheck — no duplicate DB write here
             return;
+        }
+
+        // FIX ANTI-DUPLICATION: Wait for any pending logout save from a previous session
+        // on THIS server. Without this, a fast disconnect+reconnect reads stale DB data
+        // while the previous session's async save is still in flight.
+        CompletableFuture<Void> pendingSave = pendingLogoutSaves.get(player_uuid);
+        if (pendingSave != null) {
+            PlayerSync.LOGGER.info("Waiting for pending logout save to complete for player {}", player_uuid);
+            try {
+                pendingSave.get(15, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                PlayerSync.LOGGER.error("Timeout waiting for pending logout save for player {}", player_uuid);
+            } catch (Exception e) {
+                PlayerSync.LOGGER.warn("Pending logout save failed for player {}", player_uuid, e);
+            }
         }
 
         ReentrantLock lock = getPlayerLock(player_uuid);
         lock.lock();
         try {
             PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
-            // syncNotCompletedPlayer.add() already done in onPlayerJoin before submit
+
+            // FIX ANTI-DUPLICATION: Wait for ANOTHER server to finish saving this player's data.
+            // If online=1 and last_server != this_server, the other server's async logout save
+            // is still in flight. Poll the DB (on this background thread — main thread is free).
+            for (int attempt = 0; attempt < 30; attempt++) {
+                try (JDBCsetUp.QueryResult qrCheck = JDBCsetUp.executePreparedQuery(
+                        "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
+                    ResultSet rsCheck = qrCheck.resultSet();
+                    if (!rsCheck.next()) break; // new player, nothing pending
+                    boolean otherOnline = rsCheck.getBoolean("online");
+                    int otherServer = rsCheck.getInt("last_server");
+                    if (otherOnline && otherServer != JdbcConfig.SERVER_ID.get()) {
+                        PlayerSync.LOGGER.info("Player {} still being saved on server {} (attempt {}/30), waiting 500ms...",
+                                player_uuid, otherServer, attempt + 1);
+                        Thread.sleep(500);
+                        continue;
+                    }
+                }
+                break; // Ready to load — other server finished or same server
+            }
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
 
@@ -269,13 +318,14 @@ public class VanillaSync {
             }
 
             if (!playerExists) {
-                // FIX CRITICAL-1/2: online=1 is already set by onPlayerLoggedInKickCheck (synchronous).
-                // Do NOT write online=1 again from background/queued threads - if the player disconnects
-                // quickly, the background write races with logout's online=0 and permanently locks the player.
                 server.execute(() -> {
+                    if (!isPlayerOnline(server, player_uuid)) {
+                        syncNotCompletedPlayer.remove(player_uuid);
+                        return;
+                    }
                     try {
                         new ModsSupport().doCuriosRestore(serverPlayer);
-                        store(serverPlayer, true); // INSERT with online=1 handled by store() init path
+                        store(serverPlayer, true);
                         serverPlayer.addTag("player_synced");
                     } catch (Exception e) {
                         PlayerSync.LOGGER.error("Error initializing new player {}", player_uuid, e);
@@ -285,8 +335,6 @@ public class VanillaSync {
                 });
                 return;
             }
-
-            // online=1 already set by onPlayerLoggedInKickCheck - no duplicate write here
 
             // Read all DB data into local variables (background thread - safe)
             final int health, foodLevel, xp, score;
@@ -312,9 +360,7 @@ public class VanillaSync {
                 effectData = rs2.getString("effects");
             }
 
-            // FIX PERF: Pre-read ALL mod data on BACKGROUND THREAD (no entity access).
-            // Previously these DB reads happened inside server.execute() on the main thread,
-            // blocking it for 5-200ms per query × 4-7 queries per player login.
+            // Pre-read ALL mod data on BACKGROUND THREAD (no entity access).
             final String curiosData;
             if (ModList.get().isLoaded("curios")) {
                 try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
@@ -353,11 +399,19 @@ public class VanillaSync {
             }
 
             // === PHASE 2: Apply to player on MAIN SERVER THREAD ===
-            // Minecraft entities are NOT thread-safe. Modifying inventory/health/effects
-            // from a background thread causes duplication exploits and corruption.
-            CountDownLatch applyLatch = new CountDownLatch(1);
+            // FIX PERF: No more applyLatch.await(60s) tying up a background thread.
+            // The server.execute() callback fires when the main thread is ready. The
+            // syncNotCompletedPlayer flag guards onPlayerLogout until apply completes.
             server.execute(() -> {
                 try {
+                    // FIX: Verify the player is still connected before applying data.
+                    // If the player disconnected quickly, the entity is stale and modifying
+                    // it could interfere with the logout save or corrupt state.
+                    if (!isPlayerOnline(server, player_uuid)) {
+                        PlayerSync.LOGGER.warn("Player {} disconnected before sync apply, skipping", player_uuid);
+                        return;
+                    }
+
                     // ANTI-DUPLICATION: Clear all inventories BEFORE restoring
                     serverPlayer.getInventory().clearContent();
                     serverPlayer.getEnderChestInventory().clearContent();
@@ -409,8 +463,7 @@ public class VanillaSync {
                         }
                     }
 
-                    // FIX PERF: Apply mod data from pre-read strings (NO DB calls on main thread).
-                    // All DB reads were done in Phase 1 on the background thread.
+                    // Apply mod data from pre-read strings (NO DB calls on main thread).
                     ModsSupport.applyCuriosFromData(serverPlayer, curiosData);
                     ModCompatSync.applyAccessoriesFromData(serverPlayer, accessoriesData);
                     ModCompatSync.applyCosmeticArmorFromData(serverPlayer, cosmeticArmorData);
@@ -432,21 +485,9 @@ public class VanillaSync {
                     PlayerSync.LOGGER.error("Error applying sync data for player {}", player_uuid, e);
                 } finally {
                     syncNotCompletedPlayer.remove(player_uuid);
-                    applyLatch.countDown();
                 }
             });
 
-            // FIX H-3: Release lock BEFORE waiting on latch to prevent deadlock.
-            // If we hold the lock while waiting, onServerShutdown trying to acquire
-            // the same lock will deadlock (shutdown blocks main thread, preventing
-            // server.execute() from draining, preventing latch countdown).
-            lock.unlock();
-
-            if (!applyLatch.await(60, TimeUnit.SECONDS)) {
-                PlayerSync.LOGGER.error("Timeout waiting for main thread sync for player {}", player_uuid);
-                syncNotCompletedPlayer.remove(player_uuid);
-            }
-            return; // Lock already released, skip finally
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
             syncNotCompletedPlayer.remove(player_uuid);
@@ -539,11 +580,14 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
-        // FIX: Mark sync as pending BEFORE submitting to thread pool.
-        // Without this, a player who disconnects instantly can trigger onPlayerLogout
-        // before the background thread starts, bypassing the syncNotCompleted guard
-        // and saving invalid entity state.
         String puuid = ((ServerPlayer) event.getEntity()).getUUID().toString();
+
+        // FIX: Don't start sync for players that were already kicked by onPlayerLoggedInKickCheck.
+        // Without this, doPlayerJoin runs on a background thread for a kicked player, wastes
+        // resources, and leaves stale entries in syncNotCompletedPlayer / playerLocks.
+        if (kickedForDuplicateLogin.contains(puuid)) return;
+
+        // Mark sync as pending BEFORE submitting to thread pool.
         syncNotCompletedPlayer.add(puuid);
         executorService.submit(() -> {
             try {
@@ -770,6 +814,10 @@ public class VanillaSync {
         if (!player.getTags().contains("player_synced")) return;
         if (syncNotCompletedPlayer.contains(puuid)) return;
         if (player.isDeadOrDying()) return;
+        // FIX: Skip if a logout save is already in flight for this player.
+        // Without this, the SaveToFile background task could overwrite the fresher
+        // logout snapshot with a stale one if it runs after the logout save.
+        if (pendingLogoutSaves.containsKey(puuid)) return;
 
         // Use tryLock: if a logout save or another SaveToFile save is already writing
         // this player's data, skip — the other operation already has fresh data.
@@ -898,103 +946,119 @@ public class VanillaSync {
     }
 
     /**
-     * FIX: Logout saves are now fully async (snapshot on main thread, DB writes on background).
-     * Entity state (inventory, curios, effects) is read safely on the correct thread.
+     * FIX: Logout saves are now FULLY NON-BLOCKING on the main thread.
+     *
+     * OLD APPROACH (bad): snapshot on main thread, wait up to 15s for DB write → blocks
+     * ALL server processing (ticks, other players' events) during that time.
+     *
+     * NEW APPROACH: snapshot on main thread (fast, pure memory), submit async DB write,
+     * return immediately. The online flag stays 1 until the async save completes, which
+     * naturally prevents premature rejoin via the kick mechanism + doPlayerJoin's new
+     * pending-save wait logic.
+     *
+     * All branches now properly clean up syncNotCompletedPlayer + removePlayerLock
+     * (previously leaked in the dead/sync-not-completed branches).
      */
     @SubscribeEvent
     public static void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
         String player_uuid = event.getEntity().getUUID().toString();
-        // FIX: Players kicked for duplicate login must NOT set online=0.
-        // They are still online on the OTHER server. Setting online=0 here would allow
-        // them to bypass the kick by immediately reconnecting (DB says offline while
-        // they're still on the other server).
-        if (kickedForDuplicateLogin.contains(player_uuid)) {
+
+        // Players kicked for duplicate login must NOT set online=0 — they're still
+        // online on the OTHER server.
+        if (kickedForDuplicateLogin.remove(player_uuid)) {
             PlayerSync.LOGGER.info("Player {} was kicked for duplicate login, NOT marking offline (still on other server)", player_uuid);
-            kickedForDuplicateLogin.remove(player_uuid);
+            syncNotCompletedPlayer.remove(player_uuid);
+            removePlayerLock(player_uuid);
             return;
-        } else if (deadPlayerWhileLogging.contains(player_uuid)) {
+        }
+
+        if (deadPlayerWhileLogging.remove(player_uuid)) {
             PlayerSync.LOGGER.warn("A dead or dying player was kicked, uuid: {}", player_uuid);
             try {
                 JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("Error marking dead player offline: {}", player_uuid, e);
             }
-            deadPlayerWhileLogging.remove(player_uuid);
-        } else if (syncNotCompletedPlayer.contains(player_uuid)) {
+            syncNotCompletedPlayer.remove(player_uuid);
+            removePlayerLock(player_uuid);
+            return;
+        }
+
+        if (syncNotCompletedPlayer.remove(player_uuid)) {
             PlayerSync.LOGGER.warn("Player {} logged out with uncompleted sync. Data won't be saved for safety.", player_uuid);
             try {
                 JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("Error marking unsynced player offline: {}", player_uuid, e);
             }
-            syncNotCompletedPlayer.remove(player_uuid);
-        } else {
-            Player player = event.getEntity();
-            ReentrantLock lock = getPlayerLock(player_uuid);
-            lock.lock();
-            try {
-                // === MAIN THREAD: Snapshot ALL entity state (fast, no DB I/O) ===
+            removePlayerLock(player_uuid);
+            return;
+        }
 
-                // Cache curios before snapshot (safety for dead/dying players)
-                if (ModList.get().isLoaded("curios") && !player.isDeadOrDying()) {
-                    CuriosCache.tryStoreCuriosToCache((ServerPlayer) player);
-                }
-
-                final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
-
-                // Collect backpack/SS/RS2 UUIDs (inventory reads, must be main thread)
-                final List<UUID> backpackUuids = ModsSupport.collectBackpackUuids(player);
-                final List<UUID> ssUuids = ModsSupport.collectSSUuids(player);
-                final List<UUID> rs2DiskUuids;
-                final ServerLevel rs2Level;
-                final HolderLookup.Provider rs2RegistryAccess;
-                if (ModList.get().isLoaded("refinedstorage") && player instanceof ServerPlayer sp) {
-                    rs2DiskUuids = ModsSupport.collectRS2DiskUuids(player);
-                    rs2Level = sp.serverLevel();
-                    rs2RegistryAccess = sp.getServer().registryAccess();
-                } else {
-                    rs2DiskUuids = List.of();
-                    rs2Level = null;
-                    rs2RegistryAccess = null;
-                }
-
-                // === BACKGROUND THREAD: ALL DB writes — main thread returns immediately ===
-                CountDownLatch saveLatch = new CountDownLatch(1);
-                executorService.submit(() -> {
-                    try {
-                        writeSnapshotToDB(snapshot);
-                        ModsSupport.saveBackpacksByUuids(backpackUuids);
-                        ModsSupport.saveSSByUuids(ssUuids);
-                        if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
-                            ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2RegistryAccess);
-                        }
-                    } catch (Exception e) {
-                        PlayerSync.LOGGER.error("Error saving player {} data on logout", player_uuid, e);
-                    } finally {
-                        // CRITICAL: online=0 MUST always execute, even if saves fail
-                        try {
-                            JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
-                        } catch (Exception e2) {
-                            PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline", player_uuid, e2);
-                        }
-                        saveLatch.countDown();
-                    }
-                });
-
-                // Wait for background save to complete (data must be in DB before player can rejoin)
-                if (!saveLatch.await(15, TimeUnit.SECONDS)) {
-                    PlayerSync.LOGGER.error("Timeout saving player {} on logout — forcing offline", player_uuid);
-                    try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid); }
-                    catch (Exception ignored) {}
-                }
-            } catch (Exception e) {
-                PlayerSync.LOGGER.error("Error during player logout save for {}", player_uuid, e);
-                try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid); }
-                catch (Exception ignored) {}
-            } finally {
-                lock.unlock();
-                removePlayerLock(player_uuid);
+        // === Normal save path ===
+        Player player = event.getEntity();
+        ReentrantLock lock = getPlayerLock(player_uuid);
+        lock.lock();
+        try {
+            // === MAIN THREAD: Snapshot ALL entity state (fast, no DB I/O) ===
+            if (ModList.get().isLoaded("curios") && !player.isDeadOrDying()) {
+                CuriosCache.tryStoreCuriosToCache((ServerPlayer) player);
             }
+
+            final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
+
+            // Collect backpack/SS/RS2 UUIDs (inventory reads, must be main thread)
+            final List<UUID> backpackUuids = ModsSupport.collectBackpackUuids(player);
+            final List<UUID> ssUuids = ModsSupport.collectSSUuids(player);
+            final List<UUID> rs2DiskUuids;
+            final ServerLevel rs2Level;
+            final HolderLookup.Provider rs2RegistryAccess;
+            if (ModList.get().isLoaded("refinedstorage") && player instanceof ServerPlayer sp) {
+                rs2DiskUuids = ModsSupport.collectRS2DiskUuids(player);
+                rs2Level = sp.serverLevel();
+                rs2RegistryAccess = sp.getServer().registryAccess();
+            } else {
+                rs2DiskUuids = List.of();
+                rs2Level = null;
+                rs2RegistryAccess = null;
+            }
+
+            // === NON-BLOCKING: submit async save, main thread returns immediately ===
+            // The online flag stays 1 until the async save completes → kick mechanism
+            // prevents premature rejoin on other servers, and pendingLogoutSaves prevents
+            // premature rejoin on the same server.
+            CompletableFuture<Void> saveFuture = CompletableFuture.runAsync(() -> {
+                try {
+                    writeSnapshotToDB(snapshot);
+                    ModsSupport.saveBackpacksByUuids(backpackUuids);
+                    ModsSupport.saveSSByUuids(ssUuids);
+                    if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
+                        ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2RegistryAccess);
+                    }
+                    PlayerSync.LOGGER.info("Logout save completed for player {}", player_uuid);
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error saving player {} data on logout", player_uuid, e);
+                } finally {
+                    // CRITICAL: online=0 MUST always execute, even if saves fail
+                    try {
+                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+                    } catch (Exception e2) {
+                        PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline", player_uuid, e2);
+                    }
+                    removePlayerLock(player_uuid);
+                    pendingLogoutSaves.remove(player_uuid);
+                }
+            }, executorService);
+
+            pendingLogoutSaves.put(player_uuid, saveFuture);
+
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error during player logout save for {}", player_uuid, e);
+            try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid); }
+            catch (Exception ignored) {}
+            removePlayerLock(player_uuid);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -1337,10 +1401,11 @@ public class VanillaSync {
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server != null) {
                 for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                    if (player.isDeadOrDying() || syncNotCompletedPlayer.contains(player.getUUID().toString())) {
+                    String puuid = player.getUUID().toString();
+                    if (player.isDeadOrDying() || syncNotCompletedPlayer.contains(puuid)
+                            || pendingLogoutSaves.containsKey(puuid)) {
                         continue;
                     }
-                    String puuid = player.getUUID().toString();
                     ReentrantLock lock = getPlayerLock(puuid);
                     if (!lock.tryLock()) continue;
                     try {
@@ -1426,10 +1491,65 @@ public class VanillaSync {
     }
 
     @SubscribeEvent
-    //Don't know what will happen if a fake player is killed,need more test.
     public static void onPlayerDeath(LivingDeathEvent event) {
-        if (event.getEntity() instanceof ServerPlayer player && !deadPlayerWhileLogging.contains(event.getEntity().getUUID().toString())) {
-            CuriosCache.tryStoreCuriosToCache(player);
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        String puuid = player.getUUID().toString();
+        if (deadPlayerWhileLogging.contains(puuid)) return;
+
+        // Always cache curios on death (API returns empty for dead players later)
+        CuriosCache.tryStoreCuriosToCache(player);
+
+        // Immediately save ALL player data on death (snapshot + async).
+        // LivingDeathEvent fires BEFORE items are dropped, so the snapshot captures
+        // the full pre-death inventory including backpack contents.
+        // This protects against: server crash after death, network disconnect before
+        // onPlayerLogout fires, or any scenario where the logout handler is skipped.
+        // The normal logout save will overwrite this with the final post-death state.
+        if (!player.getTags().contains("player_synced")) return;
+        if (syncNotCompletedPlayer.contains(puuid)) return;
+        if (pendingLogoutSaves.containsKey(puuid)) return; // logout save already in flight
+
+        ReentrantLock lock = getPlayerLock(puuid);
+        if (!lock.tryLock()) return; // Skip if another save is in progress
+        try {
+            final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
+            final List<UUID> backpackUuids = ModsSupport.collectBackpackUuids(player);
+            final List<UUID> ssUuids = ModsSupport.collectSSUuids(player);
+            final List<UUID> rs2DiskUuids;
+            final ServerLevel rs2Level;
+            final HolderLookup.Provider rs2Registry;
+            if (ModList.get().isLoaded("refinedstorage")) {
+                rs2DiskUuids = ModsSupport.collectRS2DiskUuids(player);
+                rs2Level = player.serverLevel();
+                rs2Registry = player.getServer().registryAccess();
+            } else {
+                rs2DiskUuids = List.of();
+                rs2Level = null;
+                rs2Registry = null;
+            }
+
+            executorService.submit(() -> {
+                if (!playerLocks.containsKey(puuid)) return;
+                ReentrantLock bgLock = getPlayerLock(puuid);
+                if (!bgLock.tryLock()) return;
+                try {
+                    writeSnapshotToDB(snapshot);
+                    ModsSupport.saveBackpacksByUuids(backpackUuids);
+                    ModsSupport.saveSSByUuids(ssUuids);
+                    if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
+                        ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
+                    }
+                    PlayerSync.LOGGER.info("Death-save completed for player {}", puuid);
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error death-saving player {}", puuid, e);
+                } finally {
+                    bgLock.unlock();
+                }
+            });
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error snapshotting player {} on death", puuid, e);
+        } finally {
+            lock.unlock();
         }
     }
 }
