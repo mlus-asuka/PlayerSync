@@ -155,23 +155,26 @@ public class ModCompatSync {
      */
     public static void applyAccessoriesFromData(Player player, String accessoriesData) {
         if (!ModList.get().isLoaded("accessories")) return;
-        if (accessoriesData == null || accessoriesData.length() <= 2) return;
         try {
             io.wispforest.accessories.api.AccessoriesCapability cap =
                     io.wispforest.accessories.api.AccessoriesCapability.get(player);
             if (cap == null) return;
 
-            Map<String, String> storedMap = LocalJsonUtil.StringToMap(accessoriesData);
-            if (storedMap.isEmpty()) return;
-
             Map<String, io.wispforest.accessories.api.AccessoriesContainer> containers = cap.getContainers();
 
+            // FIX ANTI-DUPLICATION: ALWAYS clear accessories slots first to wipe stale
+            // data from Minecraft's .dat file, then only restore if DB has valid data.
             for (io.wispforest.accessories.api.AccessoriesContainer container : containers.values()) {
                 var accessories = container.getAccessories();
                 for (int i = 0; i < accessories.getContainerSize(); i++) {
                     accessories.setItem(i, ItemStack.EMPTY);
                 }
             }
+
+            if (accessoriesData == null || accessoriesData.length() <= 2) return;
+
+            Map<String, String> storedMap = LocalJsonUtil.StringToMap(accessoriesData);
+            if (storedMap.isEmpty()) return;
 
             for (Map.Entry<String, String> entry : storedMap.entrySet()) {
                 String compositeKey = entry.getKey();
@@ -308,18 +311,21 @@ public class ModCompatSync {
      */
     public static void applyCosmeticArmorFromData(Player player, String cosmeticArmorData) {
         if (!ModList.get().isLoaded("cosmeticarmorreworked")) return;
-        if (cosmeticArmorData == null || cosmeticArmorData.length() <= 2) return;
         try {
             lain.mods.cos.impl.inventory.InventoryCosArmor cosInv =
                     lain.mods.cos.impl.ModObjects.invMan.getCosArmorInventory(player.getUUID());
             if (cosInv == null) return;
 
-            Map<Integer, String> storedMap = LocalJsonUtil.StringToEntryMap(cosmeticArmorData);
-            if (storedMap.isEmpty()) return;
-
+            // FIX ANTI-DUPLICATION: ALWAYS clear cosmetic armor slots first to wipe stale
+            // data from Minecraft's .dat file, then only restore if DB has valid data.
             for (int i = 0; i < cosInv.getContainerSize(); i++) {
                 cosInv.setItem(i, ItemStack.EMPTY);
             }
+
+            if (cosmeticArmorData == null || cosmeticArmorData.length() <= 2) return;
+
+            Map<Integer, String> storedMap = LocalJsonUtil.StringToEntryMap(cosmeticArmorData);
+            if (storedMap.isEmpty()) return;
 
             for (Map.Entry<Integer, String> entry : storedMap.entrySet()) {
                 int slot = entry.getKey();

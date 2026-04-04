@@ -152,27 +152,27 @@ public class ModsSupport {
             curiosData = rs.getString("curios_item");
         }
 
-        // FIX: Check if data is valid BEFORE clearing slots
-        if (curiosData == null || curiosData.length() <= 2) {
-            PlayerSync.LOGGER.debug("Empty curios data for player {}, skipping restore", player.getUUID());
-            return;
-        }
-
-        Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
-        if (storedMap.isEmpty()) {
-            PlayerSync.LOGGER.debug("No curios entries for player {}, skipping restore", player.getUUID());
-            return;
-        }
-
         ICuriosItemHandler handler = handlerOpt.get();
 
-        // Clear current Curios slots ONLY after confirming valid data exists
+        // FIX ANTI-DUPLICATION: ALWAYS clear curios slots first to wipe stale data
+        // loaded from Minecraft's .dat file, then only restore if DB has valid data.
         handler.getCurios().forEach((slotType, stacksHandler) -> {
             IDynamicStackHandler dynStacks = stacksHandler.getStacks();
             for (int i = 0; i < dynStacks.getSlots(); i++) {
                 dynStacks.setStackInSlot(i, ItemStack.EMPTY);
             }
         });
+
+        if (curiosData == null || curiosData.length() <= 2) {
+            PlayerSync.LOGGER.debug("Empty curios data for player {}, slots cleared", player.getUUID());
+            return;
+        }
+
+        Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
+        if (storedMap.isEmpty()) {
+            PlayerSync.LOGGER.debug("No curios entries for player {}, slots cleared", player.getUUID());
+            return;
+        }
 
         // Restore each saved item
         for (Map.Entry<String, String> entry : storedMap.entrySet()) {
@@ -267,7 +267,6 @@ public class ModsSupport {
      */
     public static void applyCuriosFromData(Player player, String curiosData) {
         if (!ModList.get().isLoaded("curios")) return;
-        if (curiosData == null || curiosData.length() <= 2) return;
 
         Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
         if (handlerOpt.isEmpty()) {
@@ -275,18 +274,23 @@ public class ModsSupport {
             return;
         }
 
-        Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
-        if (storedMap.isEmpty()) return;
-
         ICuriosItemHandler handler = handlerOpt.get();
 
-        // Clear all curios slots BEFORE restoring
+        // FIX ANTI-DUPLICATION: ALWAYS clear curios slots first, even when DB data is
+        // empty. Without this, stale curios loaded from Minecraft's .dat file (world save)
+        // persist when the DB has no curios data — causing item duplication across servers.
         for (Map.Entry<String, ICurioStacksHandler> entry : handler.getCurios().entrySet()) {
             IDynamicStackHandler stacks = entry.getValue().getStacks();
             for (int i = 0; i < stacks.getSlots(); i++) {
                 stacks.setStackInSlot(i, ItemStack.EMPTY);
             }
         }
+
+        // If no data to restore, we're done (slots already cleared above)
+        if (curiosData == null || curiosData.length() <= 2) return;
+
+        Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
+        if (storedMap.isEmpty()) return;
 
         // Restore items from pre-read data
         for (Map.Entry<String, String> entry : storedMap.entrySet()) {
