@@ -1222,8 +1222,9 @@ public class VanillaSync {
                     "INSERT INTO player_data (uuid, armor, inventory, enderchest, advancements, effects, xp, food_level, health, score, left_hand, cursors, online) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                     player_uuid, equipment.toString(), inventoryMap.toString(), ender_chest.toString(), json, effectMap.toString(), XP, food_level, health, score, left_hand, cursors);
         } else {
+            // FIX: Use COALESCE for advancements to avoid wiping valid DB data with empty string
             JDBCsetUp.executePreparedUpdate(
-                    "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=?, left_hand=?, cursors=? WHERE uuid=?",
+                    "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(NULLIF(?, ''), advancements), left_hand=?, cursors=? WHERE uuid=?",
                     inventoryMap.toString(), equipment.toString(), XP, effectMap.toString(), ender_chest.toString(), score, food_level, health, json, left_hand, cursors, player_uuid);
         }
     }
@@ -1266,20 +1267,34 @@ public class VanillaSync {
         for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
             enderChestMap.put(i, getNbtForStorage(player.getEnderChestInventory().getItem(i)));
         }
+        // FIX: Don't save effects for dead/dying players. Minecraft clears effects on
+        // respawn, not on death — so a dead player's getActiveEffectsMap() still returns
+        // pre-death effects. Previously, the death handler and logout-while-dead path both
+        // saved these stale effects to DB, causing "phantom effects" on the next login
+        // (player reconnects alive with effects they should have lost on death).
         Map<Integer, String> effectMap = new HashMap<>();
-        for (Map.Entry<Holder<MobEffect>, MobEffectInstance> entry : player.getActiveEffectsMap().entrySet()) {
-            Tag effectTag = entry.getValue().save();
-            effectMap.put(BuiltInRegistries.MOB_EFFECT.getId(entry.getKey().value()), serialize(effectTag.toString()));
+        if (!player.isDeadOrDying()) {
+            for (Map.Entry<Holder<MobEffect>, MobEffectInstance> entry : player.getActiveEffectsMap().entrySet()) {
+                Tag effectTag = entry.getValue().save();
+                effectMap.put(BuiltInRegistries.MOB_EFFECT.getId(entry.getKey().value()), serialize(effectTag.toString()));
+            }
         }
 
         // Advancements (file read, fast)
-        String advancements = "";
+        // FIX: Default to null instead of "". When null, writeSnapshotToDB preserves
+        // the existing DB value via COALESCE. Previously, if the file read failed
+        // (save() threw, file missing, path wrong), "" was written to DB, silently
+        // wiping all advancements every 5 minutes (periodic save) or on logout.
+        String advancements = null;
         if (JdbcConfig.SYNC_ADVANCEMENTS.get() && player instanceof ServerPlayer sp) {
             try { sp.getAdvancements().save(); } catch (Exception ignored) {}
             Path path = sp.getServer().getServerDirectory().resolve(getSyncWorldForServer());
             File advFile = new File(path.toFile(), "/advancements/" + uuid + ".json");
             if (advFile.exists()) {
-                advancements = new String(Files.readAllBytes(advFile.toPath()), StandardCharsets.UTF_8);
+                String content = new String(Files.readAllBytes(advFile.toPath()), StandardCharsets.UTF_8);
+                if (content != null && !content.isEmpty()) {
+                    advancements = content;
+                }
             }
         }
 
@@ -1311,8 +1326,10 @@ public class VanillaSync {
      */
     private static void writeSnapshotToDB(PlayerDataSnapshot s) throws Exception {
         // Core player data
+        // FIX: Use COALESCE for advancements — if the snapshot has null advancements
+        // (file read failed), preserve the existing DB value instead of wiping it with "".
         JDBCsetUp.executePreparedUpdate(
-                "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=?, left_hand=?, cursors=? WHERE uuid=?",
+                "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=? WHERE uuid=?",
                 s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), s.uuid());
 
         // Curios (snapshotted on main thread, written here off-thread)
