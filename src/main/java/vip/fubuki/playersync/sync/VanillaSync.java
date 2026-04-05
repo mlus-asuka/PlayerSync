@@ -1003,7 +1003,8 @@ public class VanillaSync {
         if (deadPlayerWhileLogging.remove(player_uuid)) {
             PlayerSync.LOGGER.warn("A dead or dying player was kicked, uuid: {}", player_uuid);
             try {
-                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?",
+                        player_uuid, JdbcConfig.SERVER_ID.get());
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("Error marking dead player offline: {}", player_uuid, e);
             }
@@ -1015,7 +1016,8 @@ public class VanillaSync {
         if (syncNotCompletedPlayer.remove(player_uuid)) {
             PlayerSync.LOGGER.warn("Player {} logged out with uncompleted sync. Data won't be saved for safety.", player_uuid);
             try {
-                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?",
+                        player_uuid, JdbcConfig.SERVER_ID.get());
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("Error marking unsynced player offline: {}", player_uuid, e);
             }

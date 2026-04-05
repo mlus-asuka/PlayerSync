@@ -487,7 +487,10 @@ public class ModCompatSync {
                     }
                 }
             }
-            return flatMap.isEmpty() ? null : flatMap.toString();
+            // FIX ANTI-DUPLICATION: Return "{}" for empty slots, NOT null.
+            // Null causes writeModSnapshot to SKIP the write, keeping stale data in DB.
+            // "{}" is written to DB, and on restore applyAccessoriesFromData clears slots.
+            return flatMap.toString();
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error snapshotting Accessories for player {}", player.getUUID(), e);
             return null;
@@ -511,7 +514,10 @@ public class ModCompatSync {
                     flatMap.put(i, VanillaSync.getNbtForStorage(stack));
                 }
             }
-            return flatMap.isEmpty() ? null : flatMap.toString();
+            // FIX ANTI-DUPLICATION: Return "{}" for empty slots, NOT null.
+            // Null causes writeModSnapshot to SKIP the write, keeping stale data in DB.
+            // "{}" is written to DB, and on restore applyCosmeticArmorFromData clears slots.
+            return flatMap.toString();
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error snapshotting CosmeticArmor for player {}", player.getUUID(), e);
             return null;
