@@ -547,6 +547,25 @@ public class ModCompatSync {
      * @param cosmeticArmor   serialized Cosmetic Armor slots (may be null → skipped)
      * @param attachments     serialized NeoForge attachments (may be null → skipped)
      */
+    /**
+     * Writes pre-snapshotted mod data to the DB, guarded by last_server to prevent
+     * stale servers from overwriting fresher data after a player switched servers.
+     */
+    public static void writeModSnapshot(String uuid, String accessoriesData, String cosmeticArmor, String attachments, int serverId) throws SQLException {
+        // FIX ANTI-DUPLICATION: Only write if this server still owns the player.
+        // Uses UPDATE + INSERT IGNORE pattern guarded by last_server subquery.
+        if (accessoriesData != null) {
+            writeGuardedModData(uuid, "accessories", accessoriesData, serverId);
+        }
+        if (cosmeticArmor != null) {
+            writeGuardedModData(uuid, "cosmeticarmor", cosmeticArmor, serverId);
+        }
+        if (attachments != null) {
+            writeGuardedModData(uuid, "neoforge_attachments", attachments, serverId);
+        }
+    }
+
+    /** Backwards-compatible overload (no server guard — used by direct store methods). */
     public static void writeModSnapshot(String uuid, String accessoriesData, String cosmeticArmor, String attachments) throws SQLException {
         if (accessoriesData != null) {
             JDBCsetUp.executePreparedUpdate(
@@ -563,6 +582,17 @@ public class ModCompatSync {
                     "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
                     uuid, "neoforge_attachments", attachments);
         }
+    }
+
+    private static void writeGuardedModData(String uuid, String modId, String data, int serverId) throws SQLException {
+        // Update existing row only if this server still owns the player
+        JDBCsetUp.executePreparedUpdate(
+                "UPDATE mod_player_data SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND last_server=?)",
+                data, uuid, modId, uuid, serverId);
+        // Insert if row doesn't exist yet (first save)
+        JDBCsetUp.executePreparedUpdate(
+                "INSERT IGNORE INTO mod_player_data (uuid, mod_id, data_value) SELECT ?, ?, ? FROM player_data WHERE uuid=? AND last_server=?",
+                uuid, modId, data, uuid, serverId);
     }
 
     // ============================

@@ -289,25 +289,44 @@ public class VanillaSync {
         try {
             PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
 
-            // FIX ANTI-DUPLICATION: Wait for ANOTHER server to finish saving this player's data.
-            // If online=1 and last_server != this_server, the other server's async logout save
-            // is still in flight. Poll the DB (on this background thread — main thread is free).
-            for (int attempt = 0; attempt < 30; attempt++) {
+            // FIX ANTI-DUPLICATION: Wait for the PREVIOUS server to finish saving this player's data.
+            // The old server's writeSnapshotToDB uses AND last_server=? — once we claim last_server,
+            // the old server's write is blocked. So we must wait BEFORE claiming.
+            //
+            // The poll checks: if last_server != this server, the old server's save may still
+            // be in flight. Wait for it to set online=0 (which happens atomically with the data
+            // write via the combined UPDATE). Once online=0, the data is guaranteed fresh.
+            //
+            // NOTE: onPlayerLoggedInKickCheck deliberately does NOT set last_server — only online=1.
+            // This keeps last_server pointing to the old server so this poll can detect it.
+            for (int attempt = 0; attempt < 60; attempt++) {
                 try (JDBCsetUp.QueryResult qrCheck = JDBCsetUp.executePreparedQuery(
                         "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
                     ResultSet rsCheck = qrCheck.resultSet();
                     if (!rsCheck.next()) break; // new player, nothing pending
-                    boolean otherOnline = rsCheck.getBoolean("online");
                     int otherServer = rsCheck.getInt("last_server");
-                    if (otherOnline && otherServer != JdbcConfig.SERVER_ID.get()) {
-                        PlayerSync.LOGGER.info("Player {} still being saved on server {} (attempt {}/30), waiting 500ms...",
-                                player_uuid, otherServer, attempt + 1);
-                        Thread.sleep(500);
-                        continue;
+                    if (otherServer != JdbcConfig.SERVER_ID.get()) {
+                        // Old server's save might still be in flight — wait for its atomic
+                        // data+online=0 write to complete. We detect completion by checking
+                        // if online went to 0 (old server finished) or if last_server changed.
+                        boolean otherOnline = rsCheck.getBoolean("online");
+                        if (otherOnline) {
+                            PlayerSync.LOGGER.info("Player {} still being saved on server {} (attempt {}/60), waiting 500ms...",
+                                    player_uuid, otherServer, attempt + 1);
+                            Thread.sleep(500);
+                            continue;
+                        }
                     }
                 }
                 break; // Ready to load — other server finished or same server
             }
+
+            // NOW claim last_server for this server — AFTER the old server's save completed.
+            // This is safe because: (1) the old server's data+online=0 write already completed,
+            // (2) any future writes from the old server will be blocked by AND last_server=?.
+            JDBCsetUp.executePreparedUpdate(
+                    "UPDATE player_data SET last_server=? WHERE uuid=?",
+                    JdbcConfig.SERVER_ID.get(), player_uuid);
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
 
@@ -491,6 +510,7 @@ public class VanillaSync {
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
             syncNotCompletedPlayer.remove(player_uuid);
+            removePlayerLock(player_uuid); // FIX: prevent playerLocks memory leak on exception
         } finally {
             if (lock.isHeldByCurrentThread()) lock.unlock();
         }
@@ -522,11 +542,16 @@ public class VanillaSync {
         String player_uuid = player.getUUID().toString();
 
         if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) {
-            // Still mark online even if kick is disabled
+            // Still mark online even if kick is disabled.
+            // FIX: Don't set last_server here — set it AFTER the poll in doPlayerJoin.
+            // Setting last_server too early breaks the poll loop (sees "player is on my server"
+            // and breaks immediately) AND prevents the old server's save from completing
+            // (last_server guard blocks the write). online=1 alone is sufficient to prevent
+            // triple-login — other servers check online=1 regardless of last_server.
             try {
                 JDBCsetUp.executePreparedUpdate(
-                        "UPDATE player_data SET online=1, last_server=? WHERE uuid=?",
-                        JdbcConfig.SERVER_ID.get(), player_uuid);
+                        "UPDATE player_data SET online=1 WHERE uuid=?",
+                        player_uuid);
             } catch (SQLException ignored) {}
             return;
         }
@@ -569,10 +594,12 @@ public class VanillaSync {
                 }
             }
 
-            // Mark online=1 SYNCHRONOUSLY
+            // Mark online=1 SYNCHRONOUSLY — but don't set last_server yet.
+            // FIX: last_server is set AFTER the poll in doPlayerJoin to allow the old
+            // server's async save to complete (its writeSnapshotToDB uses AND last_server=?).
             JDBCsetUp.executePreparedUpdate(
-                    "UPDATE player_data SET online=1, last_server=? WHERE uuid=?",
-                    JdbcConfig.SERVER_ID.get(), player_uuid);
+                    "UPDATE player_data SET online=1 WHERE uuid=?",
+                    player_uuid);
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error during kick check for player {}", player_uuid, e);
         }
@@ -892,7 +919,8 @@ public class VanillaSync {
                     // === BACKGROUND THREAD: DB writes (parallel across all players) ===
                     futures.add(CompletableFuture.runAsync(() -> {
                         try {
-                            writeSnapshotToDB(snapshot);
+                            // FIX ANTI-DUPLICATION: atomic data+online=0 with last_server guard
+                            writeSnapshotToDB(snapshot, true);
                             ModsSupport.saveBackpacksByUuids(backpackUuids);
                             ModsSupport.saveSSByUuids(ssUuids);
                             if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
@@ -901,9 +929,9 @@ public class VanillaSync {
                             PlayerSync.LOGGER.info("Saved player {} data on server shutdown", puuid);
                         } catch (Exception e) {
                             PlayerSync.LOGGER.error("Error saving player {} on shutdown", puuid, e);
-                        } finally {
                             try {
-                                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", puuid);
+                                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?",
+                                        puuid, JdbcConfig.SERVER_ID.get());
                             } catch (Exception e2) {
                                 PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline on shutdown", puuid, e2);
                             }
@@ -912,7 +940,7 @@ public class VanillaSync {
 
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error snapshotting player {} on shutdown", puuid, e);
-                    try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", puuid); }
+                    try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?", puuid, JdbcConfig.SERVER_ID.get()); }
                     catch (Exception ignored) {}
                 }
             }
@@ -1029,7 +1057,11 @@ public class VanillaSync {
             // premature rejoin on the same server.
             CompletableFuture<Void> saveFuture = CompletableFuture.runAsync(() -> {
                 try {
-                    writeSnapshotToDB(snapshot);
+                    // FIX ANTI-DUPLICATION: writeSnapshotToDB with setOffline=true
+                    // atomically writes data + online=0 in a SINGLE UPDATE, AND guards
+                    // with last_server to prevent stale overwrites. This eliminates the
+                    // race where a slow async save overwrites fresher data from another server.
+                    writeSnapshotToDB(snapshot, true);
                     ModsSupport.saveBackpacksByUuids(backpackUuids);
                     ModsSupport.saveSSByUuids(ssUuids);
                     if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
@@ -1038,13 +1070,14 @@ public class VanillaSync {
                     PlayerSync.LOGGER.info("Logout save completed for player {}", player_uuid);
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error saving player {} data on logout", player_uuid, e);
-                } finally {
-                    // CRITICAL: online=0 MUST always execute, even if saves fail
+                    // If the atomic write failed, still try to set online=0
                     try {
-                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
+                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?",
+                                player_uuid, JdbcConfig.SERVER_ID.get());
                     } catch (Exception e2) {
                         PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline", player_uuid, e2);
                     }
+                } finally {
                     removePlayerLock(player_uuid);
                     pendingLogoutSaves.remove(player_uuid);
                 }
@@ -1054,7 +1087,7 @@ public class VanillaSync {
 
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error during player logout save for {}", player_uuid, e);
-            try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid); }
+            try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?", player_uuid, JdbcConfig.SERVER_ID.get()); }
             catch (Exception ignored) {}
             removePlayerLock(player_uuid);
         } finally {
@@ -1324,23 +1357,47 @@ public class VanillaSync {
      * Writes a snapshot to the DB. Runs on BACKGROUND THREAD — no entity access.
      * All data (basic + curios + mod compat) is written here in one pass.
      */
-    private static void writeSnapshotToDB(PlayerDataSnapshot s) throws Exception {
-        // Core player data
-        // FIX: Use COALESCE for advancements — if the snapshot has null advancements
-        // (file read failed), preserve the existing DB value instead of wiping it with "".
-        JDBCsetUp.executePreparedUpdate(
-                "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=? WHERE uuid=?",
-                s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), s.uuid());
+    /**
+     * Writes a snapshot to the DB. Runs on BACKGROUND THREAD — no entity access.
+     * All data (basic + curios + mod compat) is written here in one pass.
+     *
+     * FIX ANTI-DUPLICATION: All writes include AND last_server=? to prevent a stale
+     * server (e.g. Server A crashing/shutting down slowly) from overwriting fresher
+     * data saved by Server B after the player switched. If another server has already
+     * claimed the player (changed last_server), these writes silently no-op.
+     *
+     * @param setOffline if true, atomically sets online=0 in the same UPDATE (used by
+     *                   logout and shutdown saves). This eliminates the gap between data
+     *                   write and flag set that previously allowed race conditions.
+     */
+    private static void writeSnapshotToDB(PlayerDataSnapshot s, boolean setOffline) throws Exception {
+        int serverId = JdbcConfig.SERVER_ID.get();
 
-        // Curios (snapshotted on main thread, written here off-thread)
+        // Core player data — conditional on last_server to prevent stale overwrites
+        String sql = setOffline
+                ? "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, online=0 WHERE uuid=? AND last_server=?"
+                : "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=? WHERE uuid=? AND last_server=?";
+        JDBCsetUp.executePreparedUpdate(sql,
+                s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), s.uuid(), serverId);
+
+        // Curios — also guarded by last_server via a subquery
         if (s.curiosData() != null) {
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
-                    s.uuid(), s.curiosData());
+                    "UPDATE curios SET curios_item=? WHERE uuid=? AND EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND last_server=?)",
+                    s.curiosData(), s.uuid(), s.uuid(), serverId);
+            // Insert if row doesn't exist yet (first save for this player)
+            JDBCsetUp.executePreparedUpdate(
+                    "INSERT IGNORE INTO curios (uuid, curios_item) SELECT ?, ? FROM player_data WHERE uuid=? AND last_server=?",
+                    s.uuid(), s.curiosData(), s.uuid(), serverId);
         }
 
-        // Mod compat: Accessories + CosmeticArmor + NeoForge attachments
-        ModCompatSync.writeModSnapshot(s.uuid(), s.accessoriesData(), s.cosmeticArmorData(), s.attachmentsData());
+        // Mod compat: Accessories + CosmeticArmor + NeoForge attachments — guarded
+        ModCompatSync.writeModSnapshot(s.uuid(), s.accessoriesData(), s.cosmeticArmorData(), s.attachmentsData(), serverId);
+    }
+
+    /** Backwards-compatible overload for periodic saves (no offline flag). */
+    private static void writeSnapshotToDB(PlayerDataSnapshot s) throws Exception {
+        writeSnapshotToDB(s, false);
     }
 
     private static String getSyncWorldForServer() {
