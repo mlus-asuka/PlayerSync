@@ -1437,30 +1437,49 @@ public class VanillaSync {
     private static void writeSnapshotToDB(PlayerDataSnapshot s, boolean setOffline) throws Exception {
         int serverId = JdbcConfig.SERVER_ID.get();
 
-        // Core player data — conditional on last_server to prevent stale overwrites.
-        // (last_server=? OR last_server IS NULL) handles legacy rows from before
-        // last_server was populated, preventing silent data loss for old players.
+        // FIX PERF: All writes batched into a SINGLE transaction on ONE connection.
+        // Previously 4-8 separate connections × round-trips per player.
+        // Now: 1 connection, 1 commit, automatic rollback on failure.
         String serverGuard = "(last_server=? OR last_server IS NULL)";
-        String sql = setOffline
+        String coreSql = setOffline
                 ? "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, online=0, last_server=? WHERE uuid=? AND " + serverGuard
                 : "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, last_server=? WHERE uuid=? AND " + serverGuard;
-        // Note: also sets last_server=? to claim ownership for future writes (fixes NULL → current server)
-        JDBCsetUp.executePreparedUpdate(sql,
-                s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), serverId, s.uuid(), serverId);
 
-        // Curios — guarded by last_server via subquery (also handles NULL)
+        // Build batch of all statements
+        List<Object[]> batch = new ArrayList<>();
+
+        // 1. Core player data
+        batch.add(new Object[]{coreSql,
+                s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), serverId, s.uuid(), serverId});
+
+        // 2. Curios
         String curioGuard = "EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND " + serverGuard + ")";
         if (s.curiosData() != null) {
-            JDBCsetUp.executePreparedUpdate(
+            batch.add(new Object[]{
                     "UPDATE curios SET curios_item=? WHERE uuid=? AND " + curioGuard,
-                    s.curiosData(), s.uuid(), s.uuid(), serverId);
-            JDBCsetUp.executePreparedUpdate(
+                    s.curiosData(), s.uuid(), s.uuid(), serverId});
+            batch.add(new Object[]{
                     "INSERT IGNORE INTO curios (uuid, curios_item) SELECT ?, ? FROM player_data WHERE uuid=? AND " + serverGuard,
-                    s.uuid(), s.curiosData(), s.uuid(), serverId);
+                    s.uuid(), s.curiosData(), s.uuid(), serverId});
         }
 
-        // Mod compat: Accessories + CosmeticArmor + NeoForge attachments — guarded
-        ModCompatSync.writeModSnapshot(s.uuid(), s.accessoriesData(), s.cosmeticArmorData(), s.attachmentsData(), serverId);
+        // 3. Mod compat data (Accessories, CosmeticArmor, NeoForge attachments)
+        addModDataToBatch(batch, s.uuid(), "accessories", s.accessoriesData(), serverId, serverGuard);
+        addModDataToBatch(batch, s.uuid(), "cosmeticarmor", s.cosmeticArmorData(), serverId, serverGuard);
+        addModDataToBatch(batch, s.uuid(), "neoforge_attachments", s.attachmentsData(), serverId, serverGuard);
+
+        // Execute all in one transaction
+        JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
+    }
+
+    private static void addModDataToBatch(List<Object[]> batch, String uuid, String modId, String data, int serverId, String serverGuard) {
+        if (data == null) return;
+        batch.add(new Object[]{
+                "UPDATE mod_player_data SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND " + serverGuard + ")",
+                data, uuid, modId, uuid, serverId});
+        batch.add(new Object[]{
+                "INSERT IGNORE INTO mod_player_data (uuid, mod_id, data_value) SELECT ?, ?, ? FROM player_data WHERE uuid=? AND " + serverGuard,
+                uuid, modId, data, uuid, serverId});
     }
 
     /** Backwards-compatible overload for periodic saves (no offline flag). */
