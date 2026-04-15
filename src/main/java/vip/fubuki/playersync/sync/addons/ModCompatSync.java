@@ -591,13 +591,15 @@ public class ModCompatSync {
     }
 
     private static void writeGuardedModData(String uuid, String modId, String data, int serverId) throws SQLException {
+        // FIX: Handle legacy rows with last_server IS NULL (same pattern as writeSnapshotToDB)
+        String serverGuard = "(last_server=? OR last_server IS NULL)";
         // Update existing row only if this server still owns the player
         JDBCsetUp.executePreparedUpdate(
-                "UPDATE mod_player_data SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND last_server=?)",
+                "UPDATE mod_player_data SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND " + serverGuard + ")",
                 data, uuid, modId, uuid, serverId);
         // Insert if row doesn't exist yet (first save)
         JDBCsetUp.executePreparedUpdate(
-                "INSERT IGNORE INTO mod_player_data (uuid, mod_id, data_value) SELECT ?, ?, ? FROM player_data WHERE uuid=? AND last_server=?",
+                "INSERT IGNORE INTO mod_player_data (uuid, mod_id, data_value) SELECT ?, ?, ? FROM player_data WHERE uuid=? AND " + serverGuard,
                 uuid, modId, data, uuid, serverId);
     }
 

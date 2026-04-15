@@ -383,27 +383,84 @@ public class ModsSupport {
      * Must be called on the MAIN THREAD (reads inventory items).
      * Also refreshes wrappers to flush in-memory state to SavedData.
      */
-    public static List<UUID> collectBackpackUuids(Player player) {
-        List<UUID> uuids = new ArrayList<>();
-        if (!ModList.get().isLoaded("sophisticatedbackpacks")) return uuids;
+    /**
+     * Collects Sophisticated Backpack UUIDs AND snapshots their contents on the MAIN THREAD.
+     * Must be called on the MAIN THREAD (reads inventory items + BackpackStorage).
+     *
+     * FIX: Also scans ender chest for backpacks. Previously only main inventory was scanned,
+     * so backpacks in the ender chest were never saved — causing data loss/stale contents
+     * when switching servers.
+     *
+     * FIX: Snapshots backpack NBT data on main thread (not just UUIDs). Previously,
+     * saveBackpacksByUuids read BackpackStorage on a background thread, creating a race
+     * window where another player viewing the backpack could modify it between the main-thread
+     * refresh and the async read — causing item duplication.
+     */
+    public static Map<UUID, CompoundTag> snapshotBackpackData(Player player) {
+        Map<UUID, CompoundTag> data = new HashMap<>();
+        if (!ModList.get().isLoaded("sophisticatedbackpacks")) return data;
         try {
+            // Scan main inventory via PlayerInventoryProvider
             net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player,
                     (ItemStack backpackItem, String handler, String identifier, int slot) -> {
-                        net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper wrapper =
-                                net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper.fromStack(backpackItem);
-                        try { wrapper.refreshInventoryForInputOutput(); } catch (Exception ignored) {}
-                        wrapper.getContentsUuid().ifPresent(uuids::add);
+                        snapshotSingleBackpack(backpackItem, data);
                         return false;
                     });
+
+            // FIX: Also scan ender chest (PlayerInventoryProvider does NOT include it)
+            for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
+                ItemStack stack = player.getEnderChestInventory().getItem(i);
+                if (stack.isEmpty()) continue;
+                snapshotSingleBackpack(stack, data);
+            }
         } catch (Exception e) {
-            PlayerSync.LOGGER.error("Error collecting backpack UUIDs for player {}", player.getUUID(), e);
+            PlayerSync.LOGGER.error("Error snapshotting backpack data for player {}", player.getUUID(), e);
         }
-        return uuids;
+        return data;
+    }
+
+    private static void snapshotSingleBackpack(ItemStack stack, Map<UUID, CompoundTag> data) {
+        try {
+            // Check if this is a backpack item
+            net.minecraft.resources.ResourceLocation loc = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (loc == null || !loc.getNamespace().equals("sophisticatedbackpacks")) return;
+
+            net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper wrapper =
+                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper.fromStack(stack);
+            try { wrapper.refreshInventoryForInputOutput(); } catch (Exception ignored) {}
+            wrapper.getContentsUuid().ifPresent(uuid -> {
+                CompoundTag nbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get()
+                        .getOrCreateBackpackContents(uuid);
+                if (nbt != null) {
+                    data.put(uuid, nbt.copy()); // .copy() to freeze the state
+                }
+            });
+        } catch (Exception ignored) {}
+    }
+
+    /** Legacy method - collects only UUIDs without snapshotting contents. */
+    public static List<UUID> collectBackpackUuids(Player player) {
+        return new ArrayList<>(snapshotBackpackData(player).keySet());
+    }
+
+    /**
+     * Saves pre-snapshotted backpack data to DB.
+     * Can be called from a background thread (no entity access — data already captured).
+     */
+    public static void saveBackpackSnapshots(Map<UUID, CompoundTag> snapshots) {
+        for (Map.Entry<UUID, CompoundTag> entry : snapshots.entrySet()) {
+            try {
+                saveStorageContents(entry.getKey(), entry.getValue());
+            } catch (Exception e) {
+                PlayerSync.LOGGER.error("Error saving backpack data for UUID {}", entry.getKey(), e);
+            }
+        }
     }
 
     /**
      * Saves backpack contents by UUID. Reads SavedData and writes to DB.
      * Can be called from a background thread (no entity access).
+     * @deprecated Use snapshotBackpackData + saveBackpackSnapshots for thread-safe saves.
      */
     public static void saveBackpacksByUuids(List<UUID> uuids) {
         for (UUID uuid : uuids) {
