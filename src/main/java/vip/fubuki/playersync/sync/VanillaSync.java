@@ -250,7 +250,10 @@ public class VanillaSync {
         // FIX: If the player entity spawned dead/dying, kick+respawn them.
         // All entity modifications (removeTag, teleport, disconnect) are scheduled on the
         // main thread — the old code called removeTag from this background thread which is unsafe.
-        if (serverPlayer.isDeadOrDying()) {
+        // FIX: ReviveMe compatibility — check if the player is in a "downed" state (not truly dead).
+        // ReviveMe cancels LivingDeathEvent and puts players at low health with special effects.
+        // These players have health > 0 and should NOT be kicked. Only kick if actually dead (health <= 0).
+        if (serverPlayer.isDeadOrDying() && serverPlayer.getHealth() <= 0) {
             deadPlayerWhileLogging.add(player_uuid);
             server.execute(() -> {
                 serverPlayer.removeTag("player_synced");
@@ -1335,7 +1338,15 @@ public class VanillaSync {
         Map<Integer, String> effectMap = new HashMap<>();
         if (!player.isDeadOrDying()) {
             for (Map.Entry<Holder<MobEffect>, MobEffectInstance> entry : player.getActiveEffectsMap().entrySet()) {
-                Tag effectTag = entry.getValue().save();
+                MobEffectInstance effect = entry.getValue();
+                // FIX: Skip infinite-duration effects. These come from:
+                // - ReviveMe mod (downed state effects with Integer.MAX_VALUE duration)
+                // - Beacons (ambient effects re-applied every tick while in range)
+                // - Other mods that add permanent effects
+                // Syncing these across servers causes phantom effects (player gets
+                // downed-state effects or beacon effects on a server without the source).
+                if (effect.isInfiniteDuration()) continue;
+                Tag effectTag = effect.save();
                 effectMap.put(BuiltInRegistries.MOB_EFFECT.getId(entry.getKey().value()), serialize(effectTag.toString()));
             }
         }
@@ -1498,9 +1509,9 @@ public class VanillaSync {
         // non-thread-safe way.  All entity reads are now done in snapshotPlayerData()
         // on the main thread, and the background task only does DB writes.
         //
-        // Backpack / SophisticatedStorage / RS2 contents live in server-side SavedData
-        // and are always saved completely on player logout + server shutdown — no need
-        // to include them in the periodic auto-save.
+        // FIX: Backpack/SS contents are NOW included in the periodic auto-save.
+        // Previously only saved on logout + shutdown, but hard crashes skip both
+        // → backpack changes lost. snapshotBackpackData is fast (~1ms per backpack).
         if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
             autoSaveTickCounter = 0;
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
@@ -1514,17 +1525,15 @@ public class VanillaSync {
                     ReentrantLock lock = getPlayerLock(puuid);
                     if (!lock.tryLock()) continue;
                     try {
-                        // === MAIN THREAD: snapshot ALL entity state (no DB I/O) ===
-                        // snapshotPlayerData now includes curios, accessories,
-                        // cosmeticarmor, and neoforge attachments.
                         final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
+                        final Map<UUID, CompoundTag> backpackSnapshots = ModsSupport.snapshotBackpackData(player);
 
-                        // === BACKGROUND THREAD: DB writes only (no entity access) ===
                         executorService.submit(() -> {
                             ReentrantLock bgLock = getPlayerLock(puuid);
                             if (!bgLock.tryLock()) return;
                             try {
                                 writeSnapshotToDB(snapshot);
+                                ModsSupport.saveBackpackSnapshots(backpackSnapshots);
                             } catch (Exception e) {
                                 PlayerSync.LOGGER.error("Error auto-saving player {}", puuid, e);
                             } finally {

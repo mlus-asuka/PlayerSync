@@ -28,23 +28,37 @@ public class ModsSupport {
     public void doBackPackRestore(Player player) {
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             PlayerSync.LOGGER.info("Restoring backpack data for player {}", player.getUUID());
+            // Restore backpacks from main inventory
             net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
-                net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper backpackWrapper = net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper
-                        .fromStack(backpackItem);
-
-                Optional<UUID> uuidOpt = backpackWrapper.getContentsUuid();
-                if (uuidOpt.isPresent()) {
-                    UUID contentsUuid = uuidOpt.get();
-                    restoreStorageContents(contentsUuid, (nbt) -> {
-                        net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, nbt);
-                        PlayerSync.LOGGER.info("Restored backpack data for UUID {}", contentsUuid);
-                    });
-                } else {
-                    PlayerSync.LOGGER.warn("Backpack item in slot {} has no contentsUuid during restore", slot);
-                }
+                restoreSingleBackpack(backpackItem);
                 return false;
             });
+            // FIX: Also restore backpacks from ender chest (save side scans ender chest too)
+            for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
+                ItemStack stack = player.getEnderChestInventory().getItem(i);
+                if (!stack.isEmpty()) {
+                    restoreSingleBackpack(stack);
+                }
+            }
         }
+    }
+
+    private void restoreSingleBackpack(ItemStack stack) {
+        try {
+            net.minecraft.resources.ResourceLocation loc = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (loc == null || !loc.getNamespace().equals("sophisticatedbackpacks")) return;
+
+            net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper backpackWrapper =
+                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper.fromStack(stack);
+            Optional<UUID> uuidOpt = backpackWrapper.getContentsUuid();
+            if (uuidOpt.isPresent()) {
+                UUID contentsUuid = uuidOpt.get();
+                restoreStorageContents(contentsUuid, (nbt) -> {
+                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, nbt);
+                    PlayerSync.LOGGER.info("Restored backpack data for UUID {}", contentsUuid);
+                });
+            }
+        } catch (Exception ignored) {}
     }
 
     /**
