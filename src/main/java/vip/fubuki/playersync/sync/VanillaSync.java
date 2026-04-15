@@ -1,5 +1,6 @@
 package vip.fubuki.playersync.sync;
 
+import vip.fubuki.playersync.util.SyncLogger;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
@@ -309,6 +310,7 @@ public class VanillaSync {
         lock.lock();
         try {
             PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
+            SyncLogger.restoreStarted(player_uuid);
 
             // FIX ANTI-DUPLICATION: Wait for the PREVIOUS server to finish saving this player's data.
             // The old server's writeSnapshotToDB uses AND last_server=? — once we claim last_server,
@@ -332,6 +334,7 @@ public class VanillaSync {
                         // if online went to 0 (old server finished) or if last_server changed.
                         boolean otherOnline = rsCheck.getBoolean("online");
                         if (otherOnline) {
+                            SyncLogger.raceCondition(player_uuid, "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/60)");
                             PlayerSync.LOGGER.info("Player {} still being saved on server {} (attempt {}/60), waiting 500ms...",
                                     player_uuid, otherServer, attempt + 1);
                             Thread.sleep(500);
@@ -450,6 +453,7 @@ public class VanillaSync {
                     // it could interfere with the logout save or corrupt state.
                     if (!isPlayerOnline(server, player_uuid)) {
                         PlayerSync.LOGGER.warn("Player {} disconnected before sync apply, skipping", player_uuid);
+                        SyncLogger.dataLoss(player_uuid, "Player disconnected before sync apply — .dat data may persist, DB data not applied");
                         return;
                     }
 
@@ -522,6 +526,7 @@ public class VanillaSync {
 
                     serverPlayer.addTag("player_synced");
                     PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
+                    SyncLogger.restoreCompleted(player_uuid, 0);
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error applying sync data for player {}", player_uuid, e);
                 } finally {
@@ -956,6 +961,7 @@ public class VanillaSync {
                                 ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
                             }
                             PlayerSync.LOGGER.info("Saved player {} data on server shutdown", puuid);
+                            SyncLogger.saveCompleted(puuid, "SHUTDOWN", 0);
                         } catch (Exception e) {
                             PlayerSync.LOGGER.error("Error saving player {} on shutdown", puuid, e);
                             try {
@@ -1024,6 +1030,7 @@ public class VanillaSync {
         // online on the OTHER server.
         if (kickedForDuplicateLogin.remove(player_uuid)) {
             PlayerSync.LOGGER.info("Player {} was kicked for duplicate login, NOT marking offline (still on other server)", player_uuid);
+            SyncLogger.playerEvent(player_uuid, "KICKED_DUPLICATE", "Player on another server, not marking offline");
             syncNotCompletedPlayer.remove(player_uuid);
             removePlayerLock(player_uuid);
             return;
@@ -1046,6 +1053,7 @@ public class VanillaSync {
 
         if (syncNotCompletedPlayer.remove(player_uuid)) {
             PlayerSync.LOGGER.warn("Player {} logged out with uncompleted sync. Data won't be saved for safety.", player_uuid);
+            SyncLogger.saveSkipped(player_uuid, "LOGOUT", "Sync not completed — data preserved in DB, .dat data discarded");
             try {
                 // FIX: No last_server guard — same reason as above.
                 JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
@@ -1121,8 +1129,10 @@ public class VanillaSync {
                         ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2RegistryAccess);
                     }
                     PlayerSync.LOGGER.info("Logout save completed for player {}", player_uuid);
+                    SyncLogger.saveCompleted(player_uuid, "LOGOUT", 0);
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error saving player {} data on logout", player_uuid, e);
+                    SyncLogger.saveFailed(player_uuid, "LOGOUT", e.getMessage());
                     // If the atomic write failed, still try to set online=0
                     try {
                         JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?",
@@ -1712,6 +1722,7 @@ public class VanillaSync {
                         ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
                     }
                     PlayerSync.LOGGER.info("Death-save completed for player {}", puuid);
+                    SyncLogger.saveCompleted(puuid, "DEATH", 0);
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error death-saving player {}", puuid, e);
                 } finally {

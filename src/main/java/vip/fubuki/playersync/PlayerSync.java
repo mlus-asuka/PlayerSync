@@ -68,6 +68,9 @@ public class PlayerSync {
             return;
         }
 
+        // Initialize dedicated PlayerSync log file (logs/playersync/sync.log)
+        vip.fubuki.playersync.util.SyncLogger.init();
+
         // Step 3: Explicitly select the database on a raw connection (DDL only).
         try (Connection conn = JDBCsetUp.getConnection(false);
              Statement st = conn.createStatement()) {
@@ -223,6 +226,7 @@ public class PlayerSync {
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
         ChatSync.shutdown();
+        vip.fubuki.playersync.util.SyncLogger.shutdown();
         // DO NOT call JDBCsetUp.shutdownPool() here!
         // VanillaSync.onServerShutdown also subscribes to ServerStoppingEvent and
         // needs the pool to save all player data. Event firing order is not guaranteed.
