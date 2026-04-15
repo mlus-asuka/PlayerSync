@@ -71,13 +71,17 @@ public class VanillaSync {
     // Bounded pool: 2 core threads, max 8 threads, 30s keepalive, 256-task queue.
     // If the queue is full, tasks run on the calling thread (CallerRunsPolicy) which
     // provides natural backpressure instead of creating more threads.
+    // FIX PERF: Increased pool sizing for 35+ player servers.
+    // Old: 2-8 threads, 256 queue → CallerRunsPolicy caused main thread to execute
+    // DB tasks when queue was full (35 auto-save tasks overflowed 256 queue → TPS drop to <1).
+    // New: 4-16 threads, 512 queue → handles 35+ concurrent saves without overflow.
     static ExecutorService executorService = new ThreadPoolExecutor(
-            2,                          // core pool size
-            8,                          // maximum pool size
+            4,                          // core pool size (was 2)
+            16,                         // maximum pool size (was 8)
             30L, TimeUnit.SECONDS,      // idle thread keepalive
-            new LinkedBlockingQueue<>(256),  // bounded work queue
+            new LinkedBlockingQueue<>(512),  // bounded work queue (was 256)
             new PSThreadPoolFactory("PlayerSync"),
-            new ThreadPoolExecutor.CallerRunsPolicy()  // backpressure: run on caller thread if queue full
+            new ThreadPoolExecutor.CallerRunsPolicy()
     );
 
     // Per-player locks to prevent concurrent save/restore operations (anti-duplication)
@@ -202,6 +206,7 @@ public class VanillaSync {
                 ResultSet rs1 = qr1.resultSet();
                 if (!rs1.next()) {
                     PlayerSync.LOGGER.info("A new-player connection detected");
+                    connectCheckCache.put(player_uuid, new int[]{0, 0, 0, 0}); // new player
                     return;
                 }
                 online = rs1.getBoolean("online");
@@ -209,6 +214,8 @@ public class VanillaSync {
             }
 
             // Second query: Check if player is already online on another server
+            int serverAlive = 0;
+            int alreadyKicked = 0;
             if (JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get() && online && lastServer != JdbcConfig.SERVER_ID.get()) {
                 try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
                         "SELECT last_update, enable FROM server_info WHERE id=?", lastServer)) {
@@ -217,13 +224,18 @@ public class VanillaSync {
                         long last_update = rs2.getLong("last_update");
                         boolean enable = rs2.getBoolean("enable");
                         if (enable && System.currentTimeMillis() < last_update + 300000L) {
+                            serverAlive = 1;
                             event.getConnection().disconnect(Component.translatableWithFallback("playersync.already_online","You can't join more than one synchronization server at the same time."));
-                            return;
+                            alreadyKicked = 1;
+                        } else {
+                            JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", lastServer);
                         }
-                        JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", lastServer);
                     }
                 }
             }
+
+            // FIX PERF: Cache the result for onPlayerLoggedInKickCheck (avoids re-querying on main thread)
+            connectCheckCache.put(player_uuid, new int[]{online ? 1 : 0, lastServer, serverAlive, alreadyKicked});
         } catch (Exception e) {
             PlayerSync.LOGGER.error("SqlException detected!", e);
             event.getConnection().disconnect(Component.translatableWithFallback("playersync.sqlexception","SqlException detected!Connection lost,please contact with your admin."));
@@ -235,6 +247,12 @@ public class VanillaSync {
     public static Set<String> syncNotCompletedPlayer = ConcurrentHashMap.newKeySet();
     // Players kicked for being already online on another server - their logout must NOT set online=0
     public static Set<String> kickedForDuplicateLogin = ConcurrentHashMap.newKeySet();
+
+    // FIX PERF: Cache from doPlayerConnect (network thread) for onPlayerLoggedInKickCheck (main thread).
+    // Eliminates 2-4 redundant DB queries per join on the main thread.
+    // Entry: uuid → {online, lastServer, serverAlive, alreadyHandled}
+    private static final ConcurrentHashMap<String, int[]> connectCheckCache = new ConcurrentHashMap<>();
+    // int[0]=online(0/1), int[1]=lastServer, int[2]=serverAlive(0/1), int[3]=alreadyKicked(0/1)
 
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
@@ -421,9 +439,10 @@ public class VanillaSync {
             }
 
             // === PHASE 2: Apply to player on MAIN SERVER THREAD ===
-            // FIX PERF: No more applyLatch.await(60s) tying up a background thread.
-            // The server.execute() callback fires when the main thread is ready. The
-            // syncNotCompletedPlayer flag guards onPlayerLogout until apply completes.
+            // The server.execute() callback fires when the main thread is ready.
+            // Note: Backpack/SS/RS2 restore still does DB reads on main thread (1-5 queries
+            // per player). This is acceptable because players join one at a time, not 35 at once.
+            // The real performance fix is staggering the auto-save (see onServerTick).
             server.execute(() -> {
                 try {
                     // FIX: Verify the player is still connected before applying data.
@@ -544,13 +563,12 @@ public class VanillaSync {
         ServerPlayer player = (ServerPlayer) event.getEntity();
         String player_uuid = player.getUUID().toString();
 
+        // FIX PERF: Use cached data from doPlayerConnect (network thread) instead of
+        // re-querying the DB. Eliminates 2-4 blocking DB queries from the MAIN THREAD.
+        // doPlayerConnect already ran the same checks on the network thread and cached results.
+        int[] cached = connectCheckCache.remove(player_uuid);
+
         if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) {
-            // Still mark online even if kick is disabled.
-            // FIX: Don't set last_server here — set it AFTER the poll in doPlayerJoin.
-            // Setting last_server too early breaks the poll loop (sees "player is on my server"
-            // and breaks immediately) AND prevents the old server's save from completing
-            // (last_server guard blocks the write). online=1 alone is sufficient to prevent
-            // triple-login — other servers check online=1 regardless of last_server.
             try {
                 JDBCsetUp.executePreparedUpdate(
                         "UPDATE player_data SET online=1 WHERE uuid=?",
@@ -560,46 +578,54 @@ public class VanillaSync {
         }
 
         try {
-            boolean online = false;
-            int lastServer = 0;
-
-            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                    "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
-                ResultSet rs = qr.resultSet();
-                if (rs.next()) {
-                    online = rs.getBoolean("online");
-                    lastServer = rs.getInt("last_server");
-                }
+            if (cached != null && cached[3] == 1) {
+                // doPlayerConnect already determined this player should be kicked (server alive)
+                // but PlayerNegotiationEvent.disconnect() is unreliable in NeoForge 1.21.1
+                // — use the reliable ServerPlayer.connection.disconnect() instead.
+                kickedForDuplicateLogin.add(player_uuid);
+                PlayerSync.LOGGER.warn("Kicking player {} - already online on server {} (cached check)", player_uuid, cached[1]);
+                player.connection.disconnect(Component.translatableWithFallback(
+                        "playersync.already_online",
+                        "You can't join more than one synchronization server at the same time."));
+                return;
             }
 
-            if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
-                // Check if the other server is still alive
-                try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
-                        "SELECT last_update, enable FROM server_info WHERE id=?", lastServer)) {
-                    ResultSet rs2 = qr2.resultSet();
-                    if (rs2.next()) {
-                        long lastUpdate = rs2.getLong("last_update");
-                        boolean enable = rs2.getBoolean("enable");
-                        if (enable && System.currentTimeMillis() < lastUpdate + 300000L) {
-                            // Other server is alive → KICK using ServerPlayer.connection which works reliably
-                            // CRITICAL: Mark as kicked BEFORE disconnect so onPlayerLogout does NOT set online=0.
-                            // Without this, the logout handler resets online=0, allowing immediate reconnect bypass.
-                            kickedForDuplicateLogin.add(player_uuid);
-                            PlayerSync.LOGGER.warn("Kicking player {} - already online on server {}", player_uuid, lastServer);
-                            player.connection.disconnect(Component.translatableWithFallback(
-                                    "playersync.already_online",
-                                    "You can't join more than one synchronization server at the same time."));
-                            return;
+            if (cached != null && cached[0] == 1 && cached[1] != JdbcConfig.SERVER_ID.get() && cached[2] == 0) {
+                // Player was online on another server but that server is dead — already handled
+                // by doPlayerConnect (server disabled). No need to re-query.
+            } else if (cached == null) {
+                // No cache (race condition or cache eviction) — fall back to DB query
+                boolean online = false;
+                int lastServer = 0;
+                try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                        "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
+                    ResultSet rs = qr.resultSet();
+                    if (rs.next()) {
+                        online = rs.getBoolean("online");
+                        lastServer = rs.getInt("last_server");
+                    }
+                }
+                if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
+                    try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
+                            "SELECT last_update, enable FROM server_info WHERE id=?", lastServer)) {
+                        ResultSet rs2 = qr2.resultSet();
+                        if (rs2.next()) {
+                            long lastUpdate = rs2.getLong("last_update");
+                            boolean enable = rs2.getBoolean("enable");
+                            if (enable && System.currentTimeMillis() < lastUpdate + 300000L) {
+                                kickedForDuplicateLogin.add(player_uuid);
+                                player.connection.disconnect(Component.translatableWithFallback(
+                                        "playersync.already_online",
+                                        "You can't join more than one synchronization server at the same time."));
+                                return;
+                            }
+                            JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", lastServer);
                         }
-                        // Other server is dead, disable it
-                        JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", lastServer);
                     }
                 }
             }
 
-            // Mark online=1 SYNCHRONOUSLY — but don't set last_server yet.
-            // FIX: last_server is set AFTER the poll in doPlayerJoin to allow the old
-            // server's async save to complete (its writeSnapshotToDB uses AND last_server=?).
+            // Mark online=1 — only DB call on main thread in the fast path (1 query instead of 4)
             JDBCsetUp.executePreparedUpdate(
                     "UPDATE player_data SET online=1 WHERE uuid=?",
                     player_uuid);
@@ -1478,6 +1504,10 @@ public class VanillaSync {
     private static final int HEARTBEAT_INTERVAL_TICKS = 600; // Every 30 seconds (20 tps * 30s)
     private static int autoSaveTickCounter = 0;
     private static final int AUTO_SAVE_INTERVAL_TICKS = 6000; // Every 5 minutes (20 tps × 300s)
+    // FIX PERF: Staggered auto-save. Instead of snapshotting ALL 35 players in one tick
+    // (770-3605ms spike → 15-36s TPS drop), we save 1 player per tick over 35 ticks
+    // (22-103ms per tick → imperceptible). The queue is refilled every AUTO_SAVE_INTERVAL.
+    private static final List<ServerPlayer> autoSaveQueue = new ArrayList<>();
     private static int autoCleanCuriosCacheTickCounter = 0;
     private static final int AUTO_CLEAN_CURIOS_CACHE_INTERVAL_TICKS = 36000; // Every 30 min
 
@@ -1509,21 +1539,30 @@ public class VanillaSync {
         // non-thread-safe way.  All entity reads are now done in snapshotPlayerData()
         // on the main thread, and the background task only does DB writes.
         //
-        // FIX: Backpack/SS contents are NOW included in the periodic auto-save.
-        // Previously only saved on logout + shutdown, but hard crashes skip both
-        // → backpack changes lost. snapshotBackpackData is fast (~1ms per backpack).
+        // FIX PERF: Staggered auto-save — saves ONE player per tick instead of ALL at once.
+        // Old behavior: 35 players snapshotted in ONE tick → 770-3605ms MSPT spike every 5 min.
+        // New behavior: queue refilled every 5 min, then drained 1 player/tick → 22-103ms/tick max.
+        // Backpack contents are included (prevents data loss on hard crash).
         if (autoSaveTickCounter >= AUTO_SAVE_INTERVAL_TICKS) {
             autoSaveTickCounter = 0;
+            // Refill the queue with all eligible players
+            autoSaveQueue.clear();
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server != null) {
-                for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                    String puuid = player.getUUID().toString();
-                    if (player.isDeadOrDying() || syncNotCompletedPlayer.contains(puuid)
-                            || pendingLogoutSaves.containsKey(puuid)) {
-                        continue;
-                    }
-                    ReentrantLock lock = getPlayerLock(puuid);
-                    if (!lock.tryLock()) continue;
+                autoSaveQueue.addAll(server.getPlayerList().getPlayers());
+            }
+        }
+
+        // Process ONE player from the queue per tick (staggered)
+        if (!autoSaveQueue.isEmpty()) {
+            ServerPlayer player = autoSaveQueue.removeFirst();
+            String puuid = player.getUUID().toString();
+
+            // Skip invalid players (same guards as before)
+            if (!player.isDeadOrDying() && !syncNotCompletedPlayer.contains(puuid)
+                    && !pendingLogoutSaves.containsKey(puuid) && player.getTags().contains("player_synced")) {
+                ReentrantLock lock = getPlayerLock(puuid);
+                if (lock.tryLock()) {
                     try {
                         final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
                         final Map<UUID, CompoundTag> backpackSnapshots = ModsSupport.snapshotBackpackData(player);

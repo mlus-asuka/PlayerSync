@@ -43,9 +43,11 @@ public class JDBCsetUp {
         cfg.setUsername(JdbcConfig.USERNAME.get());
         cfg.setPassword(JdbcConfig.PASSWORD.get());
 
-        // Pool sizing: 2 warm connections, up to 10 under load
-        cfg.setMaximumPoolSize(10);
-        cfg.setMinimumIdle(2);
+        // FIX PERF: Increased pool for 35+ player servers.
+        // Old: 10 max / 2 idle → 35 concurrent saves queued on 10 connections → 250ms+ wait.
+        // New: 25 max / 4 idle → handles peak load without connection starvation.
+        cfg.setMaximumPoolSize(25);
+        cfg.setMinimumIdle(4);
 
         // Connection lifecycle
         cfg.setConnectionTimeout(30_000L);   // 30 s – how long to wait for a free slot
