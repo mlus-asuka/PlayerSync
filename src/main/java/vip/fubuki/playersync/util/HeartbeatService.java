@@ -25,11 +25,16 @@ public final class HeartbeatService {
     private HeartbeatService() {}
 
     /**
-     * Heartbeat period: 30s. Paired with the 60s staleness threshold in
-     * {@code VanillaSync.isPeerServerStale}. Three orders of magnitude lower DB
-     * load than the previous 10s without sacrificing detection window.
+     * Heartbeat period: configurable via {@code heartbeat_interval_seconds}.
+     * Paired with {@code peer_stale_threshold_seconds}.
      */
-    private static final long PERIOD_MS = 30_000L;
+    private static long currentPeriodMs() {
+        try {
+            return JdbcConfig.HEARTBEAT_INTERVAL_SECONDS.get() * 1000L;
+        } catch (Throwable t) {
+            return 30_000L;
+        }
+    }
 
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
     private static ScheduledExecutorService scheduler;
@@ -42,8 +47,9 @@ public final class HeartbeatService {
             t.setPriority(Thread.MIN_PRIORITY);
             return t;
         });
-        scheduler.scheduleAtFixedRate(HeartbeatService::tick, PERIOD_MS, PERIOD_MS, TimeUnit.MILLISECONDS);
-        PlayerSync.LOGGER.info("[heartbeat] started (period={}ms, server_id={})", PERIOD_MS, JdbcConfig.SERVER_ID.get());
+        long period = currentPeriodMs();
+        scheduler.scheduleAtFixedRate(HeartbeatService::tick, period, period, TimeUnit.MILLISECONDS);
+        PlayerSync.LOGGER.info("[heartbeat] started (period={}ms, server_id={})", period, JdbcConfig.SERVER_ID.get());
     }
 
     public static void stop() {

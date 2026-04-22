@@ -21,12 +21,20 @@ public final class PoolStatsReporter {
 
     private PoolStatsReporter() {}
 
-    private static final long PERIOD_MS = 5 * 60 * 1000L;
-
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
     private static ScheduledExecutorService scheduler;
 
     public static void start() {
+        int minutes;
+        try {
+            minutes = vip.fubuki.playersync.config.JdbcConfig.POOL_STATS_INTERVAL_MINUTES.get();
+        } catch (Throwable t) {
+            minutes = 5;
+        }
+        if (minutes <= 0) {
+            PlayerSync.LOGGER.info("[pool-stats] disabled (pool_stats_interval_minutes=0)");
+            return;
+        }
         if (!RUNNING.compareAndSet(false, true)) return;
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "PlayerSync-pool-stats");
@@ -34,8 +42,9 @@ public final class PoolStatsReporter {
             t.setPriority(Thread.MIN_PRIORITY);
             return t;
         });
-        scheduler.scheduleAtFixedRate(PoolStatsReporter::tick, PERIOD_MS, PERIOD_MS, TimeUnit.MILLISECONDS);
-        PlayerSync.LOGGER.info("[pool-stats] reporter started (period={}ms)", PERIOD_MS);
+        long periodMs = minutes * 60_000L;
+        scheduler.scheduleAtFixedRate(PoolStatsReporter::tick, periodMs, periodMs, TimeUnit.MILLISECONDS);
+        PlayerSync.LOGGER.info("[pool-stats] reporter started (period={}ms)", periodMs);
     }
 
     public static void stop() {

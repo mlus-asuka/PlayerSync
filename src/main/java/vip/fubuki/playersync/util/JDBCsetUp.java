@@ -199,13 +199,22 @@ public class JDBCsetUp {
     }
 
     public static void executePreparedUpdate(String sql, Object... params) throws SQLException {
+        executePreparedUpdateRet(sql, params);
+    }
+
+    /**
+     * Variant of {@link #executePreparedUpdate(String, Object...)} that returns the
+     * number of rows affected. Used by admin commands (clearorphans, peerkill, wipe)
+     * to report meaningful counts to the operator.
+     */
+    public static int executePreparedUpdateRet(String sql, Object... params) throws SQLException {
         LOGGER.trace(sql);
         try (Connection conn = getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             for (int i = 0; i < params.length; i++) {
                 stmt.setObject(i + 1, params[i]);
             }
-            stmt.executeUpdate();
+            return stmt.executeUpdate();
         }
     }
 

@@ -179,6 +179,7 @@ public class ModCompatSync {
      */
     public static void applyAccessoriesFromData(Player player, String accessoriesData) {
         if (!ModList.get().isLoaded("accessories")) return;
+        if (!vip.fubuki.playersync.config.JdbcConfig.SYNC_ACCESSORIES.get()) return; // PHASE 8: toggle
         try {
             io.wispforest.accessories.api.AccessoriesCapability cap =
                     io.wispforest.accessories.api.AccessoriesCapability.get(player);
@@ -335,6 +336,7 @@ public class ModCompatSync {
      */
     public static void applyCosmeticArmorFromData(Player player, String cosmeticArmorData) {
         if (!ModList.get().isLoaded("cosmeticarmorreworked")) return;
+        if (!vip.fubuki.playersync.config.JdbcConfig.SYNC_COSMETIC_ARMOR.get()) return; // PHASE 8: toggle
         try {
             lain.mods.cos.impl.inventory.InventoryCosArmor cosInv =
                     lain.mods.cos.impl.ModObjects.invMan.getCosArmorInventory(player.getUUID());

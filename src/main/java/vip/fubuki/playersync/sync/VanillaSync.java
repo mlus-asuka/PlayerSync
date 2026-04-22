@@ -119,6 +119,11 @@ public class VanillaSync {
         }
     }
 
+    /** Admin-command accessor for the shared executor — read-only usage. */
+    public static ThreadPoolExecutor getExecutor() {
+        return (ThreadPoolExecutor) executorService;
+    }
+
     public static void removePlayerLock(String uuid) {
         playerLocks.remove(uuid);
         lastWrittenSnapshotHash.remove(uuid);
@@ -382,8 +387,9 @@ public class VanillaSync {
             // heartbeated in >60s, treat it as dead and stop waiting immediately.
             // This fixes the user-reported "attempt 60/60" log flood for server_id=0
             // and zombie server_ids whose player_data.last_server never gets cleared.
-            final int MAX_POLL = 120;
-            final long STALE_HEARTBEAT_MS = 60_000L;
+            final int MAX_POLL = JdbcConfig.JOIN_POLL_MAX_ATTEMPTS.get();
+            final int POLL_INTERVAL_MS = JdbcConfig.JOIN_POLL_INTERVAL_MS.get();
+            final long STALE_HEARTBEAT_MS = JdbcConfig.PEER_STALE_THRESHOLD_SECONDS.get() * 1000L;
             for (int attempt = 0; attempt < MAX_POLL; attempt++) {
                 try (JDBCsetUp.QueryResult qrCheck = JDBCsetUp.executePreparedQuery(
                         "SELECT online, last_server FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
@@ -410,7 +416,7 @@ public class VanillaSync {
                             SyncLogger.raceCondition(player_uuid, "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/" + MAX_POLL + ")");
                             PlayerSync.LOGGER.info("Player {} still being saved on server {} (attempt {}/{}), waiting 500ms...",
                                     player_uuid, otherServer, attempt + 1, MAX_POLL);
-                            Thread.sleep(500);
+                            Thread.sleep(POLL_INTERVAL_MS);
                             continue;
                         }
                     }
@@ -1746,6 +1752,31 @@ public class VanillaSync {
      */
     private static boolean writeSnapshotToDB(PlayerDataSnapshot s, boolean setOffline) throws Exception {
         int serverId = JdbcConfig.SERVER_ID.get();
+
+        // PHASE 8: safety guards — abort before corrupting DB with garbage or wipes.
+        if (JdbcConfig.REFUSE_EMPTY_INVENTORY_WRITE.get()
+                && (s.inventory() == null || s.inventory().isEmpty() || s.inventory().length() < 4)) {
+            // Only skip if DB currently has real data — new players legitimately have empty inventories
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT LENGTH(inventory) AS len FROM " + Tables.playerData() + " WHERE uuid=?", s.uuid())) {
+                ResultSet rs = qr.resultSet();
+                if (rs.next() && rs.getInt("len") > 50) {
+                    SyncLogger.dataLoss(s.uuid(),
+                            "REFUSED empty inventory write (DB has " + rs.getInt("len") + " bytes). Set refuse_empty_inventory_write=false to override.");
+                    PlayerSync.LOGGER.warn("[write-guard] refused empty inventory write for {} (DB has {} bytes)",
+                            s.uuid(), rs.getInt("len"));
+                    return false;
+                }
+            } catch (Exception ignored) {}
+        }
+        int maxBytes = JdbcConfig.MAX_INVENTORY_SIZE_BYTES.get();
+        if (s.inventory() != null && s.inventory().length() > maxBytes) {
+            SyncLogger.nbtAnomaly(s.uuid(),
+                    "inventory payload " + s.inventory().length() + " bytes exceeds max_inventory_size_bytes=" + maxBytes + " — REJECTED");
+            PlayerSync.LOGGER.error("[write-guard] inventory too large for {} ({} bytes > {} max)",
+                    s.uuid(), s.inventory().length(), maxBytes);
+            return false;
+        }
 
         // FIX PERF: All writes batched into a SINGLE transaction on ONE connection.
         // Previously 4-8 separate connections × round-trips per player.

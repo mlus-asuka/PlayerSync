@@ -4,6 +4,50 @@ All notable changes to **PlayerSync** are documented here.
 
 ---
 
+## [2.1.5] - 2026-04-22 (cont.)
+
+### Added (Phase 8: configs + admin commands)
+
+- **Structured config sections** — `connection`, `general`, `save_triggers`, `sync_toggles`, `performance`, `safety`, `observability`. Old keys still accepted thanks to NeoForge's lenient loader.
+- **Sync toggles** — `sync_inventory`, `sync_ender_chest`, `sync_xp`, `sync_effects`, `sync_health_food`, `sync_curios`, `sync_accessories`, `sync_backpacks`, `sync_cosmetic_armor`, `sync_refined_storage`. All default true. Wired as restore-side guards in each mod-compat path.
+- **Save triggers** — `save_on_death` (default true), `save_on_respawn` (default true). `save_on_dimension_change` kept from Phase 4.
+- **Perf configs** — `heartbeat_interval_seconds` (default 30), `peer_stale_threshold_seconds` (default 60), `join_poll_max_attempts` (default 120), `join_poll_interval_ms` (default 500), `pool_stats_interval_minutes` (default 5, 0 to disable), `hikari_pool_max_size` (default 15), `hikari_leak_threshold_ms` (default 25000).
+- **Safety configs** — `refuse_empty_inventory_write` (default true) now enforced inside `writeSnapshotToDB`: if the snapshot inventory is empty/tiny AND the DB row currently has real data, the write is refused and logged as `DATA_LOSS`. `max_inventory_size_bytes` (default 10 MB) rejects oversized snapshots. `skip_saves_when_tps_below` placeholder for future use. `kick_message`, `kick_grace_period_ms`.
+- **Observability configs** — `log_structured_json` (future), `log_rotation_size_mb`, `log_rotation_max_files`.
+- **Admin commands — `/playersync`** — full toolkit for diagnosis and maintenance:
+  - `status` — server id, heartbeat age, executor + Hikari pool snapshot, online count
+  - `poolstats` — immediate log of current pool stats
+  - `flush [player]` — force save of all online players or a specific one
+  - `info <player>` — DB row metadata (last_server, online flag, data sizes)
+  - `dump <player>` — full DB row dump into server log
+  - `resync <player>` — clear player_synced tag and kick to force fresh restore
+  - `wipe <player> confirm` — DANGER: DELETE all rows for a player
+  - `orphans` — list online=1 rows whose peer is dead/stale
+  - `clearorphans [server_id]` — clear orphaned online flags
+  - `peers` — list all peer servers with their heartbeat age and ALIVE/STALE/STOPPED tag
+  - `peerkill <server_id>` — force-disable a zombie peer
+  - `cleanup` — one-shot orphans + stale peers cleanup
+  - `reload` — status note about runtime config reload
+  - `help` — in-chat command reference
+- All commands require permission level 2 (op) and log to `SyncLogger` as `ADMIN_*` events for audit trail.
+
+### Changed
+
+- `JDBCsetUp.executePreparedUpdate` now delegates to `executePreparedUpdateRet` which returns rows affected. Existing callers unchanged; admin commands use the ret version for meaningful counts.
+- `HeartbeatService` + `PoolStatsReporter` + `doPlayerJoin` poll all read their interval/threshold from the new config keys instead of hardcoded constants.
+
+### Ajouts (French mirror — Phase 8)
+
+- **Sections config structurées** — `connection`, `general`, `save_triggers`, `sync_toggles`, `performance`, `safety`, `observability`.
+- **Toggles de sync** — 10 clés pour activer/désactiver la sync par catégorie.
+- **Triggers de sauvegarde** — `save_on_death`, `save_on_respawn`, `save_on_dimension_change`.
+- **Configs perf** — intervalles heartbeat/poll/pool-stats/hikari, seuils peer-stale.
+- **Configs sécurité** — `refuse_empty_inventory_write` (enforce-wipe protection), `max_inventory_size_bytes` (anti-bloat), `kick_message`, `kick_grace_period_ms`.
+- **Commandes admin `/playersync`** — 14 commandes pour diagnostic et maintenance (status, flush, info, dump, resync, wipe, orphans, clearorphans, peers, peerkill, cleanup, poolstats, reload, help).
+- Toutes les commandes requièrent permission op (niveau 2) et logguent dans `SyncLogger` pour traçabilité.
+
+---
+
 ## [2.1.5] - 2026-04-22
 
 ### Fixed (English first)

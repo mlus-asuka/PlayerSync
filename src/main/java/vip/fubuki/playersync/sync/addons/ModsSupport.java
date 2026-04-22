@@ -27,6 +27,7 @@ import java.util.*;
 
 public class ModsSupport {
     public void doBackPackRestore(Player player) {
+        if (!vip.fubuki.playersync.config.JdbcConfig.SYNC_BACKPACKS.get()) return; // PHASE 8: toggle
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {
             PlayerSync.LOGGER.info("Restoring backpack data for player {}", player.getUUID());
             // Restore backpacks from main inventory
@@ -367,6 +368,7 @@ public class ModsSupport {
      */
     public static void applyCuriosFromData(Player player, String curiosData) {
         if (!ModList.get().isLoaded("curios")) return;
+        if (!vip.fubuki.playersync.config.JdbcConfig.SYNC_CURIOS.get()) return; // PHASE 8: toggle
 
         Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
         if (handlerOpt.isEmpty()) {
@@ -1070,6 +1072,7 @@ public class ModsSupport {
     @SuppressWarnings("unchecked")
     public static void restoreRefinedStorageDisks(Player player) {
         if (!ModList.get().isLoaded("refinedstorage")) return;
+        if (!vip.fubuki.playersync.config.JdbcConfig.SYNC_REFINED_STORAGE.get()) return; // PHASE 8: toggle
         if (!(player instanceof net.minecraft.server.level.ServerPlayer sp)) return;
 
         List<UUID> diskUuids = collectRS2DiskUuids(player);
