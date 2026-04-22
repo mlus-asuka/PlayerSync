@@ -457,28 +457,40 @@ public class VanillaSync {
                             // atomic), just maybe slowly on a heavy-load server.
                             long waitedMs = System.currentTimeMillis() - pollStartTime;
                             if (PEER_ALIVE_MAX_WAIT_MS > 0 && waitedMs >= PEER_ALIVE_MAX_WAIT_MS) {
+                                // PHASE 11 FIX: compare peer heartbeat age against the stale
+                                // threshold (default 60s), NOT the 5s wait cap. A normal peer
+                                // with a 30s heartbeat interval naturally has an age of 0-30s
+                                // between ticks — using 5s as the "frozen" threshold caused
+                                // EVERY cross-server join to misclassify a healthy peer as
+                                // frozen and force-claim unnecessarily (observed in prod logs:
+                                // 'heartbeat frozen 5380ms').
                                 long peerAgeMs = peerHeartbeatAgeMs(otherServer);
-                                if (peerAgeMs > PEER_ALIVE_MAX_WAIT_MS) {
-                                    // Peer hasn't heartbeated during our wait — effectively dead.
+                                if (peerAgeMs > STALE_HEARTBEAT_MS) {
                                     SyncLogger.raceCondition(player_uuid,
-                                            "Peer " + otherServer + " heartbeat frozen " + peerAgeMs
-                                                    + "ms, waited " + waitedMs + "ms — force-claiming");
+                                            "Peer " + otherServer + " heartbeat stale " + peerAgeMs
+                                                    + "ms > " + STALE_HEARTBEAT_MS + "ms, waited " + waitedMs + "ms — force-claiming");
                                     PlayerSync.LOGGER.warn(
-                                            "Player {} waited {}ms for peer {} with frozen heartbeat ({}ms old) — force-claiming",
-                                            player_uuid, waitedMs, otherServer, peerAgeMs);
+                                            "Player {} waited {}ms for peer {} whose heartbeat is {}ms old (threshold {}ms) — force-claiming",
+                                            player_uuid, waitedMs, otherServer, peerAgeMs, STALE_HEARTBEAT_MS);
                                     JDBCsetUp.executePreparedUpdate(
                                             "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
                                             player_uuid, otherServer);
                                     break;
                                 }
-                                // Peer is actively heartbeating but slow to flush. Keep waiting
-                                // but log a warning so admins notice the pattern.
+                                // Peer is actively heartbeating but slow to flush — keep waiting.
+                                // Warn sparingly to avoid log flood.
                                 if (attempt % 20 == 0) {
                                     SyncLogger.warnPlayer(player_uuid,
-                                            "peer " + otherServer + " alive+heartbeating but slow to flush (waited=" + waitedMs + "ms)");
+                                            "peer " + otherServer + " healthy but slow to flush (waited=" + waitedMs + "ms, hb_age=" + peerAgeMs + "ms)");
                                 }
                             }
-                            SyncLogger.raceCondition(player_uuid, "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/" + MAX_POLL + ", waited=" + waitedMs + "ms)");
+                            // PHASE 11: log RACE only every 10 attempts instead of every tick.
+                            // Previous behavior produced up to 120 lines per cross-server join,
+                            // flooding sync.log with zero diagnostic value beyond the first few.
+                            if ((attempt % 10) == 0) {
+                                SyncLogger.raceCondition(player_uuid,
+                                        "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/" + MAX_POLL + ", waited=" + waitedMs + "ms)");
+                            }
                             Thread.sleep(POLL_INTERVAL_MS);
                             continue;
                         }
@@ -1475,8 +1487,11 @@ public class VanillaSync {
                         SyncLogger.perf("LOGOUT breakdown [" + player_uuid + "]",
                                 (tCore - t0));
                         if (total > 200) {
-                            PlayerSync.LOGGER.info("[perf-logout] {} core={}ms backpacks={}ms ss={}ms rs2={}ms total={}ms",
-                                    player_uuid, (tCore - t0), (tBp - tCore), (tSs - tBp), (tEnd - tSs), total);
+                            String detail = "core=" + (tCore - t0) + "ms backpacks=" + (tBp - tCore)
+                                    + "ms ss=" + (tSs - tBp) + "ms rs2=" + (tEnd - tSs) + "ms total=" + total + "ms";
+                            PlayerSync.LOGGER.info("[perf-logout] {} {}", player_uuid, detail);
+                            // PHASE 11: also log to sync.log so field reports don't miss the breakdown.
+                            SyncLogger.perf("LOGOUT " + player_uuid + " " + detail, total);
                         }
                     } else {
                         PlayerSync.LOGGER.warn("Logout save skipped downstream backpack/SS/RS2 for player {} — core guard blocked",
