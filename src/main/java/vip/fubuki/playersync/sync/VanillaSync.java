@@ -390,6 +390,14 @@ public class VanillaSync {
             final int MAX_POLL = JdbcConfig.JOIN_POLL_MAX_ATTEMPTS.get();
             final int POLL_INTERVAL_MS = JdbcConfig.JOIN_POLL_INTERVAL_MS.get();
             final long STALE_HEARTBEAT_MS = JdbcConfig.PEER_STALE_THRESHOLD_SECONDS.get() * 1000L;
+            // PHASE 9: when the peer is alive (heartbeat fresh) but the player row still shows
+            // online=1 on it — typical of a ghost session (proxy, network drop, or the user
+            // walking between servers without clean logout) — waiting the full 60s is useless:
+            // the peer will never flush because the session is technically active there. We
+            // cap the wait at this shorter window, then force-claim and rely on the last_server
+            // guard in writeSnapshotToDB to prevent the peer from overwriting us later.
+            final long PEER_ALIVE_MAX_WAIT_MS = JdbcConfig.JOIN_PEER_ALIVE_MAX_WAIT_SECONDS.get() * 1000L;
+            final long pollStartTime = System.currentTimeMillis();
             for (int attempt = 0; attempt < MAX_POLL; attempt++) {
                 try (JDBCsetUp.QueryResult qrCheck = JDBCsetUp.executePreparedQuery(
                         "SELECT online, last_server FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
@@ -402,20 +410,34 @@ public class VanillaSync {
                             // FIX P1-3: zombie-server short-circuit. server_id=0 is never
                             // a legitimate server (SERVER_ID config generates nextInt(1, MAX-1)).
                             // Absent or stale (>60s) heartbeat => treat as dead, take over.
-                            if (otherServer == 0 || isPeerServerStale(otherServer, STALE_HEARTBEAT_MS)) {
+                            boolean peerDead = (otherServer == 0 || isPeerServerStale(otherServer, STALE_HEARTBEAT_MS));
+                            if (peerDead) {
                                 SyncLogger.raceCondition(player_uuid,
                                         "Peer server " + otherServer + " is dead/zombie — taking over after " + attempt + " attempts");
                                 PlayerSync.LOGGER.warn("Player {} last_server={} is dead/zombie, bypassing wait",
                                         player_uuid, otherServer);
-                                // Force-clear its online flag so subsequent logic proceeds cleanly.
                                 JDBCsetUp.executePreparedUpdate(
                                         "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
                                         player_uuid, otherServer);
                                 break;
                             }
-                            SyncLogger.raceCondition(player_uuid, "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/" + MAX_POLL + ")");
-                            PlayerSync.LOGGER.info("Player {} still being saved on server {} (attempt {}/{}), waiting 500ms...",
-                                    player_uuid, otherServer, attempt + 1, MAX_POLL);
+                            // PHASE 9: peer ALIVE but session hasn't flushed — enforce short cap.
+                            long waitedMs = System.currentTimeMillis() - pollStartTime;
+                            if (waitedMs >= PEER_ALIVE_MAX_WAIT_MS) {
+                                SyncLogger.raceCondition(player_uuid,
+                                        "Peer server " + otherServer + " is alive but player ghost-online for "
+                                                + waitedMs + "ms — force-claiming ownership");
+                                PlayerSync.LOGGER.warn(
+                                        "Player {} still online=1 on alive peer server {} after {}ms — force-takeover on this server. Peer's future saves will be blocked by the last_server guard.",
+                                        player_uuid, otherServer, waitedMs);
+                                // Force-clear the flag and claim — writeSnapshotToDB will guard
+                                // the peer's next write so they can't overwrite us.
+                                JDBCsetUp.executePreparedUpdate(
+                                        "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
+                                        player_uuid, otherServer);
+                                break;
+                            }
+                            SyncLogger.raceCondition(player_uuid, "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/" + MAX_POLL + ", waited=" + waitedMs + "ms)");
                             Thread.sleep(POLL_INTERVAL_MS);
                             continue;
                         }

@@ -57,6 +57,7 @@ public class JdbcConfig {
     public static ModConfigSpec.IntValue PEER_STALE_THRESHOLD_SECONDS;
     public static ModConfigSpec.IntValue JOIN_POLL_MAX_ATTEMPTS;
     public static ModConfigSpec.IntValue JOIN_POLL_INTERVAL_MS;
+    public static ModConfigSpec.IntValue JOIN_PEER_ALIVE_MAX_WAIT_SECONDS;
     public static ModConfigSpec.IntValue POOL_STATS_INTERVAL_MINUTES;
     public static ModConfigSpec.IntValue HIKARI_POOL_MAX_SIZE;
     public static ModConfigSpec.IntValue HIKARI_LEAK_THRESHOLD_MS;
@@ -174,6 +175,16 @@ public class JdbcConfig {
         JOIN_POLL_INTERVAL_MS = B.comment(
                 "Wait interval between last_server poll attempts (milliseconds).")
                 .defineInRange("join_poll_interval_ms", 500, 100, 5000);
+        JOIN_PEER_ALIVE_MAX_WAIT_SECONDS = B.comment(
+                "When the previous server is ALIVE (heartbeat fresh) but the player row still",
+                "shows online=1 on it, how long to wait before force-claiming ownership on this",
+                "server. Prevents the 30-60s 'empty inventory' window when a player active on",
+                "peer A connects to peer B without cleanly logging out (proxy, network drop,",
+                "dup session). After this timeout, peer A will simply fail to save this player",
+                "(blocked by last_server guard) and their next disconnect won't overwrite B's",
+                "data. Default 5s. Set to 0 to force-claim immediately; set high to restore the",
+                "legacy behavior of waiting for the peer to flush.")
+                .defineInRange("join_peer_alive_max_wait_seconds", 5, 0, 600);
         POOL_STATS_INTERVAL_MINUTES = B.comment(
                 "How often PoolStatsReporter logs executor + Hikari stats. 0 to disable.")
                 .defineInRange("pool_stats_interval_minutes", 5, 0, 1440);
