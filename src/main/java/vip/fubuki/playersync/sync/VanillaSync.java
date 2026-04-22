@@ -906,10 +906,27 @@ public class VanillaSync {
                 // FIX: If the player already logged out (removePlayerLock was called),
                 // this snapshot is stale and must NOT overwrite the fresher logout snapshot.
                 if (!playerLocks.containsKey(puuid)) return;
+                // FIX CRITICAL ANTI-DUP (P0-a): early skip if logout is already in flight.
+                if (pendingLogoutSaves.containsKey(puuid)) return;
 
                 ReentrantLock bgLock = getPlayerLock(puuid);
                 if (!bgLock.tryLock()) return; // another save started, skip
                 try {
+                    // FIX CRITICAL ANTI-DUP (P0-b): re-check under lock — a logout task may
+                    // have been submitted between the check above and tryLock success.
+                    if (pendingLogoutSaves.containsKey(puuid)) return;
+                    // FIX CRITICAL ANTI-DUP (P0-c): last line of defence — if the DB already
+                    // shows online=0, a logout save has committed and any write here would
+                    // resurrect stale data (cause of drop+deco+reco item duplication).
+                    try (JDBCsetUp.QueryResult onlineCheck = JDBCsetUp.executePreparedQuery(
+                            "SELECT online FROM " + Tables.playerData() + " WHERE uuid=?", puuid)) {
+                        ResultSet rs = onlineCheck.resultSet();
+                        if (rs.next() && rs.getInt("online") == 0) {
+                            SyncLogger.guardBlocked(puuid, JdbcConfig.SERVER_ID.get(),
+                                    "SaveToFile BG skipped — player already offline in DB (logout committed)");
+                            return;
+                        }
+                    }
                     writeSnapshotToDB(snapshot);
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error writing async SaveToFile snapshot for player {}", puuid, e);
@@ -1174,6 +1191,12 @@ public class VanillaSync {
             // stays forever in pendingLogoutSaves and blocks future rejoins for 15s+.
             try {
                 executorService.execute(() -> {
+                // FIX CRITICAL ANTI-DUP (P0-d): acquire bgLock BEFORE any DB write so
+                // concurrent SaveToFile / death-save BG tasks (using tryLock) either skip
+                // cleanly OR wait until this logout finishes. Without this, a stale
+                // auto-save queued before logout could overwrite fresh logout data.
+                ReentrantLock bgLock = getPlayerLock(player_uuid);
+                bgLock.lock();
                 try {
                     // FIX ANTI-DUPLICATION: writeSnapshotToDB with setOffline=true
                     // atomically writes data + online=0 in a SINGLE UPDATE, AND guards
@@ -1198,9 +1221,13 @@ public class VanillaSync {
                         PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline", player_uuid, e2);
                     }
                 } finally {
+                    // FIX P0-d: remove playerLocks BEFORE unlocking bgLock so any
+                    // auto-save BG that wakes right after unlock sees containsKey=false
+                    // and skips cleanly.
                     removePlayerLock(player_uuid);
                     pendingLogoutSaves.remove(player_uuid);
                     futureRef.complete(null);
+                    try { bgLock.unlock(); } catch (Exception ignored) {}
                 }
                 });
             } catch (java.util.concurrent.RejectedExecutionException rex) {
@@ -1797,9 +1824,23 @@ public class VanillaSync {
 
             executorService.submit(() -> {
                 if (!playerLocks.containsKey(puuid)) return;
+                // FIX CRITICAL ANTI-DUP (P0-a): early skip if logout is already in flight.
+                if (pendingLogoutSaves.containsKey(puuid)) return;
                 ReentrantLock bgLock = getPlayerLock(puuid);
                 if (!bgLock.tryLock()) return;
                 try {
+                    // FIX CRITICAL ANTI-DUP (P0-b): re-check under lock.
+                    if (pendingLogoutSaves.containsKey(puuid)) return;
+                    // FIX CRITICAL ANTI-DUP (P0-c): skip if logout has already committed.
+                    try (JDBCsetUp.QueryResult onlineCheck = JDBCsetUp.executePreparedQuery(
+                            "SELECT online FROM " + Tables.playerData() + " WHERE uuid=?", puuid)) {
+                        ResultSet rs = onlineCheck.resultSet();
+                        if (rs.next() && rs.getInt("online") == 0) {
+                            SyncLogger.guardBlocked(puuid, JdbcConfig.SERVER_ID.get(),
+                                    "Death-save BG skipped — player already offline in DB");
+                            return;
+                        }
+                    }
                     writeSnapshotToDB(snapshot);
                     ModsSupport.saveBackpackSnapshots(backpackSnapshots);
                     ModsSupport.saveSSSnapshots(ssSnapshots);
