@@ -41,7 +41,7 @@ public class PlayerSync {
     }
 
     @SubscribeEvent
-    public void onServerStarting(ServerStartingEvent event) throws SQLException {
+    public void onServerStarting(ServerStartingEvent event) {
         // FIX COMPAT (C2): skip all MySQL init on single-player / integrated servers.
         // Running PlayerSync in single-player makes no sense (no cross-server sync) and
         // attempting to open a MySQL connection with default placeholder credentials on a
@@ -51,26 +51,39 @@ public class PlayerSync {
             return;
         }
 
+        // Full init guarded by a single try/catch so a missing / unreachable MySQL
+        // prints a user-friendly tutorial in the console instead of crashing the
+        // dedicated server or flooding the log with a raw JDBC stack trace.
+        try {
+            onServerStartingUnchecked(event);
+        } catch (Throwable t) {
+            printDatabaseTutorialBanner(t);
+        }
+    }
+
+    private void onServerStartingUnchecked(ServerStartingEvent event) throws SQLException {
         String dbName = JdbcConfig.DATABASE_NAME.get();
 
         // FIX: Validate database name to prevent SQL injection via config.
         // Only alphanumeric chars and underscores are allowed in MySQL identifiers.
         if (!dbName.matches("[A-Za-z0-9_]+")) {
             LOGGER.error("Invalid DATABASE_NAME '{}'. Only alphanumeric characters and underscores are allowed. Aborting.", dbName);
-            return;
+            throw new SQLException("Invalid DATABASE_NAME: " + dbName);
+        }
+
+        // Detect placeholder credentials and surface a tutorial straight away.
+        String pass = JdbcConfig.PASSWORD.get();
+        String host = JdbcConfig.HOST.get();
+        if ("pleaseChangeThisPassword".equals(pass) || "localhost".equals(host)) {
+            LOGGER.warn("[PlayerSync] Using placeholder credentials (host={}, password={}). Attempting anyway; a tutorial will be printed if the connection fails.",
+                    host, "pleaseChangeThisPassword".equals(pass) ? "<DEFAULT>" : "<set>");
         }
 
         // Step 1: Create the database using a raw DriverManager connection (no pool yet).
         JDBCsetUp.executeUpdate("CREATE DATABASE IF NOT EXISTS `" + dbName + "`", 1);
 
         // Step 2: Initialise HikariCP pool now that the database exists.
-        // All subsequent queries use the pool — no more isValid() ping on every borrow.
-        try {
-            JDBCsetUp.initPool();
-        } catch (Exception e) {
-            LOGGER.error("[PlayerSync] Failed to initialise connection pool — check MySQL config.", e);
-            return;
-        }
+        JDBCsetUp.initPool();
 
         // Initialize dedicated PlayerSync log file (logs/playersync/sync.log)
         vip.fubuki.playersync.util.SyncLogger.init();
@@ -246,6 +259,92 @@ public class PlayerSync {
         }
         LOGGER.info("Altering {}.{} column {} to {}", dbName, table, column, targetTypeLower.toUpperCase());
         JDBCsetUp.executeUpdate("ALTER TABLE `" + dbName + "`.`" + table + "` MODIFY COLUMN `" + column + "` " + targetTypeLower.toUpperCase());
+    }
+
+    /**
+     * Prints a big, friendly banner to the console explaining why PlayerSync could
+     * not initialise its database. Invoked from the top-level try/catch in
+     * {@link #onServerStarting(ServerStartingEvent)} so the dedicated server boots
+     * anyway — admins running the mod for the first time get a tutorial instead
+     * of a cryptic SQLException.
+     */
+    private static void printDatabaseTutorialBanner(Throwable failure) {
+        String configPath = "config/playersync-common.toml";
+        String host = safe(JdbcConfig.HOST);
+        int port = safeInt(JdbcConfig.PORT, 3306);
+        String user = safe(JdbcConfig.USERNAME);
+        String db = safe(JdbcConfig.DATABASE_NAME);
+        boolean defaultPass = "pleaseChangeThisPassword".equals(safe(JdbcConfig.PASSWORD));
+        String rootCause = rootCauseSummary(failure);
+
+        String[] banner = {
+                "",
+                "######################################################################",
+                "#                                                                    #",
+                "#   PlayerSync — DATABASE NOT AVAILABLE — SERVER STILL STARTED       #",
+                "#                                                                    #",
+                "#   PlayerSync requires a MySQL / MariaDB database to sync player    #",
+                "#   data across servers. Your server will BOOT without sync until    #",
+                "#   the connection is fixed.                                         #",
+                "#                                                                    #",
+                "######################################################################",
+                "",
+                "What failed: " + rootCause,
+                "",
+                "Current config (from " + configPath + "):",
+                "    host      = " + host,
+                "    db_port   = " + port,
+                "    user_name = " + user,
+                "    db_name   = " + db,
+                "    password  = " + (defaultPass ? "<PLACEHOLDER — NOT CHANGED>" : "<set>"),
+                "",
+                "=== Quick-fix checklist ===",
+                "  1. Is the database reachable from this host?",
+                "       telnet " + host + " " + port + "          (should connect)",
+                "       mysql -h " + host + " -P " + port + " -u " + user + " -p",
+                "",
+                "  2. Did you change the password in " + configPath + " ?",
+                (defaultPass
+                        ? "       >> NO — you're using the default 'pleaseChangeThisPassword'. <<"
+                        : "       OK — password is set."),
+                "",
+                "  3. Running on localhost for dev? Use the bundled Docker compose:",
+                "       docker compose up -d            # project root",
+                "       (starts MariaDB + Adminer on :3306 / :8080)",
+                "",
+                "  4. Firewall / bind-address?  MySQL config 'bind-address = 0.0.0.0'",
+                "     and the user must have remote-login grants:",
+                "       GRANT ALL ON " + db + ".* TO '" + user + "'@'%' IDENTIFIED BY '<your-pw>';",
+                "       FLUSH PRIVILEGES;",
+                "",
+                "  5. Completely disable PlayerSync for this session — remove the jar",
+                "     or start with -Dplayersync.disabled=true (not enforced by the mod",
+                "     itself, but skips noisy errors if you don't intend to use it).",
+                "",
+                "Full exception trace follows for support / bug reports:",
+                "######################################################################",
+                "",
+        };
+        for (String line : banner) {
+            LOGGER.error(line);
+        }
+        LOGGER.error("PlayerSync initialisation failed — root cause:", failure);
+        LOGGER.error("######################################################################");
+    }
+
+    private static String safe(net.neoforged.neoforge.common.ModConfigSpec.ConfigValue<?> v) {
+        try { Object o = v.get(); return o == null ? "<null>" : o.toString(); } catch (Throwable t) { return "<unreadable>"; }
+    }
+    private static int safeInt(net.neoforged.neoforge.common.ModConfigSpec.IntValue v, int def) {
+        try { return v.get(); } catch (Throwable t) { return def; }
+    }
+    private static String rootCauseSummary(Throwable t) {
+        Throwable cur = t;
+        while (cur.getCause() != null && cur.getCause() != cur) cur = cur.getCause();
+        String cls = cur.getClass().getSimpleName();
+        String msg = cur.getMessage() == null ? "(no message)" : cur.getMessage().replaceAll("\\s+", " ").trim();
+        if (msg.length() > 180) msg = msg.substring(0, 177) + "...";
+        return cls + ": " + msg;
     }
 
     @SubscribeEvent
