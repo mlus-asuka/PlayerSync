@@ -137,6 +137,22 @@ public class PlayerSync {
             );
         }
 
+        // PHASE 15: 2-phase commit protocol column. Set when a peer starts its async
+        // logout save; cleared when the save atomically commits. Lets joining servers
+        // distinguish 'peer saving' from 'ghost session' from 'active dup' deterministically.
+        try (JDBCsetUp.QueryResult check = JDBCsetUp.executePreparedQuery(
+                "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME='logout_started_at'",
+                dbName, Tables.playerData())) {
+            ResultSet rs = check.resultSet();
+            if (rs.next() && rs.getInt("c") == 0) {
+                JDBCsetUp.executeUpdate(
+                        "ALTER TABLE `" + dbName + "`.`" + Tables.playerData()
+                                + "` ADD COLUMN logout_started_at BIGINT NULL"
+                );
+                LOGGER.info("[migration] added player_data.logout_started_at column (2-phase commit)");
+            }
+        }
+
         // Create server_info table
         JDBCsetUp.executeUpdate(
                 "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`" + Tables.serverInfo() + "` (" +

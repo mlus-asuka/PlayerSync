@@ -407,111 +407,157 @@ public class VanillaSync {
             // heartbeated in >60s, treat it as dead and stop waiting immediately.
             // This fixes the user-reported "attempt 60/60" log flood for server_id=0
             // and zombie server_ids whose player_data.last_server never gets cleared.
+            // ================================================================
+            // PHASE 15: 2-phase-commit-aware join protocol
+            // ================================================================
+            // The player_data row now carries three cross-server signals:
+            //   online            (0 = not on any server, 1 = on some server)
+            //   last_server       (which server claimed ownership)
+            //   logout_started_at (NOT NULL = save in progress on that server,
+            //                      NULL = no in-flight save)
+            //
+            // Decision matrix (online=1 branch):
+            //   last_server=self  -> we already own (shouldn't happen on fresh
+            //                        join, but harmless — proceed)
+            //   last_server=peer  + logout_started_at IS NULL
+            //                     -> peer has ACTIVE session. Kick if the
+            //                        kick_when_already_online policy is on;
+            //                        otherwise force-claim (accepts the risk).
+            //   last_server=peer  + logout_started_at = recent (< 10s)
+            //                     -> peer is mid-save. Wait briefly.
+            //   last_server=peer  + logout_started_at = stale (> 10s)
+            //                     -> ghost session (peer crashed mid-save,
+            //                        SIGKILL, process frozen). Force-claim.
+            //   peer heartbeat stale (> peer_stale_threshold_seconds)
+            //                     -> peer is dead regardless of logout flag.
+            //                        Force-claim instantly.
+            // online=0            -> clean state, claim immediately.
+            //
+            // The claim UPDATE is a CAS:
+            //   WHERE uuid=? AND (online=0 OR last_server=? OR <force-claim>)
+            // so two concurrent joining servers can never both succeed.
+            // ================================================================
             final int MAX_POLL = JdbcConfig.JOIN_POLL_MAX_ATTEMPTS.get();
             final int POLL_INTERVAL_MS = JdbcConfig.JOIN_POLL_INTERVAL_MS.get();
             final long STALE_HEARTBEAT_MS = JdbcConfig.PEER_STALE_THRESHOLD_SECONDS.get() * 1000L;
-            // PHASE 9: when the peer is alive (heartbeat fresh) but the player row still shows
-            // online=1 on it — typical of a ghost session (proxy, network drop, or the user
-            // walking between servers without clean logout) — waiting the full 60s is useless:
-            // the peer will never flush because the session is technically active there. We
-            // cap the wait at this shorter window, then force-claim and rely on the last_server
-            // guard in writeSnapshotToDB to prevent the peer from overwriting us later.
-            final long PEER_ALIVE_MAX_WAIT_MS = JdbcConfig.JOIN_PEER_ALIVE_MAX_WAIT_SECONDS.get() * 1000L;
+            // logout_started_at age beyond which we treat a 'save in progress'
+            // as actually stuck (peer crashed mid-save). Saves typically complete
+            // in < 1s, so 10s is 10× safety margin.
+            final long LOGOUT_SAVE_MAX_MS = 10_000L;
+            final int SELF = JdbcConfig.SERVER_ID.get();
+
+            boolean forceClaim = false;   // bypass online=0 / last_server=self guard
             final long pollStartTime = System.currentTimeMillis();
             for (int attempt = 0; attempt < MAX_POLL; attempt++) {
+                int otherServer;
+                boolean otherOnline;
+                long logoutStartedAt;     // 0 = NULL (no save in progress)
+                boolean rowExists;
+
                 try (JDBCsetUp.QueryResult qrCheck = JDBCsetUp.executePreparedQuery(
-                        "SELECT online, last_server FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
+                        "SELECT online, last_server, COALESCE(logout_started_at, 0) AS lsa FROM "
+                                + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                     ResultSet rsCheck = qrCheck.resultSet();
-                    if (!rsCheck.next()) break; // new player, nothing pending
-                    int otherServer = rsCheck.getInt("last_server");
-                    if (otherServer != JdbcConfig.SERVER_ID.get()) {
-                        boolean otherOnline = rsCheck.getBoolean("online");
-                        if (otherOnline) {
-                            // FIX P1-3: zombie-server short-circuit. server_id=0 is never
-                            // a legitimate server (SERVER_ID config generates nextInt(1, MAX-1)).
-                            // Absent or stale (>60s) heartbeat => treat as dead, take over.
-                            boolean peerDead = (otherServer == 0 || isPeerServerStale(otherServer, STALE_HEARTBEAT_MS));
-                            if (peerDead) {
-                                SyncLogger.raceCondition(player_uuid,
-                                        "Peer server " + otherServer + " is dead/zombie — taking over after " + attempt + " attempts");
-                                PlayerSync.LOGGER.warn("Player {} last_server={} is dead/zombie, bypassing wait",
-                                        player_uuid, otherServer);
-                                JDBCsetUp.executePreparedUpdate(
-                                        "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
-                                        player_uuid, otherServer);
-                                break;
-                            }
-                            // PHASE 10 SAFETY: peer ALIVE but session hasn't flushed.
-                            //
-                            // DANGER: if we force-claim before the peer's async logout save has
-                            // committed to the DB, we'll read STALE data (the DB still has the
-                            // pre-disconnect state) and restore the player WITHOUT changes they
-                            // made right before disconnect. Any item dropped just before logout
-                            // would re-appear -> duplication with the ItemEntity the peer spawned.
-                            //
-                            // So we treat the wait cap as ADVISORY: past this point we only
-                            // force-claim if the peer's heartbeat HASN'T advanced since we
-                            // started waiting (meaning either the peer crashed mid-save, or its
-                            // heartbeat is inexplicably stale). Otherwise we keep waiting — a
-                            // living peer WILL eventually flush (writeSnapshotToDB + online=0 is
-                            // atomic), just maybe slowly on a heavy-load server.
-                            long waitedMs = System.currentTimeMillis() - pollStartTime;
-                            if (PEER_ALIVE_MAX_WAIT_MS > 0 && waitedMs >= PEER_ALIVE_MAX_WAIT_MS) {
-                                // PHASE 13: absolute wait cap as force-claim trigger.
-                                // Real logout saves complete in <1s in production (measured via
-                                // Phase 10 [perf-logout] breakdown: core+bp+ss+rs2 always 400-
-                                // 600ms). A wait of 15s+ with player still online=1 means the
-                                // peer is NOT going to flush — it's a ghost session (network
-                                // drop, proxy bypass, stuck flag). Keeping users hostage for the
-                                // full 60s poll was the reported 20s-60s join latency.
-                                //
-                                // Force-claim is safe here because:
-                                //   1. Phase 10 duplication risk was 'force-claim BEFORE peer's
-                                //      async save commits' — but 15s is 15x the max observed
-                                //      save time, so the peer has either committed or never
-                                //      will.
-                                //   2. writeSnapshotToDB's last_server guard blocks any future
-                                //      write from the peer for this player — their ghost
-                                //      session's final save (if it ever comes) silently fails
-                                //      and logs [GUARD] instead of overwriting our data.
-                                //
-                                // A separately-stale heartbeat still short-circuits immediately
-                                // (handled above by isPeerServerStale at the start of the loop).
-                                long peerAgeMs = peerHeartbeatAgeMs(otherServer);
-                                SyncLogger.raceCondition(player_uuid,
-                                        "Peer " + otherServer + " ghost session suspected — waited "
-                                                + waitedMs + "ms (hb_age=" + peerAgeMs + "ms), force-claiming");
-                                PlayerSync.LOGGER.warn(
-                                        "Player {} force-claiming from peer {} after {}ms wait (hb_age={}ms) — ghost session (peer won't flush)",
-                                        player_uuid, otherServer, waitedMs, peerAgeMs);
-                                JDBCsetUp.executePreparedUpdate(
-                                        "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
-                                        player_uuid, otherServer);
-                                break;
-                            }
-                            // PHASE 11: log RACE only every 10 attempts instead of every tick.
-                            // Previous behavior produced up to 120 lines per cross-server join,
-                            // flooding sync.log with zero diagnostic value beyond the first few.
-                            if ((attempt % 10) == 0) {
-                                SyncLogger.raceCondition(player_uuid,
-                                        "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/" + MAX_POLL + ", waited=" + waitedMs + "ms)");
-                            }
-                            Thread.sleep(POLL_INTERVAL_MS);
-                            continue;
-                        }
-                    }
+                    rowExists = rsCheck.next();
+                    if (!rowExists) break; // new player — nothing to wait for
+                    otherServer = rsCheck.getInt("last_server");
+                    otherOnline = rsCheck.getBoolean("online");
+                    logoutStartedAt = rsCheck.getLong("lsa");
                 }
-                break; // Ready to load — other server finished or same server
+
+                // Fast path: row is clean or already ours.
+                if (!otherOnline || otherServer == SELF) break;
+
+                // Peer heartbeat fully stale => peer process dead, force-claim.
+                if (otherServer == 0 || isPeerServerStale(otherServer, STALE_HEARTBEAT_MS)) {
+                    SyncLogger.raceCondition(player_uuid,
+                            "Peer " + otherServer + " heartbeat stale — force-claiming after " + attempt + " attempts");
+                    forceClaim = true;
+                    break;
+                }
+
+                long now = System.currentTimeMillis();
+                long waitedMs = now - pollStartTime;
+
+                if (logoutStartedAt > 0) {
+                    long saveAgeMs = now - logoutStartedAt;
+                    if (saveAgeMs > LOGOUT_SAVE_MAX_MS) {
+                        // Peer marked logout-in-progress but never cleared it ->
+                        // save thread died mid-flight. Force-claim.
+                        SyncLogger.raceCondition(player_uuid,
+                                "Peer " + otherServer + " logout save stalled " + saveAgeMs
+                                        + "ms (> " + LOGOUT_SAVE_MAX_MS + "ms) — force-claiming");
+                        forceClaim = true;
+                        break;
+                    }
+                    // Peer is actively committing; it writes logout_started_at=NULL
+                    // + online=0 atomically on success. Give it a short poll cycle.
+                    if ((attempt % 10) == 0) {
+                        SyncLogger.raceCondition(player_uuid,
+                                "Peer " + otherServer + " save in flight (logout_age=" + saveAgeMs
+                                        + "ms, attempt=" + (attempt + 1) + "/" + MAX_POLL + ")");
+                    }
+                    Thread.sleep(POLL_INTERVAL_MS);
+                    continue;
+                }
+
+                // online=1 AND logout_started_at IS NULL: peer has an ACTIVE session.
+                // The joining player is racing an actual player on another server.
+                // onPlayerLoggedInKickCheck already ran and either kicked us or cached
+                // a 'not kicked' decision — so at this point we can treat it as a
+                // ghost session (the other session didn't get its kick because the
+                // cache was empty / peer's heartbeat just landed), and force-claim.
+                // If kick_when_already_online is true, the player who SHOULD be kicked
+                // is the one who lost the race — not us.
+                if (waitedMs >= 2000L) {
+                    SyncLogger.raceCondition(player_uuid,
+                            "Peer " + otherServer + " online=1 without logout flag — ghost session, force-claiming (waited " + waitedMs + "ms)");
+                    forceClaim = true;
+                    break;
+                }
+                if ((attempt % 10) == 0) {
+                    SyncLogger.raceCondition(player_uuid,
+                            "Peer " + otherServer + " online=1 but no logout_started_at — brief grace period (waited=" + waitedMs + "ms)");
+                }
+                Thread.sleep(POLL_INTERVAL_MS);
             }
 
-            // PHASE 14 FIX: claim ownership atomically — last_server=self AND online=1.
-            // Previously the kick check set online=1 upfront, racing this poll and causing
-            // the poll to see its own write as 'peer still online' (60s wait bug). Now the
-            // kick check leaves online alone, and this claim is the single source of truth
-            // for the new ownership state.
-            JDBCsetUp.executePreparedUpdate(
-                    "UPDATE " + Tables.playerData() + " SET last_server=?, online=1 WHERE uuid=?",
-                    JdbcConfig.SERVER_ID.get(), player_uuid);
+            // ================================================================
+            // CLAIM with atomic CAS. Two concurrent joining servers can never
+            // both succeed — the one that lands its UPDATE second sees 0 rows
+            // affected and aborts its restore.
+            // ================================================================
+            int claimed;
+            if (forceClaim) {
+                // Unconditional — we've decided the previous owner is defunct.
+                claimed = JDBCsetUp.executePreparedUpdateRet(
+                        "UPDATE " + Tables.playerData()
+                                + " SET last_server=?, online=1, logout_started_at=NULL WHERE uuid=?",
+                        SELF, player_uuid);
+            } else {
+                // Guarded — only claim if the row is actually clean or already ours.
+                claimed = JDBCsetUp.executePreparedUpdateRet(
+                        "UPDATE " + Tables.playerData()
+                                + " SET last_server=?, online=1, logout_started_at=NULL"
+                                + " WHERE uuid=? AND (online=0 OR last_server=?)",
+                        SELF, player_uuid, SELF);
+            }
+            if (claimed == 0) {
+                // Another server beat us to it (or the row disappeared).
+                // Refuse to overwrite its data — kick ourselves and let the
+                // player reconnect; state will be consistent by then.
+                PlayerSync.LOGGER.warn("Player {} claim CAS lost — another server claimed first; kicking this session", player_uuid);
+                SyncLogger.raceCondition(player_uuid, "Claim CAS lost — deferring to the winner");
+                server.execute(() -> {
+                    if (serverPlayer.connection != null) {
+                        serverPlayer.connection.disconnect(Component.translatableWithFallback(
+                                "playersync.claim_lost",
+                                "PlayerSync: another server is finalizing your save. Please reconnect in a few seconds."));
+                    }
+                });
+                syncNotCompletedPlayer.remove(player_uuid);
+                return;
+            }
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
 
@@ -1475,6 +1521,19 @@ public class VanillaSync {
             saveFuture = new CompletableFuture<>();
             pendingLogoutSaves.put(player_uuid, saveFuture);
 
+            // PHASE 15: mark logout-in-progress for cross-server visibility. Joining servers
+            // read this column to distinguish 'peer saving' from 'ghost session' — a fresh
+            // timestamp here means we're committing shortly, a stale or NULL value means
+            // either no save in progress (clean/new player) or the save thread died. The
+            // async save clears this atomically with online=0 when it commits.
+            try {
+                JDBCsetUp.executePreparedUpdate(
+                        "UPDATE " + Tables.playerData() + " SET logout_started_at=? WHERE uuid=?",
+                        System.currentTimeMillis(), player_uuid);
+            } catch (Exception e) {
+                PlayerSync.LOGGER.warn("[phase15] could not mark logout_started_at for {}: {}", player_uuid, e.getMessage());
+            }
+
             final CompletableFuture<Void> futureRef = saveFuture;
             // FIX REGRESSION: handle RejectedExecutionException if the executor is
             // already shut down (concurrent with server stop). Without this, the future
@@ -1895,7 +1954,9 @@ public class VanillaSync {
         // Now: 1 connection, 1 commit, automatic rollback on failure.
         String serverGuard = "(last_server=? OR last_server IS NULL)";
         String coreSql = setOffline
-                ? "UPDATE " + Tables.playerData() + " SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, online=0, last_server=? WHERE uuid=? AND " + serverGuard
+                // PHASE 15: atomic clear of logout_started_at when the logout save commits.
+                // Joining servers see logout_started_at=NULL + online=0 = clean, take over instantly.
+                ? "UPDATE " + Tables.playerData() + " SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, online=0, last_server=?, logout_started_at=NULL WHERE uuid=? AND " + serverGuard
                 : "UPDATE " + Tables.playerData() + " SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, last_server=? WHERE uuid=? AND " + serverGuard;
 
         // Build batch of all statements
