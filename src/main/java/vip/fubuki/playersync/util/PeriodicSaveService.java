@@ -65,6 +65,9 @@ public final class PeriodicSaveService {
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server == null || !server.isRunning()) return;
             // Hop to main thread — snapshots must happen on server thread.
+            // PHASE 7 PERF: skip the whole tick if no one is online — no need to
+            // hop to main thread or log anything for an empty server.
+            if (server.getPlayerList().getPlayers().isEmpty()) return;
             server.execute(() -> {
                 try {
                     int online = 0;

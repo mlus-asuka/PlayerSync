@@ -577,11 +577,51 @@ public class ModsSupport {
      * Can be called from a background thread (no entity access — data already captured).
      */
     public static void saveBackpackSnapshots(Map<UUID, CompoundTag> snapshots) {
+        // PHASE 7 PERF: batch every REPLACE INTO into ONE transaction instead of
+        // N separate round-trips. With 3 backpacks + 2 shulkers + 4 disks a single
+        // logout save used to do 9 sequential commits — now 1.
+        if (snapshots == null || snapshots.isEmpty()) return;
+        List<Object[]> batch = new ArrayList<>(snapshots.size());
+        List<UUID> emptySkips = new ArrayList<>();
         for (Map.Entry<UUID, CompoundTag> entry : snapshots.entrySet()) {
+            UUID uuid = entry.getKey();
+            CompoundTag nbt = entry.getValue();
+            if (nbt == null || nbt.isEmpty()) {
+                // Skip empty NBT if DB already has real data (avoids wipe).
+                try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                        "SELECT LENGTH(backpack_nbt) AS len FROM " + Tables.backpackData() + " WHERE uuid=?",
+                        uuid.toString())) {
+                    java.sql.ResultSet rs = qr.resultSet();
+                    if (rs.next() && rs.getInt("len") > 50) {
+                        emptySkips.add(uuid);
+                        continue;
+                    }
+                } catch (Exception ignored) {}
+            }
             try {
-                saveStorageContents(entry.getKey(), entry.getValue());
+                String serialized = VanillaSync.serializeTagToBinaryBase64(nbt);
+                batch.add(new Object[]{
+                        "REPLACE INTO " + Tables.backpackData() + " (uuid, backpack_nbt) VALUES (?, ?)",
+                        uuid.toString(), serialized});
             } catch (Exception e) {
-                PlayerSync.LOGGER.error("Error saving backpack data for UUID {}", entry.getKey(), e);
+                PlayerSync.LOGGER.error("Error preparing backpack save for UUID {}", uuid, e);
+            }
+        }
+        if (!emptySkips.isEmpty()) {
+            PlayerSync.LOGGER.debug("[save-backpacks] skipped {} empty NBT entries (DB has real data)", emptySkips.size());
+        }
+        if (batch.isEmpty()) return;
+        try {
+            JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("[save-backpacks] batch transaction failed ({} entries)", batch.size(), e);
+            // Fall back to per-entry writes so at least some survive
+            for (Object[] stmt : batch) {
+                try {
+                    JDBCsetUp.executePreparedUpdate((String) stmt[0], stmt[1], stmt[2]);
+                } catch (Exception e2) {
+                    PlayerSync.LOGGER.error("[save-backpacks] fallback write failed for {}", stmt[1], e2);
+                }
             }
         }
     }
@@ -822,14 +862,9 @@ public class ModsSupport {
 
     /** Background-thread writer for the frozen snapshot produced by {@link #snapshotSSData(List)}. */
     public static void saveSSSnapshots(Map<UUID, CompoundTag> snapshots) {
-        if (snapshots == null || snapshots.isEmpty()) return;
-        for (Map.Entry<UUID, CompoundTag> e : snapshots.entrySet()) {
-            try {
-                saveStorageContents(e.getKey(), e.getValue());
-            } catch (Exception ex) {
-                PlayerSync.LOGGER.error("Error saving SS snapshot for UUID {}", e.getKey(), ex);
-            }
-        }
+        // PHASE 7 PERF: delegate to the shared batched writer. SS and backpack
+        // share the backpack_data table so the same batching logic applies.
+        saveBackpackSnapshots(snapshots);
     }
 
     /**

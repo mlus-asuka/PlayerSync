@@ -24,8 +24,12 @@ public final class HeartbeatService {
 
     private HeartbeatService() {}
 
-    /** Heartbeat period: 10s. Short enough that a 60s staleness threshold catches real outages. */
-    private static final long PERIOD_MS = 10_000L;
+    /**
+     * Heartbeat period: 30s. Paired with the 60s staleness threshold in
+     * {@code VanillaSync.isPeerServerStale}. Three orders of magnitude lower DB
+     * load than the previous 10s without sacrificing detection window.
+     */
+    private static final long PERIOD_MS = 30_000L;
 
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
     private static ScheduledExecutorService scheduler;
