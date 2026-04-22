@@ -645,6 +645,87 @@ public class ModsSupport {
         }
     }
 
+    /**
+     * PHASE 12 PERF: batch-fetch storage contents (backpack / SS / RS2 share the
+     * {@code backpack_data} table) for a list of UUIDs in ONE query via WHERE
+     * uuid IN (...). Called from the restore path to avoid N sequential SELECTs
+     * on the main thread when a player has multiple backpacks/shulkers/disks.
+     *
+     * @return map {uuid → deserialized CompoundTag}; missing UUIDs absent
+     */
+    public static java.util.Map<UUID, CompoundTag> prefetchStorageContents(java.util.Collection<UUID> uuids) {
+        java.util.Map<UUID, CompoundTag> out = new java.util.HashMap<>();
+        if (uuids == null || uuids.isEmpty()) return out;
+        java.util.List<UUID> unique = new java.util.ArrayList<>(new java.util.LinkedHashSet<>(uuids));
+        StringBuilder placeholders = new StringBuilder("?");
+        for (int i = 1; i < unique.size(); i++) placeholders.append(",?");
+        String sql = "SELECT uuid, backpack_nbt FROM " + Tables.backpackData() + " WHERE uuid IN (" + placeholders + ")";
+        Object[] params = new Object[unique.size()];
+        for (int i = 0; i < unique.size(); i++) params[i] = unique.get(i).toString();
+        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(sql, params)) {
+            ResultSet rs = qr.resultSet();
+            while (rs.next()) {
+                String uuidStr = rs.getString("uuid");
+                String serialized = rs.getString("backpack_nbt");
+                if (serialized == null) continue;
+                try {
+                    CompoundTag nbt;
+                    if (serialized.startsWith("BNBT:")) {
+                        nbt = VanillaSync.deserializeBinaryBase64Tag(serialized);
+                    } else {
+                        String nbtString = VanillaSync.deserializeString(serialized);
+                        try {
+                            nbt = TagParser.parseTag(nbtString);
+                        } catch (CommandSyntaxException ex) {
+                            nbt = net.minecraft.nbt.NbtUtils.snbtToStructure(nbtString);
+                        }
+                    }
+                    out.put(UUID.fromString(uuidStr), nbt);
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.warn("[prefetch-storage] failed to parse NBT for {}: {}", uuidStr, e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("[prefetch-storage] batch SELECT failed for {} uuid(s)", unique.size(), e);
+        }
+        return out;
+    }
+
+    /**
+     * Backpack UUID collection without triggering a DB snapshot. Used by the
+     * restore path to prefetch storage contents in bulk.
+     */
+    public static java.util.List<UUID> collectBackpackUuids(Player player, boolean includeEnderChest) {
+        java.util.List<UUID> uuids = new java.util.ArrayList<>();
+        if (!ModList.get().isLoaded("sophisticatedbackpacks")) return uuids;
+        try {
+            net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player,
+                    (ItemStack stack, String handler, String identifier, int slot) -> {
+                        addBackpackUuid(stack, uuids);
+                        return false;
+                    });
+            if (includeEnderChest) {
+                for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
+                    addBackpackUuid(player.getEnderChestInventory().getItem(i), uuids);
+                }
+            }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.warn("[collect-backpack-uuids] scan failed: {}", e.getMessage());
+        }
+        return uuids;
+    }
+
+    private static void addBackpackUuid(ItemStack stack, java.util.List<UUID> out) {
+        try {
+            if (stack.isEmpty()) return;
+            net.minecraft.resources.ResourceLocation loc = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (loc == null || !loc.getNamespace().equals("sophisticatedbackpacks")) return;
+            net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper wrapper =
+                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper.fromStack(stack);
+            wrapper.getContentsUuid().ifPresent(out::add);
+        } catch (Exception ignored) {}
+    }
+
     // ============================
     // Sophisticated Storage (barrels, shulkers, chests)
     // ============================
