@@ -1137,6 +1137,32 @@ public class VanillaSync {
     }
 
     /**
+     * PHASE 19: optional save on respawn — gated by {@code save_on_respawn}.
+     * Runs AFTER the respawn is complete so the snapshot captures the final
+     * post-death inventory (vanilla drops + whatever keeping-charms preserved).
+     * This OVERWRITES the pre-death snapshot taken in onPlayerDeath with the
+     * correct authoritative state, so the next restore sees the real inventory.
+     *
+     * <p>Essential when mods like Twilight Forest's Charm of Keeping or
+     * Corail Tombstone restore items on respawn — without this event,
+     * PlayerSync's DB row stays at the pre-death snapshot until the next
+     * auto-save, and a quick disconnect loses the keep-charm state.
+     */
+    @SubscribeEvent
+    public static void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
+        try {
+            if (!JdbcConfig.SAVE_ON_RESPAWN.get()) return;
+            if (event.isEndConquered()) return; // End-portal exit, not a death respawn
+            Player player = event.getEntity();
+            SyncLogger.playerEvent(player.getUUID().toString(), "RESPAWN",
+                    "Snapshot post-respawn inventory (keeping-charm / tombstone mods)");
+            snapshotAndQueueSave(player, "RESPAWN");
+        } catch (Exception e) {
+            PlayerSync.LOGGER.warn("[respawn-save] trigger failed: {}", e.getMessage());
+        }
+    }
+
+    /**
      * Phase 4: optional save on dimension change — gated by
      * {@code save_on_dimension_change} config. Protects against mid-teleport
      * crashes when the player is about to serialize into a new world file.
@@ -2372,9 +2398,20 @@ public class VanillaSync {
         // Always cache curios on death (API returns empty for dead players later)
         CuriosCache.tryStoreCuriosToCache(player);
 
+        // PHASE 19: honour save_on_death config. Keeping-charm / death-drop-replacement
+        // mods (Twilight Forest Charm of Keeping, Corail Tombstone items, etc.) run
+        // their own event handlers during LivingDeathEvent. When their priority is
+        // higher than ours (LOW), they've already moved items out of the drops list
+        // — our snapshot at this point captures the post-keep inventory, which is
+        // usually the desired behaviour.
+        // If admins diagnose a keeping-charm interaction, setting save_on_death=false
+        // disables this snapshot entirely; the normal onPlayerLogout save still fires
+        // on disconnect and captures the post-respawn state.
+        if (!JdbcConfig.SAVE_ON_DEATH.get()) return;
+
         // Immediately save ALL player data on death (snapshot + async).
-        // LivingDeathEvent fires BEFORE items are dropped, so the snapshot captures
-        // the full pre-death inventory including backpack contents.
+        // LivingDeathEvent fires BEFORE vanilla items are dropped, so the snapshot
+        // captures whatever keeping-charms have already reserved + the rest.
         // This protects against: server crash after death, network disconnect before
         // onPlayerLogout fires, or any scenario where the logout handler is skipped.
         // The normal logout save will overwrite this with the final post-death state.
