@@ -464,6 +464,13 @@ public class VanillaSync {
             final int SELF = JdbcConfig.SERVER_ID.get();
 
             boolean forceClaim = false;   // bypass online=0 / last_server=self guard
+            // PHASE 18.1 FIX: track whether the row exists at all. A brand-new player
+            // has no row yet — the CAS claim below must be skipped (it would return
+            // 0 rows affected, which the old code misinterpreted as 'another server
+            // claimed first' and wrongly kicked the player with the 'finalizing your
+            // save' message on their very first connection). For new players the row
+            // gets INSERTed later by store(player, true) in the new-player branch.
+            boolean isNewPlayer = false;
             final long pollStartTime = System.currentTimeMillis();
             for (int attempt = 0; attempt < MAX_POLL; attempt++) {
                 int otherServer;
@@ -476,7 +483,10 @@ public class VanillaSync {
                                 + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                     ResultSet rsCheck = qrCheck.resultSet();
                     rowExists = rsCheck.next();
-                    if (!rowExists) break; // new player — nothing to wait for
+                    if (!rowExists) {
+                        isNewPlayer = true;
+                        break; // new player — nothing to wait for, skip CAS
+                    }
                     otherServer = rsCheck.getInt("last_server");
                     otherOnline = rsCheck.getBoolean("online");
                     logoutStartedAt = rsCheck.getLong("lsa");
@@ -543,37 +553,45 @@ public class VanillaSync {
             // CLAIM with atomic CAS. Two concurrent joining servers can never
             // both succeed — the one that lands its UPDATE second sees 0 rows
             // affected and aborts its restore.
+            //
+            // PHASE 18.1: new players skip the CAS entirely. No row exists yet,
+            // so UPDATE affects 0 rows by definition — the old code was kicking
+            // FIRST-TIME joiners with "another server is finalizing your save".
+            // store() in the new-player branch will INSERT the row with the
+            // correct state in a moment.
             // ================================================================
-            int claimed;
-            if (forceClaim) {
-                // Unconditional — we've decided the previous owner is defunct.
-                claimed = JDBCsetUp.executePreparedUpdateRet(
-                        "UPDATE " + Tables.playerData()
-                                + " SET last_server=?, online=1, logout_started_at=NULL WHERE uuid=?",
-                        SELF, player_uuid);
-            } else {
-                // Guarded — only claim if the row is actually clean or already ours.
-                claimed = JDBCsetUp.executePreparedUpdateRet(
-                        "UPDATE " + Tables.playerData()
-                                + " SET last_server=?, online=1, logout_started_at=NULL"
-                                + " WHERE uuid=? AND (online=0 OR last_server=?)",
-                        SELF, player_uuid, SELF);
-            }
-            if (claimed == 0) {
-                // Another server beat us to it (or the row disappeared).
-                // Refuse to overwrite its data — kick ourselves and let the
-                // player reconnect; state will be consistent by then.
-                PlayerSync.LOGGER.warn("Player {} claim CAS lost — another server claimed first; kicking this session", player_uuid);
-                SyncLogger.raceCondition(player_uuid, "Claim CAS lost — deferring to the winner");
-                server.execute(() -> {
-                    if (serverPlayer.connection != null) {
-                        serverPlayer.connection.disconnect(Component.translatableWithFallback(
-                                "playersync.claim_lost",
-                                "PlayerSync: another server is finalizing your save. Please reconnect in a few seconds."));
-                    }
-                });
-                syncNotCompletedPlayer.remove(player_uuid);
-                return;
+            if (!isNewPlayer) {
+                int claimed;
+                if (forceClaim) {
+                    // Unconditional — we've decided the previous owner is defunct.
+                    claimed = JDBCsetUp.executePreparedUpdateRet(
+                            "UPDATE " + Tables.playerData()
+                                    + " SET last_server=?, online=1, logout_started_at=NULL WHERE uuid=?",
+                            SELF, player_uuid);
+                } else {
+                    // Guarded — only claim if the row is actually clean or already ours.
+                    claimed = JDBCsetUp.executePreparedUpdateRet(
+                            "UPDATE " + Tables.playerData()
+                                    + " SET last_server=?, online=1, logout_started_at=NULL"
+                                    + " WHERE uuid=? AND (online=0 OR last_server=?)",
+                            SELF, player_uuid, SELF);
+                }
+                if (claimed == 0) {
+                    // Row exists (we checked in the poll) but the guard blocked us —
+                    // meaning another server claimed between our poll read and our
+                    // UPDATE. Defer to that winner and ask the player to retry.
+                    PlayerSync.LOGGER.warn("Player {} claim CAS lost — another server claimed first; kicking this session", player_uuid);
+                    SyncLogger.raceCondition(player_uuid, "Claim CAS lost — deferring to the winner");
+                    server.execute(() -> {
+                        if (serverPlayer.connection != null) {
+                            serverPlayer.connection.disconnect(Component.translatableWithFallback(
+                                    "playersync.claim_lost",
+                                    "PlayerSync: another server is finalizing your save. Please reconnect in a few seconds."));
+                        }
+                    });
+                    syncNotCompletedPlayer.remove(player_uuid);
+                    return;
+                }
             }
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
