@@ -178,13 +178,12 @@ public class JdbcConfig {
         JOIN_PEER_ALIVE_MAX_WAIT_SECONDS = B.comment(
                 "When the previous server is ALIVE (heartbeat fresh) but the player row still",
                 "shows online=1 on it, how long to wait before force-claiming ownership on this",
-                "server. Prevents the 30-60s 'empty inventory' window when a player active on",
-                "peer A connects to peer B without cleanly logging out (proxy, network drop,",
-                "dup session). After this timeout, peer A will simply fail to save this player",
-                "(blocked by last_server guard) and their next disconnect won't overwrite B's",
-                "data. Default 5s. Set to 0 to force-claim immediately; set high to restore the",
-                "legacy behavior of waiting for the peer to flush.")
-                .defineInRange("join_peer_alive_max_wait_seconds", 5, 0, 600);
+                "server. Ghost sessions (network drop, proxy bypass, stuck flag) otherwise hold",
+                "the join hostage up to 60s. Real logout saves consistently complete in <1s in",
+                "production, so any wait > ~15s means the peer isn't going to flush — force-",
+                "claim is safe because peer's future saves get blocked by the last_server guard.",
+                "Default 15s. Set to 0 to force-claim immediately; set high to be more patient.")
+                .defineInRange("join_peer_alive_max_wait_seconds", 15, 0, 600);
         POOL_STATS_INTERVAL_MINUTES = B.comment(
                 "How often PoolStatsReporter logs executor + Hikari stats. 0 to disable.")
                 .defineInRange("pool_stats_interval_minutes", 5, 0, 1440);

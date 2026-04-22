@@ -1156,12 +1156,20 @@ public class ModsSupport {
 
             net.minecraft.nbt.CompoundTag fullNbt = sd.save(new net.minecraft.nbt.CompoundTag(), registryAccess);
 
+            // PHASE 13 PERF: collect all disk NBTs into a single Map and delegate to the
+            // batched writer. Previous behavior made N sequential REPLACE INTO calls
+            // (observed as rs2=500ms+ in [perf-logout] breakdowns). One batched transaction
+            // now dominates by ~10× for players with multiple disks.
+            Map<UUID, CompoundTag> toSave = new HashMap<>();
             for (UUID uuid : diskUuids) {
                 net.minecraft.nbt.CompoundTag entryNbt = findRS2EntryInNbt(fullNbt, uuid.toString());
                 if (entryNbt != null && !entryNbt.isEmpty()) {
-                    saveStorageContents(uuid, entryNbt);
-                    PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {} (async save)", uuid);
+                    toSave.put(uuid, entryNbt);
                 }
+            }
+            if (!toSave.isEmpty()) {
+                saveBackpackSnapshots(toSave); // shared batched writer (backpack_data table)
+                PlayerSync.LOGGER.info("Saved {} RS2 disk(s) in one batch", toSave.size());
             }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error saving RS2 disks by level", e);

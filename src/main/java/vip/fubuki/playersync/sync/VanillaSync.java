@@ -457,32 +457,37 @@ public class VanillaSync {
                             // atomic), just maybe slowly on a heavy-load server.
                             long waitedMs = System.currentTimeMillis() - pollStartTime;
                             if (PEER_ALIVE_MAX_WAIT_MS > 0 && waitedMs >= PEER_ALIVE_MAX_WAIT_MS) {
-                                // PHASE 11 FIX: compare peer heartbeat age against the stale
-                                // threshold (default 60s), NOT the 5s wait cap. A normal peer
-                                // with a 30s heartbeat interval naturally has an age of 0-30s
-                                // between ticks — using 5s as the "frozen" threshold caused
-                                // EVERY cross-server join to misclassify a healthy peer as
-                                // frozen and force-claim unnecessarily (observed in prod logs:
-                                // 'heartbeat frozen 5380ms').
+                                // PHASE 13: absolute wait cap as force-claim trigger.
+                                // Real logout saves complete in <1s in production (measured via
+                                // Phase 10 [perf-logout] breakdown: core+bp+ss+rs2 always 400-
+                                // 600ms). A wait of 15s+ with player still online=1 means the
+                                // peer is NOT going to flush — it's a ghost session (network
+                                // drop, proxy bypass, stuck flag). Keeping users hostage for the
+                                // full 60s poll was the reported 20s-60s join latency.
+                                //
+                                // Force-claim is safe here because:
+                                //   1. Phase 10 duplication risk was 'force-claim BEFORE peer's
+                                //      async save commits' — but 15s is 15x the max observed
+                                //      save time, so the peer has either committed or never
+                                //      will.
+                                //   2. writeSnapshotToDB's last_server guard blocks any future
+                                //      write from the peer for this player — their ghost
+                                //      session's final save (if it ever comes) silently fails
+                                //      and logs [GUARD] instead of overwriting our data.
+                                //
+                                // A separately-stale heartbeat still short-circuits immediately
+                                // (handled above by isPeerServerStale at the start of the loop).
                                 long peerAgeMs = peerHeartbeatAgeMs(otherServer);
-                                if (peerAgeMs > STALE_HEARTBEAT_MS) {
-                                    SyncLogger.raceCondition(player_uuid,
-                                            "Peer " + otherServer + " heartbeat stale " + peerAgeMs
-                                                    + "ms > " + STALE_HEARTBEAT_MS + "ms, waited " + waitedMs + "ms — force-claiming");
-                                    PlayerSync.LOGGER.warn(
-                                            "Player {} waited {}ms for peer {} whose heartbeat is {}ms old (threshold {}ms) — force-claiming",
-                                            player_uuid, waitedMs, otherServer, peerAgeMs, STALE_HEARTBEAT_MS);
-                                    JDBCsetUp.executePreparedUpdate(
-                                            "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
-                                            player_uuid, otherServer);
-                                    break;
-                                }
-                                // Peer is actively heartbeating but slow to flush — keep waiting.
-                                // Warn sparingly to avoid log flood.
-                                if (attempt % 20 == 0) {
-                                    SyncLogger.warnPlayer(player_uuid,
-                                            "peer " + otherServer + " healthy but slow to flush (waited=" + waitedMs + "ms, hb_age=" + peerAgeMs + "ms)");
-                                }
+                                SyncLogger.raceCondition(player_uuid,
+                                        "Peer " + otherServer + " ghost session suspected — waited "
+                                                + waitedMs + "ms (hb_age=" + peerAgeMs + "ms), force-claiming");
+                                PlayerSync.LOGGER.warn(
+                                        "Player {} force-claiming from peer {} after {}ms wait (hb_age={}ms) — ghost session (peer won't flush)",
+                                        player_uuid, otherServer, waitedMs, peerAgeMs);
+                                JDBCsetUp.executePreparedUpdate(
+                                        "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
+                                        player_uuid, otherServer);
+                                break;
                             }
                             // PHASE 11: log RACE only every 10 attempts instead of every tick.
                             // Previous behavior produced up to 120 lines per cross-server join,
