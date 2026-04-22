@@ -80,7 +80,7 @@ public class ModsSupport {
                     // Defensive copy: never hand upstream a tag that might be mutated elsewhere.
                     CompoundTag fresh = nbt.copy();
                     store.setBackpackContents(contentsUuid, fresh);
-                    PlayerSync.LOGGER.info("[restore-backpack] uuid={} nbt_keys={} cleared_via={}",
+                    PlayerSync.LOGGER.debug("[restore-backpack] uuid={} nbt_keys={} cleared_via={}",
                             contentsUuid, fresh.getAllKeys().size(), cleared ? "api" : "reflection");
                 });
             }
@@ -517,7 +517,7 @@ public class ModsSupport {
     // ============================
 
     public static void storeSophisticatedBackpacks(Player player) {
-        PlayerSync.LOGGER.info("Storing backpack data for player {}", player.getUUID());
+        PlayerSync.LOGGER.debug("Storing backpack data for player {}", player.getUUID());
         net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
             net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper backpackWrapper = net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper
                     .fromStack(backpackItem);
@@ -540,7 +540,7 @@ public class ModsSupport {
 
                 CompoundTag backpackNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
                 saveStorageContents(contentsUuid, backpackNbt);
-                PlayerSync.LOGGER.info("Saved backpack data for UUID {}", contentsUuid);
+                PlayerSync.LOGGER.debug("Saved backpack data for UUID {}", contentsUuid);
             } else {
                 PlayerSync.LOGGER.warn("Backpack item in slot {} has no contentsUuid", slot);
             }
@@ -777,7 +777,7 @@ public class ModsSupport {
      * The item's CustomData contains a "contentsUuid" field pointing to the storage data.
      */
     public static void storeSophisticatedStorageItems(Player player) {
-        PlayerSync.LOGGER.info("Scanning inventory for Sophisticated Storage items for player {}", player.getUUID());
+        PlayerSync.LOGGER.debug("Scanning inventory for Sophisticated Storage items for player {}", player.getUUID());
         scanAndStoreSophisticatedStorageInContainer(player.getInventory());
         // Also scan ender chest
         for (int i = 0; i < player.getEnderChestInventory().getContainerSize(); i++) {
@@ -813,7 +813,7 @@ public class ModsSupport {
                     .getOrCreateStorageContents(contentsUuid);
             if (storageNbt != null && !storageNbt.isEmpty()) {
                 saveStorageContents(contentsUuid, storageNbt);
-                PlayerSync.LOGGER.info("Saved Sophisticated Storage item data for UUID {}", contentsUuid);
+                PlayerSync.LOGGER.debug("Saved Sophisticated Storage item data for UUID {}", contentsUuid);
             }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error saving Sophisticated Storage data for item", e);
@@ -863,7 +863,7 @@ public class ModsSupport {
                     clearSSStorageContents(store, finalUuid);
                     CompoundTag fresh = nbt.copy();
                     store.setStorageContents(finalUuid, fresh);
-                    PlayerSync.LOGGER.info("[restore-ss] uuid={} nbt_keys={}", finalUuid, fresh.getAllKeys().size());
+                    PlayerSync.LOGGER.debug("[restore-ss] uuid={} nbt_keys={}", finalUuid, fresh.getAllKeys().size());
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error restoring Sophisticated Storage data for UUID {}", finalUuid, e);
                 }
@@ -1091,7 +1091,7 @@ public class ModsSupport {
                 net.minecraft.nbt.CompoundTag entryNbt = findRS2EntryInNbt(fullNbt, uuidStr);
                 if (entryNbt != null && !entryNbt.isEmpty()) {
                     saveStorageContents(uuid, entryNbt);
-                    PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {} via save() NBT", uuid);
+                    PlayerSync.LOGGER.debug("Saved RS2 disk data for UUID {} via save() NBT", uuid);
                     continue;
                 }
 
@@ -1128,7 +1128,7 @@ public class ModsSupport {
                         net.minecraft.nbt.Tag encodedTag = (net.minecraft.nbt.Tag) encodeResult.result().get();
                         if (encodedTag instanceof net.minecraft.nbt.CompoundTag encodedCompound) {
                             saveStorageContents(uuid, encodedCompound);
-                            PlayerSync.LOGGER.info("Saved RS2 disk data for UUID {} via codec reflection", uuid);
+                            PlayerSync.LOGGER.debug("Saved RS2 disk data for UUID {} via codec reflection", uuid);
                         }
                     } else {
                         PlayerSync.LOGGER.error("RS2 codec encode failed for UUID {}: {}", uuid, encodeResult.error());
@@ -1349,7 +1349,7 @@ public class ModsSupport {
                                         PlayerSync.LOGGER.error("RS2 reflection fallback also failed for UUID {}", entry.getKey(), reflectEx);
                                     }
                                 }
-                                PlayerSync.LOGGER.info("Restored RS2 disk data for UUID {}", entry.getKey());
+                                PlayerSync.LOGGER.debug("Restored RS2 disk data for UUID {}", entry.getKey());
                             }
                         } else {
                             PlayerSync.LOGGER.error("RS2 codec decode failed for UUID {}", uuid);

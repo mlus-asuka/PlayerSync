@@ -167,7 +167,7 @@ public class ModCompatSync {
                 }
             }
 
-            PlayerSync.LOGGER.info("Restored Accessories data for player {}", player.getUUID());
+            PlayerSync.LOGGER.debug("Restored Accessories data for player {}", player.getUUID());
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error restoring Accessories data for player {}", player.getUUID(), e);
         }
@@ -324,7 +324,7 @@ public class ModCompatSync {
 
             // Mark the inventory as changed so the mod syncs to the client
             cosInv.setChanged();
-            PlayerSync.LOGGER.info("Restored CosmeticArmor data for player {}", player.getUUID());
+            PlayerSync.LOGGER.debug("Restored CosmeticArmor data for player {}", player.getUUID());
 
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error restoring CosmeticArmor data for player {}", player.getUUID(), e);
@@ -441,7 +441,7 @@ public class ModCompatSync {
 
             DESERIALIZE_ATTACHMENTS.invoke(player, serverPlayer.getServer().registryAccess(), wrapper);
 
-            PlayerSync.LOGGER.info("Restored NeoForge attachments for player {} ({} keys)",
+            PlayerSync.LOGGER.debug("Restored NeoForge attachments for player {} ({} keys)",
                     player.getUUID(), attachments.getAllKeys().size());
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error restoring NeoForge attachments for player {}", player.getUUID(), e);

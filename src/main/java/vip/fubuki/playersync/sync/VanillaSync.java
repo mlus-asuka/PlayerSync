@@ -149,6 +149,23 @@ public class VanillaSync {
     }
 
     /**
+     * PHASE 17 PERF: advancements JSON cache keyed by absolute file path.
+     * Keeps the mtime along with the content — a mismatch on either forces a
+     * fresh disk read. The cache is process-wide (not per-player) because the
+     * path already includes the player UUID.
+     */
+    private static final ConcurrentHashMap<String, AdvancementsCacheEntry> advancementsFileCache = new ConcurrentHashMap<>();
+
+    private static final class AdvancementsCacheEntry {
+        final long mtime;
+        final String content;
+        AdvancementsCacheEntry(long mtime, String content) {
+            this.mtime = mtime;
+            this.content = content;
+        }
+    }
+
+    /**
      * PHASE 7 PERF: per-player hash of the last successfully-written snapshot.
      * Auto-save / periodic / dimension-change BG tasks skip the DB write when
      * the new snapshot hashes identical to the last-written one — on an idle
@@ -1854,20 +1871,30 @@ public class VanillaSync {
             }
         }
 
-        // Advancements (file read, fast)
-        // FIX: Default to null instead of "". When null, writeSnapshotToDB preserves
-        // the existing DB value via COALESCE. Previously, if the file read failed
-        // (save() threw, file missing, path wrong), "" was written to DB, silently
-        // wiping all advancements every 5 minutes (periodic save) or on logout.
+        // PHASE 17 PERF: advancements file read — main-thread I/O was ~10-50ms per
+        // snapshot on mechanical disk / slow network mount. Cache the content by
+        // (absolute path + last-modified timestamp); reuse the cached string if
+        // neither changed since the last snapshot. Minecraft's advancement save
+        // only writes the file when something actually changed, so mtime is a
+        // reliable freshness signal. PlayerAdvancements.save() is still called
+        // to flush pending changes to disk.
         String advancements = null;
         if (JdbcConfig.SYNC_ADVANCEMENTS.get() && player instanceof ServerPlayer sp) {
             try { sp.getAdvancements().save(); } catch (Exception ignored) {}
             Path path = sp.getServer().getServerDirectory().resolve(getSyncWorldForServer());
             File advFile = new File(path.toFile(), "/advancements/" + uuid + ".json");
             if (advFile.exists()) {
-                String content = new String(Files.readAllBytes(advFile.toPath()), StandardCharsets.UTF_8);
-                if (content != null && !content.isEmpty()) {
-                    advancements = content;
+                String absPath = advFile.getAbsolutePath();
+                long mtime = advFile.lastModified();
+                AdvancementsCacheEntry cached = advancementsFileCache.get(absPath);
+                if (cached != null && cached.mtime == mtime && cached.content != null) {
+                    advancements = cached.content;
+                } else {
+                    String content = new String(Files.readAllBytes(advFile.toPath()), StandardCharsets.UTF_8);
+                    if (content != null && !content.isEmpty()) {
+                        advancements = content;
+                        advancementsFileCache.put(absPath, new AdvancementsCacheEntry(mtime, content));
+                    }
                 }
             }
         }
