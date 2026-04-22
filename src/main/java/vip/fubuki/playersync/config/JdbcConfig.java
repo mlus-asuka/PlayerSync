@@ -176,14 +176,20 @@ public class JdbcConfig {
                 "Wait interval between last_server poll attempts (milliseconds).")
                 .defineInRange("join_poll_interval_ms", 500, 100, 5000);
         JOIN_PEER_ALIVE_MAX_WAIT_SECONDS = B.comment(
-                "When the previous server is ALIVE (heartbeat fresh) but the player row still",
-                "shows online=1 on it, how long to wait before force-claiming ownership on this",
-                "server. Ghost sessions (network drop, proxy bypass, stuck flag) otherwise hold",
-                "the join hostage up to 60s. Real logout saves consistently complete in <1s in",
-                "production, so any wait > ~15s means the peer isn't going to flush — force-",
-                "claim is safe because peer's future saves get blocked by the last_server guard.",
-                "Default 15s. Set to 0 to force-claim immediately; set high to be more patient.")
-                .defineInRange("join_peer_alive_max_wait_seconds", 15, 0, 600);
+                "How long to wait before force-claiming ownership when the previous server is",
+                "ALIVE (heartbeat fresh) but the player row still shows online=1. A force-claim",
+                "reads whatever is currently in the DB — if the peer's async save is still",
+                "in flight and commits AFTER we claim, any state change the peer recorded (item",
+                "pickup, drop, deposit) is lost on our side and may look like duplication against",
+                "an ItemEntity the peer had spawned. Real saves complete in <1s, but a slow DB",
+                "or heavy batch can push this to many seconds.",
+                "",
+                "Default 600s = wait the full poll — never force-claim on an alive peer. SAFE.",
+                "Lower to 30/15s if you accept the edge-case risk in exchange for faster handling",
+                "of ghost sessions (player dropped off A's network without clean logout).",
+                "Set to 0 to force-claim immediately (very aggressive, highest risk).",
+                "Stale-heartbeat peers are always force-claimed instantly regardless of this value.")
+                .defineInRange("join_peer_alive_max_wait_seconds", 600, 0, 3600);
         POOL_STATS_INTERVAL_MINUTES = B.comment(
                 "How often PoolStatsReporter logs executor + Hikari stats. 0 to disable.")
                 .defineInRange("pool_stats_interval_minutes", 5, 0, 1440);
