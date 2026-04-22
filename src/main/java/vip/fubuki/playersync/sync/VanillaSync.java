@@ -1102,6 +1102,8 @@ public class VanillaSync {
         vip.fubuki.playersync.util.HeartbeatService.stop();
         // Phase 4: stop periodic-save scheduler before pool shutdown.
         vip.fubuki.playersync.util.PeriodicSaveService.stop();
+        // Phase 5: stop pool-stats reporter.
+        vip.fubuki.playersync.util.PoolStatsReporter.stop();
 
         // Shut down the background executor — no new tasks after this point
         executorService.shutdown();
@@ -1246,6 +1248,7 @@ public class VanillaSync {
             // Closing the container menu ensures no further modifications can occur.
             if (player instanceof ServerPlayer sp && sp.containerMenu != sp.inventoryMenu) {
                 sp.closeContainer();
+                SyncLogger.containerForceClosed(player_uuid, "self container on logout");
             }
             // FIX CRITICAL ANTI-DUP: close every other player's container menu if it was
             // opened against this disconnecting player's inventory/backpack. If another
@@ -1276,7 +1279,11 @@ public class VanillaSync {
                         }
                     } catch (Exception ignored) {}
                     if (shouldClose) {
-                        try { other.closeContainer(); } catch (Exception ignored) {}
+                        try {
+                            other.closeContainer();
+                            SyncLogger.containerForceClosed(player_uuid,
+                                    "viewer " + other.getUUID() + " had a menu referencing disconnecting player's inv/enderchest");
+                        } catch (Exception ignored) {}
                     }
                 }
             }

@@ -222,6 +222,9 @@ public class PlayerSync {
         // Phase 4: periodic full-flush scheduler (default 10 min).
         vip.fubuki.playersync.util.PeriodicSaveService.start();
 
+        // Phase 5: pool / executor stats reporter (every 5 min into sync.log).
+        vip.fubuki.playersync.util.PoolStatsReporter.start();
+
         LOGGER.info("PlayerSync is ready!");
     }
 

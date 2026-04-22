@@ -78,6 +78,19 @@ public class JDBCsetUp {
         }
     }
 
+    /**
+     * Exposes the HikariCP MBean for monitoring. Returns {@code null} if the
+     * pool is not initialised or already closed. Used by PoolStatsReporter.
+     */
+    public static com.zaxxer.hikari.HikariPoolMXBean getPoolMXBean() {
+        try {
+            if (dataSource == null || dataSource.isClosed()) return null;
+            return dataSource.getHikariPoolMXBean();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------

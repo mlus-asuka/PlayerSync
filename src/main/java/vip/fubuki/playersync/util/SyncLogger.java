@@ -155,6 +155,51 @@ public class SyncLogger {
     }
 
     // -------------------------------------------------------------------------
+    // Phase 5: structured diagnostic events
+    // -------------------------------------------------------------------------
+
+    /** Force-close of a container on player logout (anti-duplication). */
+    public static void containerForceClosed(String playerUuid, String reason) {
+        log("CONTAINER_CLOSE", "[{}] {}", playerUuid, reason);
+    }
+
+    /** Mod-compat save skipped because capability/handler was unavailable. */
+    public static void modCompatSkip(String playerUuid, String modId, String reason) {
+        log("MOD_SKIP", "[{}] {} — {}", playerUuid, modId, reason);
+    }
+
+    /** Mod-compat save succeeded with metadata (e.g. slot count, NBT keys). */
+    public static void modCompatSaved(String playerUuid, String modId, String detail) {
+        log("MOD_SAVE", "[{}] {} — {}", playerUuid, modId, detail);
+    }
+
+    /** Mod-compat restore succeeded with metadata. */
+    public static void modCompatRestored(String playerUuid, String modId, String detail) {
+        log("MOD_RESTORE", "[{}] {} — {}", playerUuid, modId, detail);
+    }
+
+    /** RS2/backpack/SS storage-level save detail (keyed by storage UUID, not player). */
+    public static void storageSave(String storageUuid, String kind, String detail) {
+        log("STORAGE", "[{}] {} — {}", storageUuid, kind, detail);
+    }
+
+    /** Periodic pool / queue status snapshot (every N minutes). */
+    public static void poolStats(int active, int queueSize, int idle, int hikariActive, int hikariIdle) {
+        log("POOL", "executor active={} queue={} pool_idle={} | hikari active={} idle={}",
+                active, queueSize, idle, hikariActive, hikariIdle);
+    }
+
+    /** Generic warning with player context. */
+    public static void warnPlayer(String playerUuid, String detail) {
+        log("WARN", "[{}] {}", playerUuid, detail);
+    }
+
+    /** Detected NBT anomaly (suspicious shape / size). */
+    public static void nbtAnomaly(String playerUuid, String detail) {
+        log("NBT_ANOMALY", "[{}] {}", playerUuid, detail);
+    }
+
+    // -------------------------------------------------------------------------
     // Internal — async file writing
     // -------------------------------------------------------------------------
 

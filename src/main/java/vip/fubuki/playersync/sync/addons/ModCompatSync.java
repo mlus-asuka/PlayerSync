@@ -488,7 +488,12 @@ public class ModCompatSync {
             // FIX ANTI-LOSS (A2): cap==null means the capability isn't attached yet —
             // return null to SKIP write and preserve DB. Do NOT return "{}" here, as that
             // would wipe a legitimate accessories record.
-            if (cap == null) return null;
+            if (cap == null) {
+                vip.fubuki.playersync.util.SyncLogger.modCompatSkip(
+                        player.getUUID().toString(), "accessories",
+                        "capability unavailable — skipping write to preserve DB");
+                return null;
+            }
             Map<String, String> flatMap = new HashMap<>();
             for (Map.Entry<String, io.wispforest.accessories.api.AccessoriesContainer> entry : cap.getContainers().entrySet()) {
                 String slotType = entry.getKey();
