@@ -1067,6 +1067,9 @@ public class VanillaSync {
         }
         JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE id=?", JdbcConfig.SERVER_ID.get());
 
+        // Phase 3: stop heartbeat before pool shutdown so its tick doesn't race with pool close.
+        vip.fubuki.playersync.util.HeartbeatService.stop();
+
         // Shut down the background executor — no new tasks after this point
         executorService.shutdown();
         try {
@@ -1085,6 +1088,57 @@ public class VanillaSync {
         // saves have logged their completion. Previously SyncLogger.shutdown() fired in
         // PlayerSync.onServerStopping, dropping every save log entry on the floor.
         vip.fubuki.playersync.util.SyncLogger.shutdown();
+    }
+
+    /**
+     * Phase 3 emergency flush invoked from the JVM shutdown hook (kill -9, OOM, host
+     * reboot) when {@code onServerShutdown} never ran. Runs on the JVM shutdown thread,
+     * synchronously, WITHOUT the executor (which may be already draining or dead).
+     *
+     * <p>Best-effort: snapshots and writes every still-online player using direct
+     * DB calls. No lock acquisition — the server is dying, we just want data on disk.
+     * If the DB pool is already closed, we log and exit gracefully.
+     */
+    public static void emergencyFlushAll() {
+        try {
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server == null) {
+                PlayerSync.LOGGER.warn("[emergency-flush] no server instance — nothing to flush");
+                return;
+            }
+            int flushed = 0;
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                String puuid = player.getUUID().toString();
+                if (!player.getTags().contains("player_synced") || player.isDeadOrDying()) continue;
+                try {
+                    final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
+                    final Map<UUID, CompoundTag> backpackSnapshots = ModsSupport.snapshotBackpackData(player);
+                    final Map<UUID, CompoundTag> ssSnapshots = ModsSupport.snapshotSSData(ModsSupport.collectSSUuids(player));
+                    // Direct synchronous write (no executor, no lock).
+                    boolean persisted = writeSnapshotToDB(snapshot, true);
+                    if (persisted) {
+                        ModsSupport.saveBackpackSnapshots(backpackSnapshots);
+                        ModsSupport.saveSSSnapshots(ssSnapshots);
+                        if (ModList.get().isLoaded("refinedstorage")) {
+                            List<UUID> rs2 = ModsSupport.collectRS2DiskUuids(player);
+                            if (!rs2.isEmpty()) {
+                                ModsSupport.saveRS2DisksByLevel(rs2, player.serverLevel(), server.registryAccess());
+                            }
+                        }
+                        SyncLogger.saveCompleted(puuid, "EMERGENCY_FLUSH", 0);
+                        flushed++;
+                    } else {
+                        SyncLogger.saveSkipped(puuid, "EMERGENCY_FLUSH", "core guard blocked");
+                    }
+                } catch (Throwable t) {
+                    PlayerSync.LOGGER.error("[emergency-flush] failed for {}: {}", puuid, t.getMessage());
+                    SyncLogger.saveFailed(puuid, "EMERGENCY_FLUSH", t.getMessage());
+                }
+            }
+            PlayerSync.LOGGER.warn("[emergency-flush] flushed {} players via shutdown hook", flushed);
+        } catch (Throwable t) {
+            PlayerSync.LOGGER.error("[emergency-flush] top-level failure", t);
+        }
     }
 
     /**

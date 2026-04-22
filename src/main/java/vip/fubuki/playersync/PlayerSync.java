@@ -207,6 +207,18 @@ public class PlayerSync {
         } catch (Exception e) {
             LOGGER.error("An exception occurred while trying change wrong player-status\n" + e.getMessage());
         }
+
+        // Phase 3: anti-loss infrastructure.
+        //   1. Clear orphaned online=1 flags from previous unclean shutdown.
+        //   2. Report zombie peer servers so admins see them in logs.
+        //   3. Install JVM shutdown hook — covers kill -9 / OOM / host reboot.
+        //   4. Start periodic heartbeat so peers can detect us as alive.
+        vip.fubuki.playersync.util.CrashRecovery.clearOrphanedOnlineFlags();
+        vip.fubuki.playersync.util.CrashRecovery.reportZombiePeers(60_000L);
+        vip.fubuki.playersync.util.CrashRecovery.installShutdownHook(() ->
+                vip.fubuki.playersync.sync.VanillaSync.emergencyFlushAll());
+        vip.fubuki.playersync.util.HeartbeatService.start();
+
         LOGGER.info("PlayerSync is ready!");
     }
 
