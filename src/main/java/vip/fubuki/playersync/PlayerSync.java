@@ -219,6 +219,9 @@ public class PlayerSync {
                 vip.fubuki.playersync.sync.VanillaSync.emergencyFlushAll());
         vip.fubuki.playersync.util.HeartbeatService.start();
 
+        // Phase 4: periodic full-flush scheduler (default 10 min).
+        vip.fubuki.playersync.util.PeriodicSaveService.start();
+
         LOGGER.info("PlayerSync is ready!");
     }
 

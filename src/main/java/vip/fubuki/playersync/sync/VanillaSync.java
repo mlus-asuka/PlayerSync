@@ -910,17 +910,48 @@ public class VanillaSync {
      */
     @SubscribeEvent
     public static void onPlayerSaveToFile(PlayerEvent.SaveToFile event) {
-        // Always update server heartbeat — async, never blocks main thread
+        snapshotAndQueueSave(event.getEntity(), "SaveToFile");
+    }
+
+    /**
+     * Phase 4: optional save on dimension change — gated by
+     * {@code save_on_dimension_change} config. Protects against mid-teleport
+     * crashes when the player is about to serialize into a new world file.
+     */
+    @SubscribeEvent
+    public static void onPlayerChangeDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
+        try {
+            if (!JdbcConfig.SAVE_ON_DIMENSION_CHANGE.get()) return;
+            PlayerSync.LOGGER.debug("[dimension-change] queuing save for {} ({} -> {})",
+                    event.getEntity().getUUID(), event.getFrom().location(), event.getTo().location());
+            SyncLogger.playerEvent(event.getEntity().getUUID().toString(), "DIMENSION_CHANGE",
+                    event.getFrom().location() + " -> " + event.getTo().location());
+            snapshotAndQueueSave(event.getEntity(), "DIMENSION");
+        } catch (Exception e) {
+            PlayerSync.LOGGER.warn("[dimension-change] save trigger failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Phase 4: public entry point used by PeriodicSaveService and dimension-change
+     * handler. Snapshots on main thread, queues async DB write with the full P0
+     * guard stack (pendingLogoutSaves + online=0 + bgLock tryLock).
+     *
+     * @param player the player to snapshot — MUST be called on the server main thread
+     * @param label  a short tag used in log lines for diagnosis (e.g. "SaveToFile",
+     *               "PERIODIC", "DIMENSION")
+     */
+    public static void snapshotAndQueueSave(Player player, String label) {
+        // Heartbeat piggyback — cheap, keeps server_info fresh even if no SaveToFile ticks.
         executorService.submit(() -> {
             try {
                 JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET last_update=? WHERE id=?",
                         System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
             } catch (SQLException e) {
-                PlayerSync.LOGGER.error("Error updating server heartbeat on SaveToFile", e);
+                PlayerSync.LOGGER.error("Error updating server heartbeat on {}", label, e);
             }
         });
 
-        Player player = event.getEntity();
         String puuid = player.getUUID().toString();
 
         if (!player.getTags().contains("player_synced")) return;
@@ -1069,6 +1100,8 @@ public class VanillaSync {
 
         // Phase 3: stop heartbeat before pool shutdown so its tick doesn't race with pool close.
         vip.fubuki.playersync.util.HeartbeatService.stop();
+        // Phase 4: stop periodic-save scheduler before pool shutdown.
+        vip.fubuki.playersync.util.PeriodicSaveService.stop();
 
         // Shut down the background executor — no new tasks after this point
         executorService.shutdown();

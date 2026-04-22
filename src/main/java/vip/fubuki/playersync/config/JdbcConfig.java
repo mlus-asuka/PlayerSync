@@ -33,6 +33,24 @@ public class JdbcConfig {
      */
     public static ModConfigSpec.ConfigValue<String> TABLE_PREFIX;
 
+    /**
+     * Periodic full-flush interval in minutes. Triggers a complete save
+     * (player data + backpacks + SS + RS2 disks) for every online player at
+     * this cadence — independent of NeoForge's PlayerEvent.SaveToFile which
+     * only fires on vanilla world-save ticks. Set to 0 to disable.
+     * Default 10 minutes is a reasonable trade-off between data-loss window
+     * on crash and DB load. Minimum 1 minute to avoid accidental DB hammering.
+     */
+    public static ModConfigSpec.IntValue AUTO_SAVE_INTERVAL_MINUTES;
+
+    /**
+     * Whether to trigger a full snapshot save on PlayerChangeDimensionEvent.
+     * Prevents data loss if the player crashes mid-teleport between dimensions.
+     * Disabled by default — enable if your server has frequent cross-dimension
+     * travel (ex-Twilight Forest heavy modpacks).
+     */
+    public static ModConfigSpec.BooleanValue SAVE_ON_DIMENSION_CHANGE;
+
 
     static {
         ModConfigSpec.Builder COMMON_BUILDER = new ModConfigSpec.Builder();
@@ -67,6 +85,14 @@ public class JdbcConfig {
         ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE = COMMON_BUILDER
                 .comment("Override the description of placeholder items which are unavailable on the current server.")
                 .define("item_placeholder_description_override", "");
+        AUTO_SAVE_INTERVAL_MINUTES = COMMON_BUILDER.comment(
+                "Periodic full-flush interval (minutes). Triggers a complete save (player data +",
+                "backpacks + SS + RS2) for every online player. Set to 0 to disable. Default 10."
+            ).defineInRange("auto_save_interval_minutes", 10, 0, 1440);
+        SAVE_ON_DIMENSION_CHANGE = COMMON_BUILDER.comment(
+                "Trigger a full save when a player changes dimension. Protects against mid-teleport",
+                "crashes. Adds DB load proportional to travel frequency. Default false."
+            ).define("save_on_dimension_change", false);
 
         COMMON_BUILDER.pop();
         COMMON_CONFIG = COMMON_BUILDER.build();
