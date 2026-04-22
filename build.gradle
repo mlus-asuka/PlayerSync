@@ -137,17 +137,32 @@ dependencies {
     runtimeOnly "curse.maven:curios-309927:6529130"
     runtimeOnly "curse.maven:sophisticated-backpacks-422301:7169832"
     runtimeOnly "curse.maven:sophisticated-core-618298:7168230"
-    // embedd the JDBC driver in the mod using jarJar
+    // Embed the JDBC driver in the mod using jarJar.
+    // FIX COMPAT: declare a version RANGE so multi-mod setups (eg. arcadia-lib which
+    // requires [8.3.0, 9.0.0)) can resolve a single shared MySQL driver instance
+    // without jarJar complaining about incompatible constraints. The `prefer` keeps
+    // 9.3.0 as our baseline when PlayerSync is the only consumer.
     runtimeOnly "com.mysql:mysql-connector-j:${jdbc_version}"
-    jarJar "com.mysql:mysql-connector-j:${jdbc_version}"
+    jarJar("com.mysql:mysql-connector-j") {
+        version {
+            strictly "[8.3.0, 10.0.0)"
+            prefer "${jdbc_version}"
+        }
+    }
     additionalRuntimeClasspath "com.mysql:mysql-connector-j:${jdbc_version}"
 
     // HikariCP connection pool — eliminates isValid() ping on every query (no more pingInternal in Spark)
-    // Exclude slf4j-api: NeoForge already ships it
+    // Exclude slf4j-api: NeoForge already ships it.
+    // FIX COMPAT: declare a range matching arcadia-lib's [5.1.0, 6.0.0) so jarJar
+    // resolution succeeds with a single shared instance.
     implementation("com.zaxxer:HikariCP:${hikari_version}") {
         exclude group: "org.slf4j", module: "slf4j-api"
     }
-    jarJar("com.zaxxer:HikariCP:${hikari_version}") {
+    jarJar("com.zaxxer:HikariCP") {
+        version {
+            strictly "[5.1.0, 6.0.0)"
+            prefer "${hikari_version}"
+        }
         exclude group: "org.slf4j", module: "slf4j-api"
     }
     additionalRuntimeClasspath("com.zaxxer:HikariCP:${hikari_version}") {
