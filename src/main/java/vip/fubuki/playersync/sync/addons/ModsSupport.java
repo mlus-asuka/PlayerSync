@@ -1146,21 +1146,104 @@ public class ModsSupport {
      * Saves RS2 disk storage contents by UUID using a pre-captured ServerLevel reference.
      * Can be called from a background thread (SavedData read + DB write, no entity access).
      */
+    /**
+     * PHASE 16: cached RS2 codec. Resolution via reflection is expensive enough to be
+     * visible in Spark profiles when repeated per-save; we only need the codec instance
+     * once per JVM life. Volatile + double-checked idiom.
+     */
+    @SuppressWarnings("rawtypes")
+    private static volatile com.mojang.serialization.Codec RS2_MAP_CODEC_CACHE;
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static com.mojang.serialization.Codec getOrCreateRS2MapCodec(Object repo) {
+        com.mojang.serialization.Codec c = RS2_MAP_CODEC_CACHE;
+        if (c != null) return c;
+        synchronized (ModsSupport.class) {
+            c = RS2_MAP_CODEC_CACHE;
+            if (c != null) return c;
+            try {
+                java.lang.reflect.Method m = repo.getClass().getDeclaredMethod("createCodec", Runnable.class);
+                m.setAccessible(true);
+                c = (com.mojang.serialization.Codec) m.invoke(null, (Runnable) () -> {});
+                RS2_MAP_CODEC_CACHE = c;
+            } catch (Throwable t) {
+                PlayerSync.LOGGER.error("[rs2] cannot resolve map codec — save/restore will fallback", t);
+            }
+            return c;
+        }
+    }
+
+    /**
+     * PHASE 16: save ONLY the disks the player actually carries in their inventory,
+     * never the full RS2 SavedData.
+     *
+     * <p>Previous implementation called {@code sd.save(new CompoundTag, registry)}
+     * which serializes every disk registered on the server into a single NBT blob
+     * then searched it for the player's UUIDs. On a populated server (hundreds of
+     * disks in storage networks) this single call dominated logout latency
+     * (rs2=1064ms observed in production).
+     *
+     * <p>New implementation uses the RS2 {@code createCodec} (same one
+     * {@link #restoreRefinedStorageDisks} uses for decode) to ENCODE one disk at a
+     * time — only the UUIDs the player has in their inventory. Cost is O(player
+     * disk count) instead of O(world disk count).
+     *
+     * <p>If codec resolution fails (older RS2 version, refactor), falls back to
+     * the old full-save path so a player with a disk still gets their data synced.
+     */
     public static void saveRS2DisksByLevel(List<UUID> diskUuids, net.minecraft.server.level.ServerLevel level,
                                            net.minecraft.core.HolderLookup.Provider registryAccess) {
         if (diskUuids.isEmpty()) return;
         try {
             com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
                     com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(level);
-            if (!(repo instanceof net.minecraft.world.level.saveddata.SavedData sd)) return;
+            if (repo == null) return;
 
-            net.minecraft.nbt.CompoundTag fullNbt = sd.save(new net.minecraft.nbt.CompoundTag(), registryAccess);
-
-            // PHASE 13 PERF: collect all disk NBTs into a single Map and delegate to the
-            // batched writer. Previous behavior made N sequential REPLACE INTO calls
-            // (observed as rs2=500ms+ in [perf-logout] breakdowns). One batched transaction
-            // now dominates by ~10× for players with multiple disks.
             Map<UUID, CompoundTag> toSave = new HashMap<>();
+            @SuppressWarnings("rawtypes")
+            com.mojang.serialization.Codec mapCodec = getOrCreateRS2MapCodec(repo);
+
+            if (mapCodec != null) {
+                var ops = registryAccess.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+                for (UUID uuid : diskUuids) {
+                    try {
+                        Optional<com.refinedmods.refinedstorage.common.api.storage.SerializableStorage> diskOpt = repo.get(uuid);
+                        if (diskOpt.isEmpty()) continue; // disk exists in inventory but empty in repo
+                        // Build a single-entry map {uuid -> disk} and encode via the same map codec
+                        // RS2 uses for its full save. The output CompoundTag is
+                        //     {"uuid-string": {type, capacity, resources}}
+                        // We store ONLY the inner {type, capacity, resources}, matching what
+                        // restoreRefinedStorageDisks expects via restoreStorageContents.
+                        Map<UUID, com.refinedmods.refinedstorage.common.api.storage.SerializableStorage> singleMap =
+                                java.util.Collections.singletonMap(uuid, diskOpt.get());
+                        @SuppressWarnings("unchecked")
+                        com.mojang.serialization.DataResult<net.minecraft.nbt.Tag> enc =
+                                mapCodec.encodeStart(ops, singleMap);
+                        Optional<net.minecraft.nbt.Tag> tagOpt = enc.result();
+                        if (tagOpt.isEmpty()) {
+                            PlayerSync.LOGGER.warn("[rs2-save] codec encode returned empty for disk {}", uuid);
+                            continue;
+                        }
+                        if (!(tagOpt.get() instanceof CompoundTag wrapped)) continue;
+                        CompoundTag inner = wrapped.getCompound(uuid.toString());
+                        if (inner != null && !inner.isEmpty()) {
+                            toSave.put(uuid, inner);
+                        }
+                    } catch (Throwable t) {
+                        PlayerSync.LOGGER.warn("[rs2-save] encode failed for disk {} ({}) — skipping", uuid, t.getMessage());
+                    }
+                }
+                if (!toSave.isEmpty()) {
+                    saveBackpackSnapshots(toSave);
+                    PlayerSync.LOGGER.info("Saved {} RS2 disk(s) via direct codec (player-scoped)", toSave.size());
+                    return;
+                }
+            }
+
+            // Fallback: legacy sd.save() if codec path fails or produced nothing.
+            if (!(repo instanceof net.minecraft.world.level.saveddata.SavedData sd)) return;
+            PlayerSync.LOGGER.debug("[rs2-save] codec path empty, falling back to sd.save() for {} disk(s)", diskUuids.size());
+            net.minecraft.nbt.CompoundTag fullNbt = sd.save(new net.minecraft.nbt.CompoundTag(), registryAccess);
             for (UUID uuid : diskUuids) {
                 net.minecraft.nbt.CompoundTag entryNbt = findRS2EntryInNbt(fullNbt, uuid.toString());
                 if (entryNbt != null && !entryNbt.isEmpty()) {
@@ -1168,8 +1251,8 @@ public class ModsSupport {
                 }
             }
             if (!toSave.isEmpty()) {
-                saveBackpackSnapshots(toSave); // shared batched writer (backpack_data table)
-                PlayerSync.LOGGER.info("Saved {} RS2 disk(s) in one batch", toSave.size());
+                saveBackpackSnapshots(toSave);
+                PlayerSync.LOGGER.info("Saved {} RS2 disk(s) via legacy full-save fallback", toSave.size());
             }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error saving RS2 disks by level", e);
@@ -1210,16 +1293,12 @@ public class ModsSupport {
             com.refinedmods.refinedstorage.common.api.storage.StorageRepository repo =
                     com.refinedmods.refinedstorage.common.api.RefinedStorageApi.INSTANCE.getStorageRepository(sp.serverLevel());
 
-            // Get the map codec via reflection (same codec used for save)
+            // PHASE 16: use the shared codec cache (same one saveRS2DisksByLevel uses).
+            // Saves reflection cost on every player join.
             @SuppressWarnings("rawtypes")
-            com.mojang.serialization.Codec mapCodec;
-            try {
-                java.lang.reflect.Method getMapCodecMethod =
-                        repo.getClass().getDeclaredMethod("createCodec", Runnable.class);
-                getMapCodecMethod.setAccessible(true);
-                mapCodec = (com.mojang.serialization.Codec) getMapCodecMethod.invoke(null, (Runnable) () -> {});
-            } catch (Exception e) {
-                PlayerSync.LOGGER.error("Cannot get RS2 map codec, disk restore will fail", e);
+            com.mojang.serialization.Codec mapCodec = getOrCreateRS2MapCodec(repo);
+            if (mapCodec == null) {
+                PlayerSync.LOGGER.error("Cannot get RS2 map codec, disk restore will fail");
                 return;
             }
 
