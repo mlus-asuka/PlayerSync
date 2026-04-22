@@ -114,10 +114,49 @@ public class ModsSupport {
     }
 
     /**
-     * Generic method to restore storage contents from DB for a given UUID.
-     * Used for both Sophisticated Backpacks and Sophisticated Storage items.
+     * PHASE 12 PERF: per-thread prefetch cache. When a batch prefetch has been
+     * performed (typically at the start of doPlayerJoin's apply phase), each
+     * subsequent {@link #restoreStorageContents} call first consults this cache
+     * instead of hitting the DB. Eliminates N per-item round-trips for a player
+     * carrying multiple backpacks / shulkers / RS2 disks.
+     *
+     * <p>The ThreadLocal is scoped to the main thread for the duration of a
+     * single apply phase via {@link #setStoragePrefetchCache} /
+     * {@link #clearStoragePrefetchCache}. A miss in the cache falls back to a
+     * direct DB SELECT — no change in behavior for un-prefetched UUIDs.
+     */
+    private static final ThreadLocal<java.util.Map<UUID, CompoundTag>> PREFETCH_CACHE =
+            new ThreadLocal<>();
+
+    /** Installs a prefetched map for the current thread. Call {@link #clearStoragePrefetchCache} after. */
+    public static void setStoragePrefetchCache(java.util.Map<UUID, CompoundTag> cache) {
+        PREFETCH_CACHE.set(cache);
+    }
+
+    /** Clears the per-thread prefetch cache. MUST be called from finally to avoid leaks. */
+    public static void clearStoragePrefetchCache() {
+        PREFETCH_CACHE.remove();
+    }
+
+    /**
+     * Generic method to restore storage contents for a given UUID.
+     * Consults the ThreadLocal prefetch cache first; falls back to a single
+     * {@code SELECT backpack_nbt WHERE uuid = ?} on cache miss.
      */
     private static void restoreStorageContents(UUID contentsUuid, StorageRestoreCallback callback) {
+        // Fast path: prefetch cache hit — no DB round-trip.
+        java.util.Map<UUID, CompoundTag> cache = PREFETCH_CACHE.get();
+        if (cache != null) {
+            CompoundTag cached = cache.get(contentsUuid);
+            if (cached != null) {
+                try {
+                    callback.restore(cached);
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error applying cached storage for UUID {}", contentsUuid, e);
+                }
+                return;
+            }
+        }
         try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
                 "SELECT backpack_nbt FROM " + Tables.backpackData() + " WHERE uuid=?", contentsUuid.toString())) {
             ResultSet rs = qr.resultSet();
