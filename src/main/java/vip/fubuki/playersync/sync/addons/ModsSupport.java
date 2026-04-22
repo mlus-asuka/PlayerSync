@@ -62,12 +62,54 @@ public class ModsSupport {
                     // Removing first guarantees a clean replace.
                     net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage store =
                             net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get();
-                    try { store.removeBackpackContents(contentsUuid); } catch (Throwable ignored) {}
-                    store.setBackpackContents(contentsUuid, nbt);
-                    PlayerSync.LOGGER.info("Restored backpack data for UUID {}", contentsUuid);
+                    // FIX P0-1: two-step clear to guarantee no stale data merges through.
+                    //   1) public removeBackpackContents (preferred API, since 3.x)
+                    //   2) reflection fallback: clear the internal map entry directly
+                    // Any remaining sub-tag after step 1 could leak stale items — step 2 is
+                    // our belt-and-suspenders against upstream regressions.
+                    boolean cleared = false;
+                    try {
+                        store.removeBackpackContents(contentsUuid);
+                        cleared = true;
+                    } catch (Throwable t) {
+                        PlayerSync.LOGGER.warn("Backpack removeBackpackContents failed for UUID {} ({}): falling back to reflection clear",
+                                contentsUuid, t.getClass().getSimpleName());
+                    }
+                    if (!cleared) clearBackpackStorageReflective(store, contentsUuid);
+                    // Defensive copy: never hand upstream a tag that might be mutated elsewhere.
+                    CompoundTag fresh = nbt.copy();
+                    store.setBackpackContents(contentsUuid, fresh);
+                    PlayerSync.LOGGER.info("[restore-backpack] uuid={} nbt_keys={} cleared_via={}",
+                            contentsUuid, fresh.getAllKeys().size(), cleared ? "api" : "reflection");
                 });
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("[restore-backpack] unexpected error restoring backpack {}", stack, e);
+        }
+    }
+
+    /**
+     * Reflection fallback that zeroes out the {@code BackpackStorage} entry for the
+     * given UUID. Only used if the public {@code removeBackpackContents} call fails.
+     */
+    private static void clearBackpackStorageReflective(
+            net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage store, UUID uuid) {
+        try {
+            // Common SavedData field names: "backpackContents" or inherited "data"
+            for (java.lang.reflect.Field f : store.getClass().getDeclaredFields()) {
+                if (java.util.Map.class.isAssignableFrom(f.getType())) {
+                    f.setAccessible(true);
+                    Object map = f.get(store);
+                    if (map instanceof java.util.Map<?, ?> m) {
+                        ((java.util.Map<Object, Object>) m).remove(uuid);
+                        ((java.util.Map<Object, Object>) m).remove(uuid.toString());
+                    }
+                }
+            }
+            store.setDirty();
+        } catch (Throwable t) {
+            PlayerSync.LOGGER.error("[restore-backpack] reflection clear failed for {}: {}", uuid, t.getMessage());
+        }
     }
 
     /**
@@ -390,6 +432,14 @@ public class ModsSupport {
         if (!ModList.get().isLoaded("curios")) return;
 
         Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
+        // FIX P1-1: if the Curios handler is unavailable (dead player, Curios mod
+        // init race, capability detached), do NOT write an empty flatMap to DB —
+        // that wipes the player's real curios. Log and skip instead.
+        if (handlerOpt.isEmpty()) {
+            PlayerSync.LOGGER.warn("[store-curios] handler unavailable for {} — skipping write to avoid wiping DB data",
+                    player.getUUID());
+            return;
+        }
         Map<String, String> flatMap = new HashMap<>();
 
         handlerOpt.ifPresent(handler -> {
@@ -643,15 +693,52 @@ public class ModsSupport {
             UUID finalUuid = uuidOpt.get();
             restoreStorageContents(finalUuid, (nbt) -> {
                 try {
-                    net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get()
-                            .setStorageContents(finalUuid, nbt);
-                    PlayerSync.LOGGER.info("Restored Sophisticated Storage item data for UUID {}", finalUuid);
+                    // FIX P0-1: clear SS storage entry before replacing. ItemContentsStorage
+                    // uses getOrCreateStorageContents which MERGE-stamps when the UUID
+                    // already exists — same root cause as BackpackStorage. We try public
+                    // API first, reflect-clear as fallback.
+                    var store = net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get();
+                    clearSSStorageContents(store, finalUuid);
+                    CompoundTag fresh = nbt.copy();
+                    store.setStorageContents(finalUuid, fresh);
+                    PlayerSync.LOGGER.info("[restore-ss] uuid={} nbt_keys={}", finalUuid, fresh.getAllKeys().size());
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error restoring Sophisticated Storage data for UUID {}", finalUuid, e);
                 }
             });
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error restoring Sophisticated Storage item", e);
+        }
+    }
+
+    /**
+     * Clears a Sophisticated Storage entry (by UUID) from the ItemContentsStorage
+     * SavedData. Tries public {@code removeStorageContents} first, then reflection.
+     */
+    private static void clearSSStorageContents(
+            net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage store, UUID uuid) {
+        try {
+            // Attempt public API removal (exists in some SS versions)
+            try {
+                java.lang.reflect.Method m = store.getClass().getMethod("removeStorageContents", UUID.class);
+                m.invoke(store, uuid);
+                return;
+            } catch (NoSuchMethodException nsm) {
+                // Fall through to reflection map-clear
+            }
+            for (java.lang.reflect.Field f : store.getClass().getDeclaredFields()) {
+                if (java.util.Map.class.isAssignableFrom(f.getType())) {
+                    f.setAccessible(true);
+                    Object map = f.get(store);
+                    if (map instanceof java.util.Map<?, ?> m) {
+                        ((java.util.Map<Object, Object>) m).remove(uuid);
+                        ((java.util.Map<Object, Object>) m).remove(uuid.toString());
+                    }
+                }
+            }
+            store.setDirty();
+        } catch (Throwable t) {
+            PlayerSync.LOGGER.warn("[clear-ss] unable to clear SS storage for {}: {}", uuid, t.getMessage());
         }
     }
 
