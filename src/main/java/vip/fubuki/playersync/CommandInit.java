@@ -87,6 +87,21 @@ public class CommandInit {
                                 .then(Commands.literal("confirm")
                                         .executes(CommandInit::runWipe))))
 
+                // ---- Inventory viewer ----
+                .then(Commands.literal("inventory")
+                        .then(Commands.argument("player", GameProfileArgument.gameProfile())
+                                .executes(ctx -> runInventoryView(ctx, "all"))
+                                .then(Commands.literal("main")
+                                        .executes(ctx -> runInventoryView(ctx, "main")))
+                                .then(Commands.literal("armor")
+                                        .executes(ctx -> runInventoryView(ctx, "armor")))
+                                .then(Commands.literal("ender")
+                                        .executes(ctx -> runInventoryView(ctx, "ender")))
+                                .then(Commands.literal("curios")
+                                        .executes(ctx -> runInventoryView(ctx, "curios")))
+                                .then(Commands.literal("all")
+                                        .executes(ctx -> runInventoryView(ctx, "all")))))
+
                 // ---- Cluster ops ----
                 .then(Commands.literal("orphans").executes(CommandInit::runOrphans))
                 .then(Commands.literal("clearorphans")
@@ -465,6 +480,155 @@ public class CommandInit {
         return 1;
     }
 
+    /**
+     * Pretty-prints a player's inventory / armor / ender chest / curios from the DB.
+     * Works on offline players too — reads the serialized columns directly instead
+     * of requiring the entity to be online. Output is compact, per-section, with
+     * item ID and count per non-empty slot.
+     */
+    private static int runInventoryView(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx, String section)
+            throws CommandSyntaxException {
+        Collection<com.mojang.authlib.GameProfile> profiles =
+                GameProfileArgument.getGameProfiles(ctx, "player");
+        if (profiles.isEmpty()) {
+            ctx.getSource().sendFailure(Component.literal("§cNo matching player"));
+            return 0;
+        }
+        com.mojang.authlib.GameProfile profile = profiles.iterator().next();
+        UUID uuid = profile.getId();
+        String name = profile.getName();
+
+        CommandSourceStack src = ctx.getSource();
+
+        String inventoryRaw = null, armorRaw = null, enderRaw = null;
+        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                "SELECT inventory, armor, enderchest FROM " + Tables.playerData() + " WHERE uuid=?",
+                uuid.toString())) {
+            ResultSet rs = qr.resultSet();
+            if (!rs.next()) {
+                src.sendFailure(Component.literal("§cNo DB row for " + name + " (" + uuid + ")"));
+                return 0;
+            }
+            inventoryRaw = rs.getString("inventory");
+            armorRaw = rs.getString("armor");
+            enderRaw = rs.getString("enderchest");
+        } catch (Exception e) {
+            src.sendFailure(Component.literal("§cDB query failed: " + e.getMessage()));
+            return 0;
+        }
+
+        String curiosRaw = null;
+        if ("all".equals(section) || "curios".equals(section)) {
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT curios_item FROM " + Tables.curios() + " WHERE uuid=?", uuid.toString())) {
+                ResultSet rs = qr.resultSet();
+                if (rs.next()) curiosRaw = rs.getString("curios_item");
+            } catch (Exception ignored) {}
+        }
+
+        src.sendSuccess(() -> Component.literal("§a=== Inventory of §f" + name + " §7(" + uuid + ")"), false);
+
+        int totalShown = 0;
+        if ("all".equals(section) || "main".equals(section)) {
+            totalShown += printSection(src, "§6Main inventory", inventoryRaw, 36);
+        }
+        if ("all".equals(section) || "armor".equals(section)) {
+            totalShown += printSection(src, "§6Armor §8(0=boots,1=legs,2=chest,3=helm)", armorRaw, 4);
+        }
+        if ("all".equals(section) || "ender".equals(section)) {
+            totalShown += printSection(src, "§6Ender chest", enderRaw, 27);
+        }
+        if ("all".equals(section) || "curios".equals(section)) {
+            totalShown += printCurios(src, curiosRaw);
+        }
+
+        final int shown = totalShown;
+        src.sendSuccess(() -> Component.literal("§7— §f" + shown + " §7non-empty slot(s) shown"), false);
+        return 1;
+    }
+
+    /** Prints a vanilla-style slot section (Map<Integer,String>). Returns non-empty count. */
+    private static int printSection(CommandSourceStack src, String header, String raw, int expectedSize) {
+        if (raw == null || raw.length() <= 2) {
+            src.sendSuccess(() -> Component.literal(header + "§7: §8(empty)"), false);
+            return 0;
+        }
+        java.util.Map<Integer, String> map;
+        try {
+            map = vip.fubuki.playersync.util.LocalJsonUtil.StringToEntryMap(raw);
+        } catch (Exception e) {
+            src.sendSuccess(() -> Component.literal(header + "§7: §c<parse error: " + e.getMessage() + ">"), false);
+            return 0;
+        }
+        if (map.isEmpty()) {
+            src.sendSuccess(() -> Component.literal(header + "§7: §8(empty)"), false);
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal(header + "§7 (" + map.size() + " slot(s) filled of " + expectedSize + "):"), false);
+        int shown = 0;
+        for (java.util.Map.Entry<Integer, String> e : new java.util.TreeMap<>(map).entrySet()) {
+            String line = formatSlotLine(e.getKey().toString(), e.getValue());
+            if (line != null) {
+                src.sendSuccess(() -> Component.literal(line), false);
+                shown++;
+            }
+        }
+        return shown;
+    }
+
+    /** Curios has composite keys ("slotType:index" and "cos:slotType:index"). */
+    private static int printCurios(CommandSourceStack src, String raw) {
+        if (raw == null || raw.length() <= 2) {
+            src.sendSuccess(() -> Component.literal("§6Curios§7: §8(empty)"), false);
+            return 0;
+        }
+        java.util.Map<String, String> map;
+        try {
+            map = vip.fubuki.playersync.util.LocalJsonUtil.StringToMap(raw);
+        } catch (Exception e) {
+            src.sendSuccess(() -> Component.literal("§6Curios§7: §c<parse error>"), false);
+            return 0;
+        }
+        if (map.isEmpty()) {
+            src.sendSuccess(() -> Component.literal("§6Curios§7: §8(empty)"), false);
+            return 0;
+        }
+        src.sendSuccess(() -> Component.literal("§6Curios§7 (" + map.size() + " slot(s) filled):"), false);
+        int shown = 0;
+        for (java.util.Map.Entry<String, String> e : new java.util.TreeMap<>(map).entrySet()) {
+            String line = formatSlotLine(e.getKey(), e.getValue());
+            if (line != null) {
+                src.sendSuccess(() -> Component.literal(line), false);
+                shown++;
+            }
+        }
+        return shown;
+    }
+
+    /** Deserializes a single slot payload into a human-readable line. */
+    private static String formatSlotLine(String slotKey, String payload) {
+        try {
+            net.minecraft.world.item.ItemStack stack =
+                    vip.fubuki.playersync.sync.VanillaSync.deserializeAndCreatePlaceholderIfNeeded(payload);
+            if (stack == null || stack.isEmpty()) return null;
+            net.minecraft.resources.ResourceLocation id =
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem());
+            String idStr = id == null ? "unknown" : id.toString();
+            String display = stack.getHoverName().getString();
+            // Placeholder items (items from a mod not loaded on this server) show up with their
+            // original id preserved inside CustomData — the deserializer already handled that.
+            boolean placeholder = idStr.equals("minecraft:paper")
+                    && stack.getComponents().has(net.minecraft.core.component.DataComponents.CUSTOM_DATA)
+                    && stack.getComponents().get(net.minecraft.core.component.DataComponents.CUSTOM_DATA)
+                        .copyTag().contains("playersync:original_item_nbt");
+            String prefix = placeholder ? "§d[placeholder] " : "§f";
+            return "§7  [" + slotKey + "] " + prefix + idStr + "§7 x§f" + stack.getCount()
+                    + (display.equals(stack.getItem().getDescription().getString()) ? "" : " §8(" + display + ")");
+        } catch (Throwable t) {
+            return "§7  [" + slotKey + "] §c<parse error: " + t.getClass().getSimpleName() + ">";
+        }
+    }
+
     private static int runHelp(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
         CommandSourceStack src = ctx.getSource();
         src.sendSuccess(() -> Component.literal("§a=== /playersync command reference ==="), false);
@@ -473,6 +637,7 @@ public class CommandInit {
                 "§e/playersync poolstats §7— log pool stats immediately",
                 "§e/playersync flush [player] §7— force save all / one",
                 "§e/playersync info <player> §7— DB row metadata",
+                "§e/playersync inventory <player> [main|armor|ender|curios|all] §7— pretty-print stored inventory",
                 "§e/playersync dump <player> §7— dump DB row to server log",
                 "§e/playersync resync <player> §7— kick to force re-sync",
                 "§e/playersync wipe <player> confirm §7— DELETE rows (DANGER)",
