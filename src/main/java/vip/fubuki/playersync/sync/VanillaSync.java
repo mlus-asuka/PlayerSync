@@ -504,11 +504,13 @@ public class VanillaSync {
                 break; // Ready to load — other server finished or same server
             }
 
-            // NOW claim last_server for this server — AFTER the old server's save completed.
-            // This is safe because: (1) the old server's data+online=0 write already completed,
-            // (2) any future writes from the old server will be blocked by AND last_server=?.
+            // PHASE 14 FIX: claim ownership atomically — last_server=self AND online=1.
+            // Previously the kick check set online=1 upfront, racing this poll and causing
+            // the poll to see its own write as 'peer still online' (60s wait bug). Now the
+            // kick check leaves online alone, and this claim is the single source of truth
+            // for the new ownership state.
             JDBCsetUp.executePreparedUpdate(
-                    "UPDATE " + Tables.playerData() + " SET last_server=? WHERE uuid=?",
+                    "UPDATE " + Tables.playerData() + " SET last_server=?, online=1 WHERE uuid=?",
                     JdbcConfig.SERVER_ID.get(), player_uuid);
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
@@ -763,15 +765,14 @@ public class VanillaSync {
         int[] cached = connectCheckCache.remove(player_uuid);
 
         if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) {
-            // FIX PERF (C1): online=1 is fire-and-forget; no login-critical decision depends
-            // on the write completing synchronously. Keeping this off the main thread saves
-            // one MySQL round-trip per join.
-            executorService.execute(() -> {
-                try {
-                    JDBCsetUp.executePreparedUpdate(
-                            "UPDATE " + Tables.playerData() + " SET online=1 WHERE uuid=?", player_uuid);
-                } catch (SQLException ignored) {}
-            });
+            // PHASE 14 FIX: do NOT pre-mark online=1 here. Previously this UPDATE ran on
+            // the executor BEFORE doPlayerJoin's poll, overwriting a peer's freshly-committed
+            // online=0 — the poll would then see online=1 + last_server=OldPeer and wait the
+            // full 60s even though the peer had already flushed (observed in production logs
+            // 2026-04-22 07:43:41 -> 07:45:01, 60s of 'Waiting for server X to finish saving'
+            // when X had actually committed 19s earlier).
+            // doPlayerJoin now sets online=1 atomically with last_server=self as part of its
+            // claim UPDATE, after the poll has seen the true state.
             return;
         }
 
@@ -823,17 +824,9 @@ public class VanillaSync {
                 }
             }
 
-            // FIX PERF (C1): Mark online=1 asynchronously — no main-thread MySQL round-trip.
-            // The cache-based kick decision above is already final; this write only updates
-            // the persistent flag for cross-server detection, which tolerates a few ms of delay.
-            executorService.execute(() -> {
-                try {
-                    JDBCsetUp.executePreparedUpdate(
-                            "UPDATE " + Tables.playerData() + " SET online=1 WHERE uuid=?", player_uuid);
-                } catch (SQLException e) {
-                    PlayerSync.LOGGER.error("Async online=1 update failed for {}", player_uuid, e);
-                }
-            });
+            // PHASE 14 FIX: online=1 is no longer written here. See doPlayerJoin's claim
+            // UPDATE for the replacement — setting the flag earlier raced the poll and
+            // caused every cross-server join to wait the full 60s.
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error during kick check for player {}", player_uuid, e);
         }
