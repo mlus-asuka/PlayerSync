@@ -104,6 +104,25 @@ public class VanillaSync {
      * short-circuit when the peer is a zombie (crashed without clearing online flag,
      * or legacy server_id=0 from pre-fix DB rows).
      */
+    /**
+     * Returns the age (ms) of the peer's last heartbeat, or {@code Long.MAX_VALUE}
+     * if the peer has no heartbeat row (effectively dead). Used by Phase 10
+     * force-claim logic to distinguish "peer is actively heartbeating but slow
+     * to flush" from "peer has stopped heartbeating".
+     */
+    private static long peerHeartbeatAgeMs(int peerServerId) {
+        if (peerServerId == 0) return Long.MAX_VALUE;
+        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                "SELECT last_update FROM " + Tables.serverInfo() + " WHERE id=?", peerServerId)) {
+            ResultSet rs = qr.resultSet();
+            if (!rs.next()) return Long.MAX_VALUE;
+            long lastUpdate = rs.getLong("last_update");
+            return System.currentTimeMillis() - lastUpdate;
+        } catch (Exception e) {
+            return Long.MAX_VALUE;
+        }
+    }
+
     private static boolean isPeerServerStale(int peerServerId, long staleAfterMs) {
         if (peerServerId == 0) return true; // 0 is never a legitimate SERVER_ID
         try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
@@ -368,6 +387,7 @@ public class VanillaSync {
 
         ReentrantLock lock = getPlayerLock(player_uuid);
         lock.lock();
+        final long restoreT0 = System.currentTimeMillis();
         try {
             PlayerSync.LOGGER.info("Starting synchronization for player {}", player_uuid);
             SyncLogger.restoreStarted(player_uuid);
@@ -421,21 +441,42 @@ public class VanillaSync {
                                         player_uuid, otherServer);
                                 break;
                             }
-                            // PHASE 9: peer ALIVE but session hasn't flushed — enforce short cap.
+                            // PHASE 10 SAFETY: peer ALIVE but session hasn't flushed.
+                            //
+                            // DANGER: if we force-claim before the peer's async logout save has
+                            // committed to the DB, we'll read STALE data (the DB still has the
+                            // pre-disconnect state) and restore the player WITHOUT changes they
+                            // made right before disconnect. Any item dropped just before logout
+                            // would re-appear -> duplication with the ItemEntity the peer spawned.
+                            //
+                            // So we treat the wait cap as ADVISORY: past this point we only
+                            // force-claim if the peer's heartbeat HASN'T advanced since we
+                            // started waiting (meaning either the peer crashed mid-save, or its
+                            // heartbeat is inexplicably stale). Otherwise we keep waiting — a
+                            // living peer WILL eventually flush (writeSnapshotToDB + online=0 is
+                            // atomic), just maybe slowly on a heavy-load server.
                             long waitedMs = System.currentTimeMillis() - pollStartTime;
-                            if (waitedMs >= PEER_ALIVE_MAX_WAIT_MS) {
-                                SyncLogger.raceCondition(player_uuid,
-                                        "Peer server " + otherServer + " is alive but player ghost-online for "
-                                                + waitedMs + "ms — force-claiming ownership");
-                                PlayerSync.LOGGER.warn(
-                                        "Player {} still online=1 on alive peer server {} after {}ms — force-takeover on this server. Peer's future saves will be blocked by the last_server guard.",
-                                        player_uuid, otherServer, waitedMs);
-                                // Force-clear the flag and claim — writeSnapshotToDB will guard
-                                // the peer's next write so they can't overwrite us.
-                                JDBCsetUp.executePreparedUpdate(
-                                        "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
-                                        player_uuid, otherServer);
-                                break;
+                            if (PEER_ALIVE_MAX_WAIT_MS > 0 && waitedMs >= PEER_ALIVE_MAX_WAIT_MS) {
+                                long peerAgeMs = peerHeartbeatAgeMs(otherServer);
+                                if (peerAgeMs > PEER_ALIVE_MAX_WAIT_MS) {
+                                    // Peer hasn't heartbeated during our wait — effectively dead.
+                                    SyncLogger.raceCondition(player_uuid,
+                                            "Peer " + otherServer + " heartbeat frozen " + peerAgeMs
+                                                    + "ms, waited " + waitedMs + "ms — force-claiming");
+                                    PlayerSync.LOGGER.warn(
+                                            "Player {} waited {}ms for peer {} with frozen heartbeat ({}ms old) — force-claiming",
+                                            player_uuid, waitedMs, otherServer, peerAgeMs);
+                                    JDBCsetUp.executePreparedUpdate(
+                                            "UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
+                                            player_uuid, otherServer);
+                                    break;
+                                }
+                                // Peer is actively heartbeating but slow to flush. Keep waiting
+                                // but log a warning so admins notice the pattern.
+                                if (attempt % 20 == 0) {
+                                    SyncLogger.warnPlayer(player_uuid,
+                                            "peer " + otherServer + " alive+heartbeating but slow to flush (waited=" + waitedMs + "ms)");
+                                }
                             }
                             SyncLogger.raceCondition(player_uuid, "Waiting for server " + otherServer + " to finish saving (attempt " + (attempt + 1) + "/" + MAX_POLL + ", waited=" + waitedMs + "ms)");
                             Thread.sleep(POLL_INTERVAL_MS);
@@ -626,8 +667,13 @@ public class VanillaSync {
                     }
 
                     serverPlayer.addTag("player_synced");
-                    PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
-                    SyncLogger.restoreCompleted(player_uuid, 0);
+                    long totalRestore = System.currentTimeMillis() - restoreT0;
+                    PlayerSync.LOGGER.info("Sync data for player {} completed in {}ms", player_uuid, totalRestore);
+                    SyncLogger.restoreCompleted(player_uuid, totalRestore);
+                    if (totalRestore > 1000) {
+                        PlayerSync.LOGGER.warn("[perf-restore] slow restore for {} ({}ms) — enable log level=TRACE to profile",
+                                player_uuid, totalRestore);
+                    }
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error applying sync data for player {}", player_uuid, e);
                 } finally {
@@ -1122,9 +1168,8 @@ public class VanillaSync {
 
                     // === BACKGROUND THREAD: DB writes (parallel across all players) ===
                     futures.add(CompletableFuture.runAsync(() -> {
+                        long t0 = System.currentTimeMillis();
                         try {
-                            // FIX ANTI-DUPLICATION: atomic data+online=0 with last_server guard
-                            // FIX P0-2: short-circuit backpack/SS/RS2 if core write blocked.
                             boolean persisted = writeSnapshotToDB(snapshot, true);
                             if (persisted) {
                                 ModsSupport.saveBackpackSnapshots(backpackSnapshots);
@@ -1132,8 +1177,9 @@ public class VanillaSync {
                                 if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
                                     ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
                                 }
-                                PlayerSync.LOGGER.info("Saved player {} data on server shutdown", puuid);
-                                SyncLogger.saveCompleted(puuid, "SHUTDOWN", 0);
+                                long dur = System.currentTimeMillis() - t0;
+                                PlayerSync.LOGGER.info("Saved player {} data on server shutdown in {}ms", puuid, dur);
+                                SyncLogger.saveCompleted(puuid, "SHUTDOWN", dur);
                             } else {
                                 PlayerSync.LOGGER.warn("Shutdown save: downstream backpack/SS/RS2 skipped for {} — core guard blocked", puuid);
                                 SyncLogger.saveSkipped(puuid, "SHUTDOWN", "core guard blocked");
@@ -1407,25 +1453,31 @@ public class VanillaSync {
                 ReentrantLock bgLock = getPlayerLock(player_uuid);
                 bgLock.lock();
                 try {
-                    // FIX ANTI-DUPLICATION: writeSnapshotToDB with setOffline=true
-                    // atomically writes data + online=0 in a SINGLE UPDATE, AND guards
-                    // with last_server to prevent stale overwrites. This eliminates the
-                    // race where a slow async save overwrites fresher data from another server.
-                    // FIX P0-2: short-circuit backpack/SS/RS2 saves if the core write was
-                    // blocked by the last_server guard. Otherwise we overwrite the claiming
-                    // server's backpack_data rows (which are keyed by storage UUID and do
-                    // NOT carry a last_server guard themselves).
+                    // PHASE 10 OBSERVABILITY: measure every stage so sync.log shows REAL
+                    // durations instead of hardcoded 0ms. Helps diagnose user-reported
+                    // 20s latencies: we can see which stage actually takes the time.
+                    final long t0 = System.currentTimeMillis();
                     boolean persisted = writeSnapshotToDB(snapshot, true);
+                    final long tCore = System.currentTimeMillis();
                     if (persisted) {
-                        // Update hash so post-logout rejoin on same process doesn't double-write.
                         lastWrittenSnapshotHash.put(player_uuid, computeSnapshotHash(snapshot));
                         ModsSupport.saveBackpackSnapshots(backpackSnapshots);
+                        final long tBp = System.currentTimeMillis();
                         ModsSupport.saveSSSnapshots(ssSnapshots);
+                        final long tSs = System.currentTimeMillis();
                         if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
                             ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2RegistryAccess);
                         }
-                        PlayerSync.LOGGER.info("Logout save completed for player {}", player_uuid);
-                        SyncLogger.saveCompleted(player_uuid, "LOGOUT", 0);
+                        final long tEnd = System.currentTimeMillis();
+                        long total = tEnd - t0;
+                        PlayerSync.LOGGER.info("Logout save completed for player {} in {}ms", player_uuid, total);
+                        SyncLogger.saveCompleted(player_uuid, "LOGOUT", total);
+                        SyncLogger.perf("LOGOUT breakdown [" + player_uuid + "]",
+                                (tCore - t0));
+                        if (total > 200) {
+                            PlayerSync.LOGGER.info("[perf-logout] {} core={}ms backpacks={}ms ss={}ms rs2={}ms total={}ms",
+                                    player_uuid, (tCore - t0), (tBp - tCore), (tSs - tBp), (tEnd - tSs), total);
+                        }
                     } else {
                         PlayerSync.LOGGER.warn("Logout save skipped downstream backpack/SS/RS2 for player {} — core guard blocked",
                                 player_uuid);
@@ -2123,6 +2175,7 @@ public class VanillaSync {
                             return;
                         }
                     }
+                    long t0 = System.currentTimeMillis();
                     // FIX P0-2: short-circuit backpack/SS/RS2 if core guard blocked.
                     boolean persisted = writeSnapshotToDB(snapshot);
                     if (persisted) {
@@ -2131,8 +2184,9 @@ public class VanillaSync {
                         if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
                             ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
                         }
-                        PlayerSync.LOGGER.info("Death-save completed for player {}", puuid);
-                        SyncLogger.saveCompleted(puuid, "DEATH", 0);
+                        long dur = System.currentTimeMillis() - t0;
+                        PlayerSync.LOGGER.info("Death-save completed for player {} in {}ms", puuid, dur);
+                        SyncLogger.saveCompleted(puuid, "DEATH", dur);
                     } else {
                         PlayerSync.LOGGER.warn("Death-save: core write blocked for {} — downstream skipped", puuid);
                         SyncLogger.saveSkipped(puuid, "DEATH", "core guard blocked");
