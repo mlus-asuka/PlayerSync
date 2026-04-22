@@ -51,7 +51,7 @@ import java.util.concurrent.ThreadPoolExecutor;
  *
  * @author vyrriox
  */
-@EventBusSubscriber()
+@EventBusSubscriber(modid = PlayerSync.MODID)
 public class CommandInit {
 
     private static final int PERM_OP = 2;

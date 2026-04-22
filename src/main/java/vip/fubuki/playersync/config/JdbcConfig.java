@@ -11,7 +11,7 @@ import java.util.Random;
 public class JdbcConfig {
     public static ModConfigSpec COMMON_CONFIG;
 
-    // ----- Connection -----
+    // ----- Connection (kept under [general] for backward compat with existing config files) -----
     public static ModConfigSpec.ConfigValue<String> HOST;
     public static ModConfigSpec.IntValue PORT;
     public static ModConfigSpec.ConfigValue<String> USERNAME;
@@ -19,10 +19,12 @@ public class JdbcConfig {
     public static ModConfigSpec.ConfigValue<String> DATABASE_NAME;
     public static ModConfigSpec.BooleanValue USE_SSL;
 
-    // ----- Core sync behaviour -----
+    // ----- Core sync behaviour (kept under [general]) -----
     public static ModConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
     public static ModConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
     public static ModConfigSpec.BooleanValue KICK_WHEN_ALREADY_ONLINE;
+    public static ModConfigSpec.ConfigValue<String> KICK_MESSAGE;
+    public static ModConfigSpec.IntValue KICK_GRACE_PERIOD_MS;
     public static ModConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
@@ -32,13 +34,13 @@ public class JdbcConfig {
     /** Table-name prefix; see {@link vip.fubuki.playersync.util.Tables}. */
     public static ModConfigSpec.ConfigValue<String> TABLE_PREFIX;
 
-    // ----- Save triggers -----
+    // ----- Save triggers (new section) -----
     public static ModConfigSpec.IntValue AUTO_SAVE_INTERVAL_MINUTES;
     public static ModConfigSpec.BooleanValue SAVE_ON_DIMENSION_CHANGE;
     public static ModConfigSpec.BooleanValue SAVE_ON_DEATH;
     public static ModConfigSpec.BooleanValue SAVE_ON_RESPAWN;
 
-    // ----- Sync toggles (per-category opt-out) -----
+    // ----- Sync toggles (new section) -----
     public static ModConfigSpec.BooleanValue SYNC_INVENTORY;
     public static ModConfigSpec.BooleanValue SYNC_ENDER_CHEST;
     public static ModConfigSpec.BooleanValue SYNC_XP;
@@ -50,7 +52,7 @@ public class JdbcConfig {
     public static ModConfigSpec.BooleanValue SYNC_COSMETIC_ARMOR;
     public static ModConfigSpec.BooleanValue SYNC_REFINED_STORAGE;
 
-    // ----- Performance tuning -----
+    // ----- Performance tuning (new section) -----
     public static ModConfigSpec.IntValue HEARTBEAT_INTERVAL_SECONDS;
     public static ModConfigSpec.IntValue PEER_STALE_THRESHOLD_SECONDS;
     public static ModConfigSpec.IntValue JOIN_POLL_MAX_ATTEMPTS;
@@ -59,14 +61,12 @@ public class JdbcConfig {
     public static ModConfigSpec.IntValue HIKARI_POOL_MAX_SIZE;
     public static ModConfigSpec.IntValue HIKARI_LEAK_THRESHOLD_MS;
 
-    // ----- Safety / integrity -----
+    // ----- Safety / integrity (new section) -----
     public static ModConfigSpec.BooleanValue REFUSE_EMPTY_INVENTORY_WRITE;
     public static ModConfigSpec.IntValue MAX_INVENTORY_SIZE_BYTES;
-    public static ModConfigSpec.ConfigValue<String> KICK_MESSAGE;
-    public static ModConfigSpec.IntValue KICK_GRACE_PERIOD_MS;
     public static ModConfigSpec.IntValue SKIP_SAVES_WHEN_TPS_BELOW;
 
-    // ----- Observability -----
+    // ----- Observability (new section) -----
     public static ModConfigSpec.BooleanValue LOG_STRUCTURED_JSON;
     public static ModConfigSpec.IntValue LOG_ROTATION_SIZE_MB;
     public static ModConfigSpec.IntValue LOG_ROTATION_MAX_FILES;
@@ -75,8 +75,13 @@ public class JdbcConfig {
     static {
         ModConfigSpec.Builder B = new ModConfigSpec.Builder();
 
-        // ===== Connection =====
-        B.comment("Database connection").push("connection");
+        // ==========================================================================
+        // [general] — Every key that already existed in pre-2.1.5 configs MUST stay
+        // here so existing playersync-common.toml files keep working after an upgrade.
+        // New settings go into dedicated sections below.
+        // ==========================================================================
+        B.comment("General settings").push("general");
+
         HOST = B.comment("The host of the database").define("host", "localhost");
         PORT = B.comment("database port").defineInRange("db_port", 3306, 0, 65535);
         USE_SSL = B.comment("whether use SSL").define("use_ssl", false);
@@ -89,18 +94,15 @@ public class JdbcConfig {
                 "Leave empty to keep the historical unprefixed names. Example: 'playersync_'.",
                 "Only alphanumeric characters and underscores are allowed."
             ).define("table_prefix", "");
-        SERVER_ID = B.comment("The server id should be unique across the cluster")
+        SERVER_ID = B.comment("the server id should be unique")
                 .define("Server_id", new Random().nextInt(1, Integer.MAX_VALUE - 1));
-        B.pop();
-
-        // ===== General behaviour =====
-        B.comment("General sync behaviour").push("general");
         SYNC_WORLD = B.comment("The worlds that will be synchronized. If running on a server, leave array empty.")
                 .define("sync_world", new ArrayList<>());
         SYNC_ADVANCEMENTS = B.comment("Whether to sync advancements between servers")
                 .define("sync_advancements", true);
         KICK_WHEN_ALREADY_ONLINE = B.comment("Whether to kick player when already online on another server")
                 .define("kick_when_already_online", true);
+        // NEW in 2.1.5 — safe to add to [general], unknown keys on old rollbacks just get ignored.
         KICK_MESSAGE = B.comment(
                 "Custom kick message when a duplicate login is detected. Empty = default message.")
                 .define("kick_message", "");
@@ -120,10 +122,11 @@ public class JdbcConfig {
         ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE = B
                 .comment("Override the description of placeholder items which are unavailable on the current server.")
                 .define("item_placeholder_description_override", "");
-        B.pop();
 
-        // ===== Save triggers =====
-        B.comment("When to trigger a save").push("save_triggers");
+        B.pop(); // end [general]
+
+        // ===== [save_triggers] =====
+        B.comment("When to trigger a save (new in 2.1.5)").push("save_triggers");
         AUTO_SAVE_INTERVAL_MINUTES = B.comment(
                 "Periodic full-flush interval (minutes). Triggers a complete save (player data +",
                 "backpacks + SS + RS2) for every online player. Set to 0 to disable. Default 10."
@@ -141,8 +144,8 @@ public class JdbcConfig {
                 .define("save_on_respawn", true);
         B.pop();
 
-        // ===== Sync toggles =====
-        B.comment("Per-category sync toggles — disable individual data kinds if your server doesn't need them").push("sync_toggles");
+        // ===== [sync_toggles] =====
+        B.comment("Per-category sync toggles — disable individual data kinds if your server doesn't need them (new in 2.1.5)").push("sync_toggles");
         SYNC_INVENTORY = B.comment("Sync main inventory + armor + offhand").define("sync_inventory", true);
         SYNC_ENDER_CHEST = B.comment("Sync ender chest contents").define("sync_ender_chest", true);
         SYNC_XP = B.comment("Sync total XP / experience levels").define("sync_xp", true);
@@ -155,8 +158,8 @@ public class JdbcConfig {
         SYNC_REFINED_STORAGE = B.comment("Sync Refined Storage 2 disk contents").define("sync_refined_storage", true);
         B.pop();
 
-        // ===== Performance =====
-        B.comment("Performance tuning — touch only if you know what you're doing").push("performance");
+        // ===== [performance] =====
+        B.comment("Performance tuning — touch only if you know what you're doing (new in 2.1.5)").push("performance");
         HEARTBEAT_INTERVAL_SECONDS = B.comment(
                 "How often this server writes its heartbeat to server_info (seconds). Pair with",
                 "peer_stale_threshold_seconds: peers older than threshold are treated as dead.")
@@ -184,8 +187,8 @@ public class JdbcConfig {
                 .defineInRange("hikari_leak_threshold_ms", 25000, 2000, 600000);
         B.pop();
 
-        // ===== Safety =====
-        B.comment("Safety guards — prevent silent data loss").push("safety");
+        // ===== [safety] =====
+        B.comment("Safety guards — prevent silent data loss (new in 2.1.5)").push("safety");
         REFUSE_EMPTY_INVENTORY_WRITE = B.comment(
                 "Refuse to UPDATE player_data with an empty inventory if the DB currently has non-empty",
                 "data. Last-resort guard against on-disconnect wipes. Set to false only for debugging.")
@@ -200,8 +203,8 @@ public class JdbcConfig {
                 .defineInRange("skip_saves_when_tps_below", 0, 0, 20);
         B.pop();
 
-        // ===== Observability =====
-        B.comment("Log file & diagnostics").push("observability");
+        // ===== [observability] =====
+        B.comment("Log file & diagnostics (new in 2.1.5)").push("observability");
         LOG_STRUCTURED_JSON = B.comment(
                 "Emit sync.log entries as JSON objects instead of text. Enables ingestion in",
                 "Loki / ELK / Splunk pipelines.")
