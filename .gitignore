@@ -35,3 +35,16 @@ runs
 run-data
 
 repo
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# BMad
+.agent/
+_bmad/
+_bmad-output/
+_bmb/
+
+# compat mods (local jars for analysis)
+compat-mods/*.jar

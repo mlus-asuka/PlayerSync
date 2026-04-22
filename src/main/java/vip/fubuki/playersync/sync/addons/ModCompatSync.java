@@ -8,6 +8,7 @@ import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
+import vip.fubuki.playersync.util.Tables;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -21,6 +22,29 @@ import java.util.Map;
  * - Apotheosis (item DataComponents travel with inventory - automatic)
  */
 public class ModCompatSync {
+
+    // FIX PERF (C4): Cache reflection Method lookups for NeoForge AttachmentHolder.
+    // Previously resolved on every snapshot/apply (35 players × auto-save = thousands of
+    // reflective lookups / hour). Static-init once, reuse forever.
+    private static final java.lang.reflect.Method SERIALIZE_ATTACHMENTS;
+    private static final java.lang.reflect.Method DESERIALIZE_ATTACHMENTS;
+    static {
+        java.lang.reflect.Method ser = null, des = null;
+        try {
+            ser = net.neoforged.neoforge.attachment.AttachmentHolder.class
+                    .getDeclaredMethod("serializeAttachments", net.minecraft.core.HolderLookup.Provider.class);
+            ser.setAccessible(true);
+            des = net.neoforged.neoforge.attachment.AttachmentHolder.class
+                    .getDeclaredMethod("deserializeAttachments",
+                            net.minecraft.core.HolderLookup.Provider.class,
+                            net.minecraft.nbt.CompoundTag.class);
+            des.setAccessible(true);
+        } catch (NoSuchMethodException e) {
+            PlayerSync.LOGGER.error("[PlayerSync] Could not cache AttachmentHolder reflection methods; NeoForge attachment sync will be disabled.", e);
+        }
+        SERIALIZE_ATTACHMENTS = ser;
+        DESERIALIZE_ATTACHMENTS = des;
+    }
 
     // ============================
     // Accessories API (Aether slots)
@@ -58,7 +82,7 @@ public class ModCompatSync {
 
             String serializedData = flatMap.toString();
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    "REPLACE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) VALUES (?, ?, ?)",
                     player.getUUID().toString(), "accessories", serializedData);
             PlayerSync.LOGGER.debug("Saved Accessories data for player {}", player.getUUID());
 
@@ -84,7 +108,7 @@ public class ModCompatSync {
 
             String accessoriesData;
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                    "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
+                    "SELECT data_value FROM " + Tables.modPlayerData() + " WHERE uuid=? AND mod_id=?",
                     player.getUUID().toString(), "accessories")) {
                 ResultSet rs = qr.resultSet();
                 if (!rs.next()) {
@@ -232,7 +256,7 @@ public class ModCompatSync {
 
             String serializedData = flatMap.toString();
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    "REPLACE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) VALUES (?, ?, ?)",
                     player.getUUID().toString(), "cosmeticarmor", serializedData);
             PlayerSync.LOGGER.debug("Saved CosmeticArmor data for player {}", player.getUUID());
 
@@ -257,7 +281,7 @@ public class ModCompatSync {
 
             String cosmeticData;
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                    "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
+                    "SELECT data_value FROM " + Tables.modPlayerData() + " WHERE uuid=? AND mod_id=?",
                     player.getUUID().toString(), "cosmeticarmor")) {
                 ResultSet rs = qr.resultSet();
                 if (!rs.next()) {
@@ -364,19 +388,15 @@ public class ModCompatSync {
     public static void storeNeoForgeAttachments(Player player) {
         try {
             if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return;
+            if (SERIALIZE_ATTACHMENTS == null) return;
 
-            // FIX: Use serializeAttachments(Provider) directly instead of saveWithoutId()
-            // This is the exact method NeoForge uses to save attachments, no full player save needed
-            java.lang.reflect.Method serializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
-                    .getDeclaredMethod("serializeAttachments", net.minecraft.core.HolderLookup.Provider.class);
-            serializeMethod.setAccessible(true);
             net.minecraft.nbt.CompoundTag attachments = (net.minecraft.nbt.CompoundTag)
-                    serializeMethod.invoke(player, serverPlayer.getServer().registryAccess());
+                    SERIALIZE_ATTACHMENTS.invoke(player, serverPlayer.getServer().registryAccess());
 
             if (attachments != null && !attachments.isEmpty()) {
                 String serialized = VanillaSync.serializeTagToBinaryBase64(attachments);
                 JDBCsetUp.executePreparedUpdate(
-                        "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                        "REPLACE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) VALUES (?, ?, ?)",
                         player.getUUID().toString(), "neoforge_attachments", serialized);
                 PlayerSync.LOGGER.debug("Saved NeoForge attachments for player {} ({} keys)",
                         player.getUUID(), attachments.getAllKeys().size());
@@ -398,10 +418,11 @@ public class ModCompatSync {
     public static void restoreNeoForgeAttachments(Player player) {
         try {
             if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return;
+            if (DESERIALIZE_ATTACHMENTS == null) return;
 
             String serialized;
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                    "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
+                    "SELECT data_value FROM " + Tables.modPlayerData() + " WHERE uuid=? AND mod_id=?",
                     player.getUUID().toString(), "neoforge_attachments")) {
                 ResultSet rs = qr.resultSet();
                 if (!rs.next()) return;
@@ -413,17 +434,10 @@ public class ModCompatSync {
             net.minecraft.nbt.CompoundTag attachments = VanillaSync.deserializeBinaryBase64Tag(serialized);
             if (attachments.isEmpty()) return;
 
-            // FIX: Correct method signature is (HolderLookup.Provider, CompoundTag), not (CompoundTag)
-            // The wrapper must contain the "neoforge:attachments" key for the method to find the data
             net.minecraft.nbt.CompoundTag wrapper = new net.minecraft.nbt.CompoundTag();
             wrapper.put("neoforge:attachments", attachments);
 
-            java.lang.reflect.Method deserializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
-                    .getDeclaredMethod("deserializeAttachments",
-                            net.minecraft.core.HolderLookup.Provider.class,
-                            net.minecraft.nbt.CompoundTag.class);
-            deserializeMethod.setAccessible(true);
-            deserializeMethod.invoke(player, serverPlayer.getServer().registryAccess(), wrapper);
+            DESERIALIZE_ATTACHMENTS.invoke(player, serverPlayer.getServer().registryAccess(), wrapper);
 
             PlayerSync.LOGGER.info("Restored NeoForge attachments for player {} ({} keys)",
                     player.getUUID(), attachments.getAllKeys().size());
@@ -437,6 +451,7 @@ public class ModCompatSync {
      */
     public static void applyAttachmentsFromData(Player player, String serialized) {
         if (serialized == null || !serialized.startsWith("BNBT:")) return;
+        if (DESERIALIZE_ATTACHMENTS == null) return;
         try {
             if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return;
 
@@ -446,12 +461,7 @@ public class ModCompatSync {
             net.minecraft.nbt.CompoundTag wrapper = new net.minecraft.nbt.CompoundTag();
             wrapper.put("neoforge:attachments", attachments);
 
-            java.lang.reflect.Method deserializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
-                    .getDeclaredMethod("deserializeAttachments",
-                            net.minecraft.core.HolderLookup.Provider.class,
-                            net.minecraft.nbt.CompoundTag.class);
-            deserializeMethod.setAccessible(true);
-            deserializeMethod.invoke(player, serverPlayer.getServer().registryAccess(), wrapper);
+            DESERIALIZE_ATTACHMENTS.invoke(player, serverPlayer.getServer().registryAccess(), wrapper);
 
             PlayerSync.LOGGER.info("Applied NeoForge attachments for player {} ({} keys)",
                     player.getUUID(), attachments.getAllKeys().size());
@@ -475,6 +485,9 @@ public class ModCompatSync {
         try {
             io.wispforest.accessories.api.AccessoriesCapability cap =
                     io.wispforest.accessories.api.AccessoriesCapability.get(player);
+            // FIX ANTI-LOSS (A2): cap==null means the capability isn't attached yet —
+            // return null to SKIP write and preserve DB. Do NOT return "{}" here, as that
+            // would wipe a legitimate accessories record.
             if (cap == null) return null;
             Map<String, String> flatMap = new HashMap<>();
             for (Map.Entry<String, io.wispforest.accessories.api.AccessoriesContainer> entry : cap.getContainers().entrySet()) {
@@ -487,9 +500,7 @@ public class ModCompatSync {
                     }
                 }
             }
-            // FIX ANTI-DUPLICATION: Return "{}" for empty slots, NOT null.
-            // Null causes writeModSnapshot to SKIP the write, keeping stale data in DB.
-            // "{}" is written to DB, and on restore applyAccessoriesFromData clears slots.
+            // Cap read OK — "{}" is intentional for truly empty slots so apply clears stale .dat.
             return flatMap.toString();
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error snapshotting Accessories for player {}", player.getUUID(), e);
@@ -506,6 +517,7 @@ public class ModCompatSync {
         try {
             lain.mods.cos.impl.inventory.InventoryCosArmor cosInv =
                     lain.mods.cos.impl.ModObjects.invMan.getCosArmorInventory(player.getUUID());
+            // FIX ANTI-LOSS (A2): null manager → cannot read → SKIP write, preserve DB.
             if (cosInv == null) return null;
             Map<Integer, String> flatMap = new HashMap<>();
             for (int i = 0; i < cosInv.getContainerSize(); i++) {
@@ -514,9 +526,7 @@ public class ModCompatSync {
                     flatMap.put(i, VanillaSync.getNbtForStorage(stack));
                 }
             }
-            // FIX ANTI-DUPLICATION: Return "{}" for empty slots, NOT null.
-            // Null causes writeModSnapshot to SKIP the write, keeping stale data in DB.
-            // "{}" is written to DB, and on restore applyCosmeticArmorFromData clears slots.
+            // Read OK — "{}" for truly empty slots so apply clears stale .dat.
             return flatMap.toString();
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error snapshotting CosmeticArmor for player {}", player.getUUID(), e);
@@ -529,13 +539,11 @@ public class ModCompatSync {
      * Returns BNBT-serialized string or null if no data.
      */
     public static String snapshotAttachments(Player player) {
+        if (SERIALIZE_ATTACHMENTS == null) return null;
         try {
             if (!(player instanceof net.minecraft.server.level.ServerPlayer serverPlayer)) return null;
-            java.lang.reflect.Method serializeMethod = net.neoforged.neoforge.attachment.AttachmentHolder.class
-                    .getDeclaredMethod("serializeAttachments", net.minecraft.core.HolderLookup.Provider.class);
-            serializeMethod.setAccessible(true);
             net.minecraft.nbt.CompoundTag attachments = (net.minecraft.nbt.CompoundTag)
-                    serializeMethod.invoke(player, serverPlayer.getServer().registryAccess());
+                    SERIALIZE_ATTACHMENTS.invoke(player, serverPlayer.getServer().registryAccess());
             if (attachments == null || attachments.isEmpty()) return null;
             return VanillaSync.serializeTagToBinaryBase64(attachments);
         } catch (Exception e) {
@@ -575,17 +583,17 @@ public class ModCompatSync {
     public static void writeModSnapshot(String uuid, String accessoriesData, String cosmeticArmor, String attachments) throws SQLException {
         if (accessoriesData != null) {
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    "REPLACE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) VALUES (?, ?, ?)",
                     uuid, "accessories", accessoriesData);
         }
         if (cosmeticArmor != null) {
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    "REPLACE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) VALUES (?, ?, ?)",
                     uuid, "cosmeticarmor", cosmeticArmor);
         }
         if (attachments != null) {
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO mod_player_data (uuid, mod_id, data_value) VALUES (?, ?, ?)",
+                    "REPLACE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) VALUES (?, ?, ?)",
                     uuid, "neoforge_attachments", attachments);
         }
     }
@@ -595,11 +603,11 @@ public class ModCompatSync {
         String serverGuard = "(last_server=? OR last_server IS NULL)";
         // Update existing row only if this server still owns the player
         JDBCsetUp.executePreparedUpdate(
-                "UPDATE mod_player_data SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND " + serverGuard + ")",
+                "UPDATE " + Tables.modPlayerData() + " SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM " + Tables.playerData() + " WHERE uuid=? AND " + serverGuard + ")",
                 data, uuid, modId, uuid, serverId);
         // Insert if row doesn't exist yet (first save)
         JDBCsetUp.executePreparedUpdate(
-                "INSERT IGNORE INTO mod_player_data (uuid, mod_id, data_value) SELECT ?, ?, ? FROM player_data WHERE uuid=? AND " + serverGuard,
+                "INSERT IGNORE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) SELECT ?, ?, ? FROM " + Tables.playerData() + " WHERE uuid=? AND " + serverGuard,
                 uuid, modId, data, uuid, serverId);
     }
 

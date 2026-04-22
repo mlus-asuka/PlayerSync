@@ -18,16 +18,20 @@ public class JdbcConfig {
     public static ModConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
     public static ModConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
     public static ModConfigSpec.BooleanValue USE_SSL;
-    public static ModConfigSpec.BooleanValue SYNC_CHAT;
-    public static ModConfigSpec.BooleanValue IS_CHAT_SERVER;
     public static ModConfigSpec.BooleanValue KICK_WHEN_ALREADY_ONLINE;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
-    public static ModConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
-    public static ModConfigSpec.IntValue CHAT_SERVER_PORT;
     public static ModConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
 
     public static ModConfigSpec.ConfigValue<Integer> SERVER_ID;
+
+    /**
+     * Optional table-name prefix prepended to every PlayerSync table. Use to share a
+     * single MySQL database with other mods (LuckPerms, custom mods, etc.) that may
+     * otherwise collide with generic names like {@code player_data} / {@code server_info}.
+     * Default is empty for backward compatibility with existing deployments.
+     */
+    public static ModConfigSpec.ConfigValue<String> TABLE_PREFIX;
 
 
     static {
@@ -39,16 +43,18 @@ public class JdbcConfig {
         USERNAME = COMMON_BUILDER.comment("username").define("user_name", "playersync");
         PASSWORD = COMMON_BUILDER.comment("password").define("password", "pleaseChangeThisPassword");
         DATABASE_NAME = COMMON_BUILDER.comment("database name").define("db_name","playersync");
+        TABLE_PREFIX = COMMON_BUILDER.comment(
+                "Optional prefix prepended to every PlayerSync table (player_data, curios, backpack_data, ...).",
+                "Use to share a single MySQL database with other mods or legacy schemas.",
+                "Leave empty to keep the historical unprefixed names. Example: 'playersync_'.",
+                "Only alphanumeric characters and underscores are allowed."
+            ).define("table_prefix", "");
         SERVER_ID = COMMON_BUILDER.comment("the server id should be unique").define("Server_id", new Random().nextInt(1,Integer.MAX_VALUE-1));
         SYNC_WORLD = COMMON_BUILDER.comment("The worlds that will be synchronized. If running on a server, leave array empty.").define("sync_world", new ArrayList<>());
         SYNC_ADVANCEMENTS = COMMON_BUILDER.comment("Whether to sync advancements between servers")
                 .define("sync_advancements", true);
-        SYNC_CHAT = COMMON_BUILDER.comment("Whether synchronize chat").define("sync_chat", false);
-        IS_CHAT_SERVER = COMMON_BUILDER.comment("Whether recieve messages from other servers as host").define("IsChatServer",false);
         KICK_WHEN_ALREADY_ONLINE = COMMON_BUILDER.comment("Whether to kick player when already online on another server")
                 .define("kick_when_already_online", true);
-        CHAT_SERVER_IP = COMMON_BUILDER.define("ChatServerIP","127.0.0.1");
-        CHAT_SERVER_PORT = COMMON_BUILDER.defineInRange("ChatServerPort",7900,0,65535);
         USE_LEGACY_SERIALIZATION = COMMON_BUILDER.comment(
                 "Use the old (pre-Base64) serialization format for writing data to the database.",
                 "Set to true ONLY if you have older mod versions reading the same database.",

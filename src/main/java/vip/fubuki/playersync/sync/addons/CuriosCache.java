@@ -74,8 +74,18 @@ public class CuriosCache {
                 for (int i = 0; i < dynStacks.getSlots(); i++) {
                     ItemStack stack = dynStacks.getStackInSlot(i);
                     if (!stack.isEmpty()) {
-                        String serialized = VanillaSync.getNbtForStorage(stack);
-                        flatMap.put(slotType + ":" + i, serialized);
+                        flatMap.put(slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
+                    }
+                }
+                // FIX A2: capture cosmetic stacks in the death cache, matching the
+                // snapshot/apply format ("cos:slotType:index"). Without this, a player
+                // who died with a cosmetic curio would lose it on rejoin because the
+                // apply path clears cosmetic slots unconditionally.
+                IDynamicStackHandler cosStacks = stacksHandler.getCosmeticStacks();
+                for (int i = 0; i < cosStacks.getSlots(); i++) {
+                    ItemStack stack = cosStacks.getStackInSlot(i);
+                    if (!stack.isEmpty()) {
+                        flatMap.put("cos:" + slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
                     }
                 }
             });

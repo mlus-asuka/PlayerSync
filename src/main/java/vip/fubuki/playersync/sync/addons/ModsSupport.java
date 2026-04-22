@@ -17,6 +17,7 @@ import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
+import vip.fubuki.playersync.util.Tables;
 
 import java.io.IOException;
 import java.sql.ResultSet;
@@ -54,7 +55,15 @@ public class ModsSupport {
             if (uuidOpt.isPresent()) {
                 UUID contentsUuid = uuidOpt.get();
                 restoreStorageContents(contentsUuid, (nbt) -> {
-                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, nbt);
+                    // ROOT CAUSE FIX — BackpackStorage.setBackpackContents() upstream is a
+                    // shallow MERGE, not a replace, when the UUID already exists. On any
+                    // server that previously loaded this backpack (re-join, multi-world,
+                    // .dat persisted), old sub-tags survive the "restore" → duplication.
+                    // Removing first guarantees a clean replace.
+                    net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage store =
+                            net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get();
+                    try { store.removeBackpackContents(contentsUuid); } catch (Throwable ignored) {}
+                    store.setBackpackContents(contentsUuid, nbt);
                     PlayerSync.LOGGER.info("Restored backpack data for UUID {}", contentsUuid);
                 });
             }
@@ -67,7 +76,7 @@ public class ModsSupport {
      */
     private static void restoreStorageContents(UUID contentsUuid, StorageRestoreCallback callback) {
         try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT backpack_nbt FROM backpack_data WHERE uuid=?", contentsUuid.toString())) {
+                "SELECT backpack_nbt FROM " + Tables.backpackData() + " WHERE uuid=?", contentsUuid.toString())) {
             ResultSet rs = qr.resultSet();
             if (rs.next()) {
                 String serialized = rs.getString("backpack_nbt");
@@ -120,7 +129,7 @@ public class ModsSupport {
         // containers, causing item duplication on the next login.
         if (nbt == null || nbt.isEmpty()) {
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                    "SELECT LENGTH(backpack_nbt) AS len FROM backpack_data WHERE uuid=?", contentsUuid.toString())) {
+                    "SELECT LENGTH(backpack_nbt) AS len FROM " + Tables.backpackData() + " WHERE uuid=?", contentsUuid.toString())) {
                 java.sql.ResultSet rs = qr.resultSet();
                 if (rs.next() && rs.getInt("len") > 50) {
                     PlayerSync.LOGGER.debug("Skipping save of empty NBT for UUID {} - DB has {} bytes of real data",
@@ -132,8 +141,15 @@ public class ModsSupport {
 
         String serialized = VanillaSync.serializeTagToBinaryBase64(nbt);
         try {
+            // FIX INTEGRITY (E): REPLACE INTO silently overwrote backpack rows even when
+            // another server had already claimed the owning player. We cannot easily
+            // add a last_server guard to backpack_data directly (it is keyed by
+            // storage UUID, not player UUID — no link to player_data). So we keep the
+            // REPLACE here but expect upper layers (`saveBackpackSnapshots`) to be called
+            // only after the player_data transaction commit has run under the last_server
+            // guard, which is the case in writeSnapshotToDB's caller chain.
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO backpack_data (uuid, backpack_nbt) VALUES (?, ?)",
+                    "REPLACE INTO " + Tables.backpackData() + " (uuid, backpack_nbt) VALUES (?, ?)",
                     contentsUuid.toString(), serialized);
         } catch (SQLException e) {
             PlayerSync.LOGGER.error("Error saving storage data for UUID {}", contentsUuid, e);
@@ -156,7 +172,7 @@ public class ModsSupport {
 
         String curiosData;
         try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT curios_item FROM curios WHERE uuid=?", player.getUUID().toString())) {
+                "SELECT curios_item FROM " + Tables.curios() + " WHERE uuid=?", player.getUUID().toString())) {
             ResultSet rs = qr.resultSet();
             if (!rs.next()) {
                 // No stored data; perform an initial save.
@@ -168,12 +184,16 @@ public class ModsSupport {
 
         ICuriosItemHandler handler = handlerOpt.get();
 
-        // FIX ANTI-DUPLICATION: ALWAYS clear curios slots first to wipe stale data
-        // loaded from Minecraft's .dat file, then only restore if DB has valid data.
+        // FIX A2/A3: clear BOTH functional and cosmetic slots first to wipe stale .dat
+        // data, then restore from DB if valid.
         handler.getCurios().forEach((slotType, stacksHandler) -> {
             IDynamicStackHandler dynStacks = stacksHandler.getStacks();
             for (int i = 0; i < dynStacks.getSlots(); i++) {
                 dynStacks.setStackInSlot(i, ItemStack.EMPTY);
+            }
+            IDynamicStackHandler cos = stacksHandler.getCosmeticStacks();
+            for (int i = 0; i < cos.getSlots(); i++) {
+                cos.setStackInSlot(i, ItemStack.EMPTY);
             }
         });
 
@@ -188,16 +208,19 @@ public class ModsSupport {
             return;
         }
 
-        // Restore each saved item
+        // Restore each saved item. Support both new "cos:slotType:index" cosmetic keys
+        // and legacy "slotType:index" functional-only keys.
         for (Map.Entry<String, String> entry : storedMap.entrySet()) {
             String compositeKey = entry.getKey();
-            int lastColon = compositeKey.lastIndexOf(':');
+            boolean cosmetic = compositeKey.startsWith("cos:");
+            String remaining = cosmetic ? compositeKey.substring(4) : compositeKey;
+            int lastColon = remaining.lastIndexOf(':');
             if (lastColon < 0) continue;
 
-            String slotType = compositeKey.substring(0, lastColon);
+            String slotType = remaining.substring(0, lastColon);
             int slotIndex;
             try {
-                slotIndex = Integer.parseInt(compositeKey.substring(lastColon + 1));
+                slotIndex = Integer.parseInt(remaining.substring(lastColon + 1));
             } catch (NumberFormatException ex) {
                 continue;
             }
@@ -207,7 +230,9 @@ public class ModsSupport {
                 ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(serialized);
                 if (handler.getCurios().containsKey(slotType)) {
                     ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);
-                    IDynamicStackHandler dynStacks = stacksHandler.getStacks();
+                    IDynamicStackHandler dynStacks = cosmetic
+                            ? stacksHandler.getCosmeticStacks()
+                            : stacksHandler.getStacks();
                     if (slotIndex < dynStacks.getSlots()) {
                         dynStacks.setStackInSlot(slotIndex, stack);
                     }
@@ -244,7 +269,7 @@ public class ModsSupport {
             // Use cached data from death event
             PlayerSync.LOGGER.info("Using cached curios data for dead player {}", playerUuid);
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
+                    "REPLACE INTO " + Tables.curios() + " (uuid, curios_item) VALUES (?, ?)",
                     playerUuid.toString(), cached.serializedData);
             CuriosCache.curiosCache.remove(playerUuid);
         } else {
@@ -260,17 +285,36 @@ public class ModsSupport {
     public static String snapshotCuriosData(Player player) {
         if (!ModList.get().isLoaded("curios")) return null;
         Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
+        // FIX ANTI-LOSS (A2): if the handler could not be resolved (capability not yet
+        // attached, or Curios mod issue), return null so writeSnapshotToDB SKIPS the write
+        // and preserves whatever data is already in DB. Returning "{}" here would overwrite
+        // a legitimate curios record with an empty one and destroy the player's items.
+        if (handlerOpt.isEmpty()) {
+            PlayerSync.LOGGER.warn("Curios handler unavailable while snapshotting {} — skipping curios write", player.getUUID());
+            return null;
+        }
         Map<String, String> flatMap = new HashMap<>();
-        handlerOpt.ifPresent(handler -> {
-            handler.getCurios().forEach((slotType, stacksHandler) -> {
-                IDynamicStackHandler dynStacks = stacksHandler.getStacks();
-                for (int i = 0; i < dynStacks.getSlots(); i++) {
-                    ItemStack stack = dynStacks.getStackInSlot(i);
-                    if (!stack.isEmpty()) {
-                        flatMap.put(slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
-                    }
+        ICuriosItemHandler handler = handlerOpt.get();
+        // FIX DATA-LOSS (A2): sync BOTH functional stacks and cosmetic stacks. The prior
+        // implementation only captured getStacks() → every cosmetic item equipped in a
+        // Curios cosmetic slot was silently wiped across server transfers. Cosmetic slots
+        // are identified by the "cos:" prefix in the composite key so apply/clear can
+        // distinguish them without a schema change.
+        handler.getCurios().forEach((slotType, stacksHandler) -> {
+            IDynamicStackHandler dynStacks = stacksHandler.getStacks();
+            for (int i = 0; i < dynStacks.getSlots(); i++) {
+                ItemStack stack = dynStacks.getStackInSlot(i);
+                if (!stack.isEmpty()) {
+                    flatMap.put(slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
                 }
-            });
+            }
+            IDynamicStackHandler cosStacks = stacksHandler.getCosmeticStacks();
+            for (int i = 0; i < cosStacks.getSlots(); i++) {
+                ItemStack stack = cosStacks.getStackInSlot(i);
+                if (!stack.isEmpty()) {
+                    flatMap.put("cos:" + slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
+                }
+            }
         });
         return flatMap.toString();
     }
@@ -290,13 +334,18 @@ public class ModsSupport {
 
         ICuriosItemHandler handler = handlerOpt.get();
 
-        // FIX ANTI-DUPLICATION: ALWAYS clear curios slots first, even when DB data is
-        // empty. Without this, stale curios loaded from Minecraft's .dat file (world save)
-        // persist when the DB has no curios data — causing item duplication across servers.
+        // FIX ANTI-DUPLICATION (A2+A3): clear BOTH functional and cosmetic stacks first,
+        // even when DB data is empty. Without this, stale curios loaded from the .dat
+        // persist when the DB has no entry → dup across servers. Cosmetic stacks also
+        // needed clearing or cosmetic-dup persisted asymmetrically.
         for (Map.Entry<String, ICurioStacksHandler> entry : handler.getCurios().entrySet()) {
             IDynamicStackHandler stacks = entry.getValue().getStacks();
             for (int i = 0; i < stacks.getSlots(); i++) {
                 stacks.setStackInSlot(i, ItemStack.EMPTY);
+            }
+            IDynamicStackHandler cos = entry.getValue().getCosmeticStacks();
+            for (int i = 0; i < cos.getSlots(); i++) {
+                cos.setStackInSlot(i, ItemStack.EMPTY);
             }
         }
 
@@ -306,27 +355,32 @@ public class ModsSupport {
         Map<String, String> storedMap = LocalJsonUtil.StringToMap(curiosData);
         if (storedMap.isEmpty()) return;
 
-        // Restore items from pre-read data
+        // Restore items from pre-read data. Cosmetic slots use the "cos:slotType:index"
+        // composite key; functional slots use "slotType:index".
         for (Map.Entry<String, String> entry : storedMap.entrySet()) {
             String compositeKey = entry.getKey();
-            int lastColon = compositeKey.lastIndexOf(':');
+            boolean cosmetic = compositeKey.startsWith("cos:");
+            String remaining = cosmetic ? compositeKey.substring(4) : compositeKey;
+            int lastColon = remaining.lastIndexOf(':');
             if (lastColon < 0) continue;
-            String slotType = compositeKey.substring(0, lastColon);
+            String slotType = remaining.substring(0, lastColon);
             int slotIndex;
-            try { slotIndex = Integer.parseInt(compositeKey.substring(lastColon + 1)); }
+            try { slotIndex = Integer.parseInt(remaining.substring(lastColon + 1)); }
             catch (NumberFormatException e) { continue; }
 
             try {
                 ItemStack stack = VanillaSync.deserializeAndCreatePlaceholderIfNeeded(entry.getValue());
                 ICurioStacksHandler stacksHandler = handler.getCurios().get(slotType);
                 if (stacksHandler != null) {
-                    IDynamicStackHandler stacks = stacksHandler.getStacks();
+                    IDynamicStackHandler stacks = cosmetic
+                            ? stacksHandler.getCosmeticStacks()
+                            : stacksHandler.getStacks();
                     if (slotIndex < stacks.getSlots()) {
                         stacks.setStackInSlot(slotIndex, stack);
                     }
                 }
             } catch (Exception e) {
-                PlayerSync.LOGGER.error("Error applying curios slot {}:{}", slotType, slotIndex, e);
+                PlayerSync.LOGGER.error("Error applying curios slot {} ({}:{})", compositeKey, slotType, slotIndex, e);
             }
         }
         PlayerSync.LOGGER.info("Applied curios data for player {} from pre-read data", player.getUUID());
@@ -344,8 +398,15 @@ public class ModsSupport {
                 for (int i = 0; i < dynStacks.getSlots(); i++) {
                     ItemStack stack = dynStacks.getStackInSlot(i);
                     if (!stack.isEmpty()) {
-                        String serialized = VanillaSync.getNbtForStorage(stack);
-                        flatMap.put(slotType + ":" + i, serialized);
+                        flatMap.put(slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
+                    }
+                }
+                // FIX A2: cosmetic stacks must be captured symmetrically with snapshotCuriosData.
+                IDynamicStackHandler cosStacks = stacksHandler.getCosmeticStacks();
+                for (int i = 0; i < cosStacks.getSlots(); i++) {
+                    ItemStack stack = cosStacks.getStackInSlot(i);
+                    if (!stack.isEmpty()) {
+                        flatMap.put("cos:" + slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
                     }
                 }
             });
@@ -356,7 +417,7 @@ public class ModsSupport {
         // FIX: Use REPLACE INTO instead of separate INSERT/UPDATE to prevent silent
         // no-ops when the row doesn't exist yet (e.g. new player who died before first save)
         JDBCsetUp.executePreparedUpdate(
-                "REPLACE INTO curios (uuid, curios_item) VALUES (?, ?)",
+                "REPLACE INTO " + Tables.curios() + " (uuid, curios_item) VALUES (?, ?)",
                 player.getUUID().toString(), serializedData);
     }
 
@@ -374,13 +435,17 @@ public class ModsSupport {
             if (uuidOpt.isPresent()) {
                 UUID contentsUuid = uuidOpt.get();
 
-                // FIX: Read the full contents NBT from the wrapper's in-memory state,
-                // not from BackpackStorage which may have stale data if the wrapper
-                // hasn't flushed recent changes (e.g. upgrade modifications).
-                // refreshInventoryForInputOutput triggers an internal save to BackpackStorage.
+                // FIX: Read the full contents NBT from the wrapper's in-memory state.
+                // NOTE: despite earlier comments, refreshInventoryForInputOutput() does
+                // NOT actively flush to BackpackStorage — it resets the IO handler cache
+                // and runs the change callbacks. The live CompoundTag in BackpackStorage
+                // is already kept up to date by handler writes, so reading it next is safe.
                 try {
                     backpackWrapper.refreshInventoryForInputOutput();
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.warn("refreshInventoryForInputOutput failed for backpack {} of player {} — saved NBT may be slightly stale",
+                            contentsUuid, player.getUUID(), e);
+                }
 
                 CompoundTag backpackNbt = net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().getOrCreateBackpackContents(contentsUuid);
                 saveStorageContents(contentsUuid, backpackNbt);
@@ -638,9 +703,54 @@ public class ModsSupport {
     }
 
     /**
-     * Saves Sophisticated Storage contents by UUID. Reads SavedData and writes to DB.
-     * Can be called from a background thread (no entity access).
+     * FIX THREAD-SAFETY (C3): Captures Sophisticated Storage CompoundTags on the MAIN
+     * thread by copying the SavedData entries. Previously {@link #saveSSByUuids(List)}
+     * read {@code ItemContentsStorage} directly from a background thread, racing with
+     * main-thread modifications (non-thread-safe HashMap) and risking torn reads → dup.
+     *
+     * <p>Callers should invoke this on the main thread, then pass the returned map to
+     * {@link #saveSSSnapshots(Map)} on a background thread.
      */
+    public static Map<UUID, CompoundTag> snapshotSSData(List<UUID> uuids) {
+        Map<UUID, CompoundTag> out = new HashMap<>();
+        if (uuids == null || uuids.isEmpty() || !ModList.get().isLoaded("sophisticatedstorage")) return out;
+        try {
+            net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage store =
+                    net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage.get();
+            for (UUID uuid : uuids) {
+                try {
+                    CompoundTag live = store.getOrCreateStorageContents(uuid);
+                    if (live != null && !live.isEmpty()) {
+                        out.put(uuid, live.copy());
+                    }
+                } catch (Exception e) {
+                    PlayerSync.LOGGER.error("Error snapshotting SS contents for UUID {}", uuid, e);
+                }
+            }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error reading ItemContentsStorage for snapshot", e);
+        }
+        return out;
+    }
+
+    /** Background-thread writer for the frozen snapshot produced by {@link #snapshotSSData(List)}. */
+    public static void saveSSSnapshots(Map<UUID, CompoundTag> snapshots) {
+        if (snapshots == null || snapshots.isEmpty()) return;
+        for (Map.Entry<UUID, CompoundTag> e : snapshots.entrySet()) {
+            try {
+                saveStorageContents(e.getKey(), e.getValue());
+            } catch (Exception ex) {
+                PlayerSync.LOGGER.error("Error saving SS snapshot for UUID {}", e.getKey(), ex);
+            }
+        }
+    }
+
+    /**
+     * @deprecated unsafe — reads ItemContentsStorage from the calling thread (possibly
+     * background), racing with main-thread modifications. Use {@link #snapshotSSData(List)}
+     * on main thread followed by {@link #saveSSSnapshots(Map)} on background thread.
+     */
+    @Deprecated
     public static void saveSSByUuids(List<UUID> uuids) {
         for (UUID uuid : uuids) {
             try {

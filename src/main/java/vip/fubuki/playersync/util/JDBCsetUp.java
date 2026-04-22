@@ -43,23 +43,24 @@ public class JDBCsetUp {
         cfg.setUsername(JdbcConfig.USERNAME.get());
         cfg.setPassword(JdbcConfig.PASSWORD.get());
 
-        // FIX PERF: Increased pool for 35+ player servers.
-        // Old: 10 max / 2 idle → 35 concurrent saves queued on 10 connections → 250ms+ wait.
-        // New: 25 max / 4 idle → handles peak load without connection starvation.
-        cfg.setMaximumPoolSize(25);
+        // FIX PERF (C9): right-sized pool. 25 was oversized; empirical HikariCP rule is
+        // ~ cores*2 + spindles. 15 handles 35 concurrent players comfortably and reduces
+        // MySQL server-side context switching.
+        cfg.setMaximumPoolSize(15);
         cfg.setMinimumIdle(4);
 
         // Connection lifecycle
-        cfg.setConnectionTimeout(30_000L);   // 30 s – how long to wait for a free slot
-        cfg.setIdleTimeout(600_000L);        // 10 min – evict idle connections
+        cfg.setConnectionTimeout(10_000L);   // 10 s – fail fast on MySQL outage
+        cfg.setIdleTimeout(300_000L);        // 5 min – evict idle connections sooner
         cfg.setMaxLifetime(1_800_000L);      // 30 min – recycle before MySQL wait_timeout
         cfg.setKeepaliveTime(300_000L);      // 5 min – ping idle connections (NOT hot path)
 
         cfg.setAutoCommit(true);
         cfg.setPoolName("PlayerSync");
 
-        // FIX PERF: Detect connection leaks (connections held > 10s without being returned)
-        cfg.setLeakDetectionThreshold(10000);
+        // FIX PERF (C9): 25s threshold — covers worst-case doPlayerJoin poll bursts without
+        // flooding logs with false positives. Previous 10s fired during legitimate 15-30s polls.
+        cfg.setLeakDetectionThreshold(25_000L);
 
         dataSource = new HikariDataSource(cfg);
         LOGGER.info("[PlayerSync] HikariCP pool ready (maxPool={}, minIdle={})",
@@ -203,29 +204,38 @@ public class JDBCsetUp {
      *
      * Each entry is {sql, params...}. All execute in order within one transaction.
      * If any fails, the entire batch is rolled back.
+     *
+     * @return array of per-statement affected-row counts (parallel to {@code statements}).
+     *         Callers can inspect the first entry to detect silent no-ops caused by
+     *         {@code AND last_server=?} guards blocking a stale write.
      */
-    public static void executeBatchTransaction(Object[]... statements) throws SQLException {
+    public static int[] executeBatchTransaction(Object[]... statements) throws SQLException {
+        int[] counts = new int[statements.length];
         try (Connection conn = getConnection()) {
             conn.setAutoCommit(false);
             try {
-                for (Object[] entry : statements) {
+                for (int idx = 0; idx < statements.length; idx++) {
+                    Object[] entry = statements[idx];
                     String sql = (String) entry[0];
                     LOGGER.trace(sql);
                     try (PreparedStatement stmt = conn.prepareStatement(sql)) {
                         for (int i = 1; i < entry.length; i++) {
                             stmt.setObject(i, entry[i]);
                         }
-                        stmt.executeUpdate();
+                        counts[idx] = stmt.executeUpdate();
                     }
                 }
                 conn.commit();
             } catch (SQLException e) {
-                try { conn.rollback(); } catch (SQLException ignored) {}
+                try { conn.rollback(); } catch (SQLException rbEx) {
+                    LOGGER.error("[PlayerSync] Rollback failed while handling batch transaction error", rbEx);
+                }
                 throw e;
             } finally {
                 conn.setAutoCommit(true);
             }
         }
+        return counts;
     }
 
     public static QueryResult executePreparedQuery(String sql, Object... params) throws SQLException {

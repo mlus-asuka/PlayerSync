@@ -49,6 +49,7 @@ import vip.fubuki.playersync.sync.addons.ModsSupport;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 import vip.fubuki.playersync.util.PSThreadPoolFactory;
+import vip.fubuki.playersync.util.Tables;
 
 import java.io.File;
 import java.io.IOException;
@@ -129,7 +130,7 @@ public class VanillaSync {
         // Use try-with-resources to prevent connection leaks
         String advancementsData;
         try (JDBCsetUp.QueryResult advancementsQuery = JDBCsetUp.executePreparedQuery(
-                "SELECT advancements FROM player_data WHERE uuid=?", player_uuid)) {
+                "SELECT advancements FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
             ResultSet advancementsResultSet = advancementsQuery.resultSet();
 
             if (!advancementsResultSet.next()) {
@@ -203,7 +204,7 @@ public class VanillaSync {
 
             // First query: check basic player data using prepared statement
             try (JDBCsetUp.QueryResult qr1 = JDBCsetUp.executePreparedQuery(
-                    "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
+                    "SELECT online, last_server FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                 ResultSet rs1 = qr1.resultSet();
                 if (!rs1.next()) {
                     PlayerSync.LOGGER.info("A new-player connection detected");
@@ -219,7 +220,7 @@ public class VanillaSync {
             int alreadyKicked = 0;
             if (JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get() && online && lastServer != JdbcConfig.SERVER_ID.get()) {
                 try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
-                        "SELECT last_update, enable FROM server_info WHERE id=?", lastServer)) {
+                        "SELECT last_update, enable FROM " + Tables.serverInfo() + " WHERE id=?", lastServer)) {
                     ResultSet rs2 = qr2.resultSet();
                     if (rs2.next()) {
                         long last_update = rs2.getLong("last_update");
@@ -229,7 +230,7 @@ public class VanillaSync {
                             event.getConnection().disconnect(Component.translatableWithFallback("playersync.already_online","You can't join more than one synchronization server at the same time."));
                             alreadyKicked = 1;
                         } else {
-                            JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", lastServer);
+                            JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE id=?", lastServer);
                         }
                     }
                 }
@@ -324,7 +325,7 @@ public class VanillaSync {
             // This keeps last_server pointing to the old server so this poll can detect it.
             for (int attempt = 0; attempt < 60; attempt++) {
                 try (JDBCsetUp.QueryResult qrCheck = JDBCsetUp.executePreparedQuery(
-                        "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
+                        "SELECT online, last_server FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                     ResultSet rsCheck = qrCheck.resultSet();
                     if (!rsCheck.next()) break; // new player, nothing pending
                     int otherServer = rsCheck.getInt("last_server");
@@ -349,14 +350,14 @@ public class VanillaSync {
             // This is safe because: (1) the old server's data+online=0 write already completed,
             // (2) any future writes from the old server will be blocked by AND last_server=?.
             JDBCsetUp.executePreparedUpdate(
-                    "UPDATE player_data SET last_server=? WHERE uuid=?",
+                    "UPDATE " + Tables.playerData() + " SET last_server=? WHERE uuid=?",
                     JdbcConfig.SERVER_ID.get(), player_uuid);
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
 
             boolean playerExists;
             try (JDBCsetUp.QueryResult qr1 = JDBCsetUp.executePreparedQuery(
-                    "SELECT uuid FROM player_data WHERE uuid=?", player_uuid)) {
+                    "SELECT uuid FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                 playerExists = qr1.resultSet().next();
             }
 
@@ -384,7 +385,7 @@ public class VanillaSync {
             final String leftHand, cursors, armorData, inventoryData, enderChestData, effectData;
 
             try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
-                    "SELECT * FROM player_data WHERE uuid=?", player_uuid)) {
+                    "SELECT * FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                 ResultSet rs2 = qr2.resultSet();
                 if (!rs2.next()) {
                     PlayerSync.LOGGER.warn("No data found for existing player {}", player_uuid);
@@ -407,7 +408,7 @@ public class VanillaSync {
             final String curiosData;
             if (ModList.get().isLoaded("curios")) {
                 try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                        "SELECT curios_item FROM curios WHERE uuid=?", player_uuid)) {
+                        "SELECT curios_item FROM " + Tables.curios() + " WHERE uuid=?", player_uuid)) {
                     ResultSet rs = qr.resultSet();
                     curiosData = rs.next() ? rs.getString("curios_item") : null;
                 }
@@ -416,7 +417,7 @@ public class VanillaSync {
             final String accessoriesData;
             if (ModList.get().isLoaded("accessories")) {
                 try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                        "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
+                        "SELECT data_value FROM " + Tables.modPlayerData() + " WHERE uuid=? AND mod_id=?",
                         player_uuid, "accessories")) {
                     ResultSet rs = qr.resultSet();
                     accessoriesData = rs.next() ? rs.getString("data_value") : null;
@@ -426,7 +427,7 @@ public class VanillaSync {
             final String cosmeticArmorData;
             if (ModList.get().isLoaded("cosmeticarmorreworked")) {
                 try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                        "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
+                        "SELECT data_value FROM " + Tables.modPlayerData() + " WHERE uuid=? AND mod_id=?",
                         player_uuid, "cosmeticarmor")) {
                     ResultSet rs = qr.resultSet();
                     cosmeticArmorData = rs.next() ? rs.getString("data_value") : null;
@@ -435,7 +436,7 @@ public class VanillaSync {
 
             final String attachmentsData;
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                    "SELECT data_value FROM mod_player_data WHERE uuid=? AND mod_id=?",
+                    "SELECT data_value FROM " + Tables.modPlayerData() + " WHERE uuid=? AND mod_id=?",
                     player_uuid, "neoforge_attachments")) {
                 ResultSet rs = qr.resultSet();
                 attachmentsData = rs.next() ? rs.getString("data_value") : null;
@@ -574,11 +575,15 @@ public class VanillaSync {
         int[] cached = connectCheckCache.remove(player_uuid);
 
         if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) {
-            try {
-                JDBCsetUp.executePreparedUpdate(
-                        "UPDATE player_data SET online=1 WHERE uuid=?",
-                        player_uuid);
-            } catch (SQLException ignored) {}
+            // FIX PERF (C1): online=1 is fire-and-forget; no login-critical decision depends
+            // on the write completing synchronously. Keeping this off the main thread saves
+            // one MySQL round-trip per join.
+            executorService.execute(() -> {
+                try {
+                    JDBCsetUp.executePreparedUpdate(
+                            "UPDATE " + Tables.playerData() + " SET online=1 WHERE uuid=?", player_uuid);
+                } catch (SQLException ignored) {}
+            });
             return;
         }
 
@@ -603,7 +608,7 @@ public class VanillaSync {
                 boolean online = false;
                 int lastServer = 0;
                 try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                        "SELECT online, last_server FROM player_data WHERE uuid=?", player_uuid)) {
+                        "SELECT online, last_server FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                     ResultSet rs = qr.resultSet();
                     if (rs.next()) {
                         online = rs.getBoolean("online");
@@ -612,7 +617,7 @@ public class VanillaSync {
                 }
                 if (online && lastServer != JdbcConfig.SERVER_ID.get()) {
                     try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executePreparedQuery(
-                            "SELECT last_update, enable FROM server_info WHERE id=?", lastServer)) {
+                            "SELECT last_update, enable FROM " + Tables.serverInfo() + " WHERE id=?", lastServer)) {
                         ResultSet rs2 = qr2.resultSet();
                         if (rs2.next()) {
                             long lastUpdate = rs2.getLong("last_update");
@@ -624,16 +629,23 @@ public class VanillaSync {
                                         "You can't join more than one synchronization server at the same time."));
                                 return;
                             }
-                            JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", lastServer);
+                            JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE id=?", lastServer);
                         }
                     }
                 }
             }
 
-            // Mark online=1 — only DB call on main thread in the fast path (1 query instead of 4)
-            JDBCsetUp.executePreparedUpdate(
-                    "UPDATE player_data SET online=1 WHERE uuid=?",
-                    player_uuid);
+            // FIX PERF (C1): Mark online=1 asynchronously — no main-thread MySQL round-trip.
+            // The cache-based kick decision above is already final; this write only updates
+            // the persistent flag for cross-server detection, which tolerates a few ms of delay.
+            executorService.execute(() -> {
+                try {
+                    JDBCsetUp.executePreparedUpdate(
+                            "UPDATE " + Tables.playerData() + " SET online=1 WHERE uuid=?", player_uuid);
+                } catch (SQLException e) {
+                    PlayerSync.LOGGER.error("Async online=1 update failed for {}", player_uuid, e);
+                }
+            });
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error during kick check for player {}", player_uuid, e);
         }
@@ -862,7 +874,7 @@ public class VanillaSync {
         // Always update server heartbeat — async, never blocks main thread
         executorService.submit(() -> {
             try {
-                JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?",
+                JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET last_update=? WHERE id=?",
                         System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("Error updating server heartbeat on SaveToFile", e);
@@ -936,7 +948,8 @@ public class VanillaSync {
                     // === MAIN THREAD: Snapshot (entity reads, fast) ===
                     final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
                     final Map<UUID, CompoundTag> backpackSnapshots = ModsSupport.snapshotBackpackData(player);
-                    final List<UUID> ssUuids = ModsSupport.collectSSUuids(player);
+                    // FIX C3: snapshot SS CompoundTags on main thread (was a background-thread read).
+                    final Map<UUID, CompoundTag> ssSnapshots = ModsSupport.snapshotSSData(ModsSupport.collectSSUuids(player));
                     final List<UUID> rs2DiskUuids;
                     final ServerLevel rs2Level;
                     final HolderLookup.Provider rs2Registry;
@@ -956,7 +969,7 @@ public class VanillaSync {
                             // FIX ANTI-DUPLICATION: atomic data+online=0 with last_server guard
                             writeSnapshotToDB(snapshot, true);
                             ModsSupport.saveBackpackSnapshots(backpackSnapshots);
-                            ModsSupport.saveSSByUuids(ssUuids);
+                            ModsSupport.saveSSSnapshots(ssSnapshots);
                             if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
                                 ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
                             }
@@ -965,7 +978,7 @@ public class VanillaSync {
                         } catch (Exception e) {
                             PlayerSync.LOGGER.error("Error saving player {} on shutdown", puuid, e);
                             try {
-                                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?",
+                                JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
                                         puuid, JdbcConfig.SERVER_ID.get());
                             } catch (Exception e2) {
                                 PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline on shutdown", puuid, e2);
@@ -975,7 +988,7 @@ public class VanillaSync {
 
                 } catch (Exception e) {
                     PlayerSync.LOGGER.error("Error snapshotting player {} on shutdown", puuid, e);
-                    try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?", puuid, JdbcConfig.SERVER_ID.get()); }
+                    try { JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?", puuid, JdbcConfig.SERVER_ID.get()); }
                     catch (Exception ignored) {}
                 }
             }
@@ -990,7 +1003,7 @@ public class VanillaSync {
                 PlayerSync.LOGGER.error("Error waiting for shutdown saves", e);
             }
         }
-        JDBCsetUp.executePreparedUpdate("UPDATE server_info SET enable=0 WHERE id=?", JdbcConfig.SERVER_ID.get());
+        JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE id=?", JdbcConfig.SERVER_ID.get());
 
         // Shut down the background executor — no new tasks after this point
         executorService.shutdown();
@@ -1006,6 +1019,10 @@ public class VanillaSync {
         // Previously this was in PlayerSync.onServerStopping which could fire BEFORE
         // this handler, closing the pool while shutdown saves were still running.
         JDBCsetUp.shutdownPool();
+        // FIX REGRESSION: flush+shutdown the dedicated logger here, AFTER all shutdown
+        // saves have logged their completion. Previously SyncLogger.shutdown() fired in
+        // PlayerSync.onServerStopping, dropping every save log entry on the floor.
+        vip.fubuki.playersync.util.SyncLogger.shutdown();
     }
 
     /**
@@ -1038,14 +1055,14 @@ public class VanillaSync {
 
         if (deadPlayerWhileLogging.remove(player_uuid)) {
             PlayerSync.LOGGER.warn("A dead or dying player was kicked, uuid: {}", player_uuid);
-            try {
-                // FIX: No last_server guard here. These paths fire before doPlayerJoin sets
-                // last_server, so the guard would fail and online would stay stuck at 1.
-                // Safe because these paths don't write player DATA — just the online flag.
-                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
-            } catch (SQLException e) {
-                PlayerSync.LOGGER.error("Error marking dead player offline: {}", player_uuid, e);
-            }
+            // FIX PERF (C1): async — main thread does not wait for MySQL.
+            executorService.execute(() -> {
+                try {
+                    JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=?", player_uuid);
+                } catch (SQLException e) {
+                    PlayerSync.LOGGER.error("Error marking dead player offline: {}", player_uuid, e);
+                }
+            });
             syncNotCompletedPlayer.remove(player_uuid);
             removePlayerLock(player_uuid);
             return;
@@ -1054,12 +1071,14 @@ public class VanillaSync {
         if (syncNotCompletedPlayer.remove(player_uuid)) {
             PlayerSync.LOGGER.warn("Player {} logged out with uncompleted sync. Data won't be saved for safety.", player_uuid);
             SyncLogger.saveSkipped(player_uuid, "LOGOUT", "Sync not completed — data preserved in DB, .dat data discarded");
-            try {
-                // FIX: No last_server guard — same reason as above.
-                JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=?", player_uuid);
-            } catch (SQLException e) {
-                PlayerSync.LOGGER.error("Error marking unsynced player offline: {}", player_uuid, e);
-            }
+            // FIX PERF (C1): async.
+            executorService.execute(() -> {
+                try {
+                    JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=?", player_uuid);
+                } catch (SQLException e) {
+                    PlayerSync.LOGGER.error("Error marking unsynced player offline: {}", player_uuid, e);
+                }
+            });
             removePlayerLock(player_uuid);
             return;
         }
@@ -1068,6 +1087,9 @@ public class VanillaSync {
         Player player = event.getEntity();
         ReentrantLock lock = getPlayerLock(player_uuid);
         lock.lock();
+        // Declared outside the try so the outer catch can complete/remove the future
+        // if snapshot capture or task submission fails (see FIX REGRESSION below).
+        CompletableFuture<Void> saveFuture = null;
         try {
             // FIX ANTI-DUPLICATION: Force-close the disconnecting player's container FIRST.
             // If another player is viewing this player's backpack, the container stays open
@@ -1076,15 +1098,36 @@ public class VanillaSync {
             if (player instanceof ServerPlayer sp && sp.containerMenu != sp.inventoryMenu) {
                 sp.closeContainer();
             }
-            // Also close any other player's view of this player's backpack containers
-            if (player.getServer() != null) {
-                for (ServerPlayer other : player.getServer().getPlayerList().getPlayers()) {
-                    if (other == player) continue;
-                    if (other.containerMenu != other.inventoryMenu) {
-                        // Close any open container to prevent post-snapshot modifications
-                        // This is aggressive but safe — the viewer just sees their inventory close
-                        // TODO: Only close if the container is specifically this player's backpack
-                        // For now, closing all is safer than risking duplication
+            // FIX CRITICAL ANTI-DUP: close every other player's container menu if it was
+            // opened against this disconnecting player's inventory/backpack. If another
+            // player keeps the container open and takes items after our snapshot, those
+            // items are duplicated (the snapshot contains them, and the other player has them).
+            // We conservatively close all non-inventory containers referencing this player's
+            // inventory slots or any menu whose class name hints at a Sophisticated Backpacks
+            // container. The viewer just sees their GUI close — no data loss.
+            // FIX COMPAT: Close only containers that actually reference the disconnecting
+            // player's inventory/enderchest. Previous version also closed any menu whose
+            // class name contained "accessor"/"curio"/... which could force-close unrelated
+            // mod menus mid-transaction. The slot-reference scan is both correct and safe
+            // across every modded menu.
+            if (player instanceof ServerPlayer disconnecting && disconnecting.getServer() != null) {
+                net.minecraft.world.entity.player.Inventory srcInv = disconnecting.getInventory();
+                net.minecraft.world.SimpleContainer srcEnder = disconnecting.getEnderChestInventory();
+                for (ServerPlayer other : disconnecting.getServer().getPlayerList().getPlayers()) {
+                    if (other == disconnecting) continue;
+                    net.minecraft.world.inventory.AbstractContainerMenu menu = other.containerMenu;
+                    if (menu == other.inventoryMenu) continue;
+                    boolean shouldClose = false;
+                    try {
+                        for (net.minecraft.world.inventory.Slot slot : menu.slots) {
+                            if (slot.container == srcInv || slot.container == srcEnder) {
+                                shouldClose = true;
+                                break;
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                    if (shouldClose) {
+                        try { other.closeContainer(); } catch (Exception ignored) {}
                     }
                 }
             }
@@ -1098,7 +1141,8 @@ public class VanillaSync {
 
             // Collect backpack/SS/RS2 data — snapshots on main thread (no async reads)
             final Map<UUID, CompoundTag> backpackSnapshots = ModsSupport.snapshotBackpackData(player);
-            final List<UUID> ssUuids = ModsSupport.collectSSUuids(player);
+            // FIX C3: SS CompoundTags snapshotted on main thread (frozen copies).
+            final Map<UUID, CompoundTag> ssSnapshots = ModsSupport.snapshotSSData(ModsSupport.collectSSUuids(player));
             final List<UUID> rs2DiskUuids;
             final ServerLevel rs2Level;
             final HolderLookup.Provider rs2RegistryAccess;
@@ -1116,7 +1160,20 @@ public class VanillaSync {
             // The online flag stays 1 until the async save completes → kick mechanism
             // prevents premature rejoin on other servers, and pendingLogoutSaves prevents
             // premature rejoin on the same server.
-            CompletableFuture<Void> saveFuture = CompletableFuture.runAsync(() -> {
+            //
+            // FIX CRITICAL RACE (B1): Register the future in pendingLogoutSaves BEFORE
+            // submitting the work. Previously runAsync was submitted first — a fast
+            // reconnect could observe pendingLogoutSaves.get(uuid)==null while the save
+            // was already queued → doPlayerJoin would proceed without waiting.
+            saveFuture = new CompletableFuture<>();
+            pendingLogoutSaves.put(player_uuid, saveFuture);
+
+            final CompletableFuture<Void> futureRef = saveFuture;
+            // FIX REGRESSION: handle RejectedExecutionException if the executor is
+            // already shut down (concurrent with server stop). Without this, the future
+            // stays forever in pendingLogoutSaves and blocks future rejoins for 15s+.
+            try {
+                executorService.execute(() -> {
                 try {
                     // FIX ANTI-DUPLICATION: writeSnapshotToDB with setOffline=true
                     // atomically writes data + online=0 in a SINGLE UPDATE, AND guards
@@ -1124,7 +1181,7 @@ public class VanillaSync {
                     // race where a slow async save overwrites fresher data from another server.
                     writeSnapshotToDB(snapshot, true);
                     ModsSupport.saveBackpackSnapshots(backpackSnapshots);
-                    ModsSupport.saveSSByUuids(ssUuids);
+                    ModsSupport.saveSSSnapshots(ssSnapshots);
                     if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
                         ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2RegistryAccess);
                     }
@@ -1135,7 +1192,7 @@ public class VanillaSync {
                     SyncLogger.saveFailed(player_uuid, "LOGOUT", e.getMessage());
                     // If the atomic write failed, still try to set online=0
                     try {
-                        JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?",
+                        JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?",
                                 player_uuid, JdbcConfig.SERVER_ID.get());
                     } catch (Exception e2) {
                         PlayerSync.LOGGER.error("CRITICAL: Failed to mark player {} offline", player_uuid, e2);
@@ -1143,16 +1200,29 @@ public class VanillaSync {
                 } finally {
                     removePlayerLock(player_uuid);
                     pendingLogoutSaves.remove(player_uuid);
+                    futureRef.complete(null);
                 }
-            }, executorService);
-
-            pendingLogoutSaves.put(player_uuid, saveFuture);
+                });
+            } catch (java.util.concurrent.RejectedExecutionException rex) {
+                // Executor is shut down (server stopping, or pool in unusable state) —
+                // drain the future so no join thread is stuck waiting 15 s on .get().
+                PlayerSync.LOGGER.warn("Logout save executor rejected task for player {} (likely shutdown in progress)", player_uuid);
+                pendingLogoutSaves.remove(player_uuid);
+                futureRef.completeExceptionally(rex);
+                removePlayerLock(player_uuid);
+            }
 
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Error during player logout save for {}", player_uuid, e);
-            try { JDBCsetUp.executePreparedUpdate("UPDATE player_data SET online=0 WHERE uuid=? AND last_server=?", player_uuid, JdbcConfig.SERVER_ID.get()); }
+            try { JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.playerData() + " SET online=0 WHERE uuid=? AND last_server=?", player_uuid, JdbcConfig.SERVER_ID.get()); }
             catch (Exception ignored) {}
             removePlayerLock(player_uuid);
+            // FIX REGRESSION: if snapshot failed AFTER pendingLogoutSaves.put, complete
+            // the future so a rejoining doPlayerJoin doesn't hang 15 s on .get().
+            if (saveFuture != null) {
+                pendingLogoutSaves.remove(player_uuid);
+                saveFuture.completeExceptionally(e);
+            }
         } finally {
             lock.unlock();
         }
@@ -1318,12 +1388,12 @@ public class VanillaSync {
             // and ALL subsequent writes with AND last_server=? fail silently → player data
             // is never saved → "players lose everything" on next login.
             JDBCsetUp.executePreparedUpdate(
-                    "INSERT INTO player_data (uuid, armor, inventory, enderchest, advancements, effects, xp, food_level, health, score, left_hand, cursors, online, last_server) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                    "INSERT INTO " + Tables.playerData() + " (uuid, armor, inventory, enderchest, advancements, effects, xp, food_level, health, score, left_hand, cursors, online, last_server) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
                     player_uuid, equipment.toString(), inventoryMap.toString(), ender_chest.toString(), json, effectMap.toString(), XP, food_level, health, score, left_hand, cursors, JdbcConfig.SERVER_ID.get());
         } else {
             // FIX: Use COALESCE for advancements to avoid wiping valid DB data with empty string
             JDBCsetUp.executePreparedUpdate(
-                    "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(NULLIF(?, ''), advancements), left_hand=?, cursors=? WHERE uuid=?",
+                    "UPDATE " + Tables.playerData() + " SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(NULLIF(?, ''), advancements), left_hand=?, cursors=? WHERE uuid=?",
                     inventoryMap.toString(), equipment.toString(), XP, effectMap.toString(), ender_chest.toString(), score, food_level, health, json, left_hand, cursors, player_uuid);
         }
     }
@@ -1452,8 +1522,8 @@ public class VanillaSync {
         // Now: 1 connection, 1 commit, automatic rollback on failure.
         String serverGuard = "(last_server=? OR last_server IS NULL)";
         String coreSql = setOffline
-                ? "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, online=0, last_server=? WHERE uuid=? AND " + serverGuard
-                : "UPDATE player_data SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, last_server=? WHERE uuid=? AND " + serverGuard;
+                ? "UPDATE " + Tables.playerData() + " SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, online=0, last_server=? WHERE uuid=? AND " + serverGuard
+                : "UPDATE " + Tables.playerData() + " SET inventory=?, armor=?, xp=?, effects=?, enderchest=?, score=?, food_level=?, health=?, advancements=COALESCE(?, advancements), left_hand=?, cursors=?, last_server=? WHERE uuid=? AND " + serverGuard;
 
         // Build batch of all statements
         List<Object[]> batch = new ArrayList<>();
@@ -1463,13 +1533,13 @@ public class VanillaSync {
                 s.inventory(), s.equipment(), s.xp(), s.effects(), s.enderChest(), s.score(), s.foodLevel(), s.health(), s.advancements(), s.leftHand(), s.cursors(), serverId, s.uuid(), serverId});
 
         // 2. Curios
-        String curioGuard = "EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND " + serverGuard + ")";
+        String curioGuard = "EXISTS (SELECT 1 FROM " + Tables.playerData() + " WHERE uuid=? AND " + serverGuard + ")";
         if (s.curiosData() != null) {
             batch.add(new Object[]{
-                    "UPDATE curios SET curios_item=? WHERE uuid=? AND " + curioGuard,
+                    "UPDATE " + Tables.curios() + " SET curios_item=? WHERE uuid=? AND " + curioGuard,
                     s.curiosData(), s.uuid(), s.uuid(), serverId});
             batch.add(new Object[]{
-                    "INSERT IGNORE INTO curios (uuid, curios_item) SELECT ?, ? FROM player_data WHERE uuid=? AND " + serverGuard,
+                    "INSERT IGNORE INTO " + Tables.curios() + " (uuid, curios_item) SELECT ?, ? FROM " + Tables.playerData() + " WHERE uuid=? AND " + serverGuard,
                     s.uuid(), s.curiosData(), s.uuid(), serverId});
         }
 
@@ -1478,17 +1548,27 @@ public class VanillaSync {
         addModDataToBatch(batch, s.uuid(), "cosmeticarmor", s.cosmeticArmorData(), serverId, serverGuard);
         addModDataToBatch(batch, s.uuid(), "neoforge_attachments", s.attachmentsData(), serverId, serverGuard);
 
-        // Execute all in one transaction
-        JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
+        // Execute all in one transaction. First statement is the core UPDATE on
+        // player_data — if it affects 0 rows, the last_server guard blocked the write
+        // (another server already claimed this player). Logging this is crucial for
+        // diagnosing silent data-loss scenarios that were previously invisible.
+        int[] counts = JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
+        if (counts.length > 0 && counts[0] == 0) {
+            SyncLogger.guardBlocked(s.uuid(), serverId,
+                    "core UPDATE affected 0 rows — player_data.last_server no longer matches this server or row was removed");
+            PlayerSync.LOGGER.warn(
+                    "PlayerSync: core write blocked by last_server guard for {} (server={}). Data was NOT persisted — another server has claimed this player.",
+                    s.uuid(), serverId);
+        }
     }
 
     private static void addModDataToBatch(List<Object[]> batch, String uuid, String modId, String data, int serverId, String serverGuard) {
         if (data == null) return;
         batch.add(new Object[]{
-                "UPDATE mod_player_data SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM player_data WHERE uuid=? AND " + serverGuard + ")",
+                "UPDATE " + Tables.modPlayerData() + " SET data_value=? WHERE uuid=? AND mod_id=? AND EXISTS (SELECT 1 FROM " + Tables.playerData() + " WHERE uuid=? AND " + serverGuard + ")",
                 data, uuid, modId, uuid, serverId});
         batch.add(new Object[]{
-                "INSERT IGNORE INTO mod_player_data (uuid, mod_id, data_value) SELECT ?, ?, ? FROM player_data WHERE uuid=? AND " + serverGuard,
+                "INSERT IGNORE INTO " + Tables.modPlayerData() + " (uuid, mod_id, data_value) SELECT ?, ?, ? FROM " + Tables.playerData() + " WHERE uuid=? AND " + serverGuard,
                 uuid, modId, data, uuid, serverId});
     }
 
@@ -1551,7 +1631,7 @@ public class VanillaSync {
             heartbeatTickCounter = 0;
             executorService.submit(() -> {
                 try {
-                    JDBCsetUp.executePreparedUpdate("UPDATE server_info SET last_update=? WHERE id=?",
+                    JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET last_update=? WHERE id=?",
                             System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
                 } catch (SQLException e) {
                     PlayerSync.LOGGER.error("Error updating server heartbeat", e);
@@ -1672,8 +1752,13 @@ public class VanillaSync {
         return totalXp;
     }
 
-    @SubscribeEvent
+    // FIX COMPAT (C1): priority=LOW + skip canceled events defends against mods like
+    // Revive Me / Corail Tombstone / Hardcore Revival that cancel LivingDeathEvent at
+    // NORMAL/HIGH priority. At LOW we run after them, and the cancel check short-circuits
+    // the death-save so "fallen" players are not mistakenly treated as dead.
+    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOW)
     public static void onPlayerDeath(LivingDeathEvent event) {
+        if (event.isCanceled()) return;
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         String puuid = player.getUUID().toString();
         if (deadPlayerWhileLogging.contains(puuid)) return;
@@ -1696,7 +1781,7 @@ public class VanillaSync {
         try {
             final PlayerDataSnapshot snapshot = snapshotPlayerData(player);
             final Map<UUID, CompoundTag> backpackSnapshots = ModsSupport.snapshotBackpackData(player);
-            final List<UUID> ssUuids = ModsSupport.collectSSUuids(player);
+            final Map<UUID, CompoundTag> ssSnapshots = ModsSupport.snapshotSSData(ModsSupport.collectSSUuids(player));
             final List<UUID> rs2DiskUuids;
             final ServerLevel rs2Level;
             final HolderLookup.Provider rs2Registry;
@@ -1717,7 +1802,7 @@ public class VanillaSync {
                 try {
                     writeSnapshotToDB(snapshot);
                     ModsSupport.saveBackpackSnapshots(backpackSnapshots);
-                    ModsSupport.saveSSByUuids(ssUuids);
+                    ModsSupport.saveSSSnapshots(ssSnapshots);
                     if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
                         ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
                     }

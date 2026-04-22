@@ -7,6 +7,9 @@ import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -33,6 +36,16 @@ public class SyncLogger {
     private static final AtomicBoolean initialized = new AtomicBoolean(false);
     private static Path logPath;
 
+    // FIX PERF (C3): Dedicated daemon scheduler so log() never opens/closes the file on
+    // the caller thread. Previous impl called flushQueue() inline → every log call from
+    // the main thread opened a FileWriter, wrote, and closed synchronously.
+    private static final ScheduledExecutorService FLUSH_EXEC = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "PlayerSync-logflush");
+        t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
+        return t;
+    });
+
     // -------------------------------------------------------------------------
     // Initialization
     // -------------------------------------------------------------------------
@@ -47,6 +60,8 @@ public class SyncLogger {
             writeRaw("=".repeat(80));
             writeRaw("PlayerSync Log — Server ID: " + JdbcConfig.SERVER_ID.get() + " — Started: " + LocalDateTime.now().format(TIME_FMT));
             writeRaw("=".repeat(80));
+            // FIX PERF (C3): single background flush every 500ms — no file I/O on hot path.
+            FLUSH_EXEC.scheduleWithFixedDelay(SyncLogger::flushQueue, 500, 500, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             System.err.println("[PlayerSync] Failed to initialize SyncLogger: " + e.getMessage());
         }
@@ -153,8 +168,7 @@ public class SyncLogger {
                     level,
                     formatted);
             writeQueue.add(line);
-            // Flush async to avoid blocking caller
-            flushQueue();
+            // FIX PERF (C3): no inline flush — background scheduler drains the queue.
         } catch (Exception ignored) {}
     }
 
@@ -191,7 +205,6 @@ public class SyncLogger {
 
     private static void writeRaw(String line) {
         writeQueue.add(line);
-        flushQueue();
     }
 
     private static void rotateIfNeeded() {
@@ -215,8 +228,10 @@ public class SyncLogger {
         } catch (IOException ignored) {}
     }
 
-    /** Call on server shutdown to flush remaining entries */
+    /** Call on server shutdown to flush remaining entries and stop the background writer. */
     public static void shutdown() {
+        try { FLUSH_EXEC.shutdown(); } catch (Exception ignored) {}
+        try { FLUSH_EXEC.awaitTermination(2, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
         flushQueue();
     }
 }
