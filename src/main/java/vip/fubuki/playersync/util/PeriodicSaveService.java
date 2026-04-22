@@ -65,25 +65,20 @@ public final class PeriodicSaveService {
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server == null || !server.isRunning()) return;
             // Hop to main thread — snapshots must happen on server thread.
-            // PHASE 7 PERF: skip the whole tick if no one is online — no need to
-            // hop to main thread or log anything for an empty server.
+            // PHASE 7 PERF: skip the whole tick if no one is online.
             if (server.getPlayerList().getPlayers().isEmpty()) return;
+            // PHASE 18: instead of hopping to main thread and snapshotting every player
+            // in one tick (the lag spike every 10 min), ENQUEUE all online players into
+            // the existing 1-player/tick staggered auto-save queue. Drain happens in
+            // onServerTick at a rate of 1 player per tick (20/sec), so 35 players take
+            // 1.75s to fully process — imperceptible per-tick.
             server.execute(() -> {
                 try {
-                    int online = 0;
-                    for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-                        if (player.getTags().contains("player_synced") && !player.isDeadOrDying()) {
-                            // Reuse VanillaSync's SaveToFile-style snapshot + async-write machinery.
-                            // We emit a synthetic SaveToFile event by calling the public entry point.
-                            vip.fubuki.playersync.sync.VanillaSync.snapshotAndQueueSave(player, "PERIODIC");
-                            online++;
-                        }
-                    }
-                    if (online > 0) {
-                        PlayerSync.LOGGER.info("[periodic-save] queued snapshots for {} player(s)", online);
-                        SyncLogger.playerEvent("SYSTEM", "PERIODIC_TICK",
-                                "Queued " + online + " player snapshot(s)");
-                    }
+                    int before = server.getPlayerList().getPlayerCount();
+                    vip.fubuki.playersync.sync.VanillaSync.enqueueAllOnlineForStaggeredSave(server);
+                    PlayerSync.LOGGER.info("[periodic-save] enqueued {} players for staggered save", before);
+                    SyncLogger.playerEvent("SYSTEM", "PERIODIC_TICK",
+                            "Enqueued " + before + " player(s) for staggered save");
                 } catch (Throwable t) {
                     PlayerSync.LOGGER.error("[periodic-save] tick body failed", t);
                 }
