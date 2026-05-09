@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Test Procedure — PlayerSync v2.1.5</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 1100px; margin: 2em auto; padding: 0 1em; color: #222; line-height: 1.55; }
+  h1 { border-bottom: 3px solid #007acc; padding-bottom: 0.3em; }
+  h2 { color: #007acc; margin-top: 1.8em; border-bottom: 1px solid #ddd; padding-bottom: 0.2em; }
+  h3 { color: #333; margin-top: 1.3em; }
+  .scenario { background: #f6f8fa; border-left: 4px solid #007acc; padding: 1em 1.2em; margin: 1em 0; border-radius: 4px; }
+  .scenario.critical { border-left-color: #d73a49; }
+  .scenario.high { border-left-color: #f0983a; }
+  .meta { font-size: 0.9em; color: #666; margin-bottom: 0.5em; }
+  .steps, .expected { margin: 0.5em 0; }
+  .steps li, .expected li { margin: 0.25em 0; }
+  code { background: #eef1f4; padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.92em; }
+  .lang-sep { margin: 4em 0 2em; border-top: 2px dashed #999; padding-top: 2em; }
+  .checkbox { margin-right: 0.5em; }
+  .tag { display: inline-block; padding: 0.1em 0.5em; border-radius: 3px; font-size: 0.8em; font-weight: bold; color: white; }
+  .tag-critical { background: #d73a49; }
+  .tag-high { background: #f0983a; }
+  .tag-medium { background: #6f42c1; }
+  .regression { background: #fff5f5; border: 1px solid #feb2b2; padding: 1em; border-radius: 4px; margin-top: 2em; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ddd; padding: 0.5em 0.8em; text-align: left; }
+  th { background: #007acc; color: white; }
+</style>
+</head>
+<body>
+
+<h1>Test Procedure — PlayerSync v2.1.5</h1>
+<div class="meta">Date : <strong>2026-04-22</strong> &nbsp;|&nbsp; Branch: <code>1.21.1-dev</code> &nbsp;|&nbsp; Minecraft 1.21.1 / NeoForge 21.1.137 / Java 21</div>
+
+<h2>Setup</h2>
+
+<ol>
+  <li>Démarrer MariaDB dev : <code>docker compose up -d</code></li>
+  <li>Build : <code>./gradlew build</code> — le JAR apparaît dans <code>build/libs/playersync-1.21.1-2.1.5.jar</code></li>
+  <li>Deux instances serveur nécessaires : <code>./gradlew runServer</code> (Server A) + copie avec <code>Server_id</code> différent dans <code>run-2/config/playersync-common.toml</code> (Server B)</li>
+  <li>Adminer : <code>http://localhost:8080</code> (login <code>playersync</code>/<code>playersync</code>)</li>
+  <li>Monitorer en continu : <code>tail -f run/logs/playersync/sync.log</code></li>
+</ol>
+
+<h2>Scenarios to test</h2>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITICAL</span>
+  <h3>1. Drop + deco rapide + reco (regression Phase 0)</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Server A, fill inventory with a diamond sword</li>
+      <li><input type="checkbox" class="checkbox"> Drop the sword with Q</li>
+      <li><input type="checkbox" class="checkbox"> Immediately disconnect (within 1 second)</li>
+      <li><input type="checkbox" class="checkbox"> Rejoin Server A</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>Inventory does NOT contain the sword</li>
+      <li>The ItemEntity is still on the ground where dropped</li>
+      <li>Player has exactly 1 copy of the sword total</li>
+      <li>Log shows <code>[SAVE] LOGOUT completed</code> then either no SaveToFile BG write or a <code>[GUARD] SaveToFile BG skipped — player already offline in DB</code></li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITICAL</span>
+  <h3>2. Backpack duplication (Sophisticated Backpacks)</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Server A, craft a SophisticatedBackpack, fill with 10 diamond blocks</li>
+      <li><input type="checkbox" class="checkbox"> Disconnect</li>
+      <li><input type="checkbox" class="checkbox"> Join Server B (configure different Server_id)</li>
+      <li><input type="checkbox" class="checkbox"> Open backpack, count diamond blocks</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>Exactly 10 diamond blocks (no duplication)</li>
+      <li>Log shows <code>[restore-backpack] uuid=... nbt_keys=... cleared_via=api</code> (or <code>reflection</code> as fallback)</li>
+      <li>No WARN about failed removeBackpackContents</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITICAL</span>
+  <h3>3. Sophisticated Storage shulker duplication</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Server A, pack a diamond-filled shulker into your inventory</li>
+      <li><input type="checkbox" class="checkbox"> Have Player B (on same server) open your inventory via admin / trade / viewer</li>
+      <li><input type="checkbox" class="checkbox"> Disconnect Player A</li>
+      <li><input type="checkbox" class="checkbox"> Player A reconnects to Server B</li>
+      <li><input type="checkbox" class="checkbox"> Unpack shulker, count diamonds</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>Exactly original diamond count</li>
+      <li>Log shows <code>[CONTAINER_CLOSE]</code> for Player B (viewer forced closed)</li>
+      <li>Log shows <code>[restore-ss] uuid=... nbt_keys=...</code></li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITICAL</span>
+  <h3>4. Kill -9 / OOM recovery</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Server A, set inventory to known state (put a named diamond)</li>
+      <li><input type="checkbox" class="checkbox"> Find server java PID : <code>jps | grep Forge</code></li>
+      <li><input type="checkbox" class="checkbox"> Kill brutally : <code>kill -9 &lt;pid&gt;</code> (or Task Manager → End Task on Windows)</li>
+      <li><input type="checkbox" class="checkbox"> Restart server A</li>
+      <li><input type="checkbox" class="checkbox"> Join Server A, check inventory</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>On startup log: <code>[crash-recovery] cleared N orphan online=1 rows</code></li>
+      <li>On startup log: <code>[crash-recovery] JVM shutdown hook installed</code> AND ideally (if hook ran): <code>[emergency-flush] flushed N players</code></li>
+      <li>Inventory matches last state before kill (within ~10 min auto-save window)</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>5. Zombie peer server join (no 30s wait)</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> In Adminer, manually set <code>player_data.last_server=99999</code> and <code>online=1</code> for a test UUID</li>
+      <li><input type="checkbox" class="checkbox"> Join any running server with that UUID</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>Join happens within a few seconds (not 30s)</li>
+      <li>Log shows <code>[RACE] Peer server 99999 is dead/zombie — taking over</code></li>
+      <li>DB now shows <code>last_server=&lt;thisServer&gt;</code>, <code>online=1</code></li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>6. Periodic auto-save (10 min)</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Set <code>auto_save_interval_minutes=1</code> in config for quick test</li>
+      <li><input type="checkbox" class="checkbox"> Join server, add items to inventory</li>
+      <li><input type="checkbox" class="checkbox"> Wait 1 minute (watch sync.log)</li>
+      <li><input type="checkbox" class="checkbox"> Kill -9 server</li>
+      <li><input type="checkbox" class="checkbox"> Restart, rejoin, check inventory</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>Log shows <code>[periodic-save] queued snapshots for N player(s)</code> after 1 min</li>
+      <li>Post-crash inventory reflects the state AT the last periodic tick</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>7. Pool saturation WARN log</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Wait 5 minutes after server start (for first PoolStatsReporter tick)</li>
+      <li><input type="checkbox" class="checkbox"> Grep sync.log for <code>[POOL]</code></li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>At least one line like <code>[POOL] executor active=0 queue=0 pool_idle=4 | hikari active=0 idle=4</code></li>
+      <li>No WARN unless under load</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>8. Heartbeat updates server_info</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> In Adminer, watch <code>server_info.last_update</code> for this server's id</li>
+      <li><input type="checkbox" class="checkbox"> Refresh every 20s for 1 minute</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li><code>last_update</code> advances by ~10000 ms at every refresh</li>
+      <li>Log shows <code>[heartbeat] started</code> on boot</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario">
+  <span class="tag tag-medium">MEDIUM</span>
+  <h3>9. Curios capability unavailable — no wipe</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Equip curios items, die in lava</li>
+      <li><input type="checkbox" class="checkbox"> Force-disconnect during death animation</li>
+      <li><input type="checkbox" class="checkbox"> Reconnect</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>If cap was unavailable: log shows <code>[store-curios] handler unavailable for ... skipping write</code></li>
+      <li>Curios row in DB NOT wiped</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario">
+  <span class="tag tag-medium">MEDIUM</span>
+  <h3>10. Cross-server claim + downstream short-circuit</h3>
+  <div class="steps">
+    <strong>Steps:</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Player connected on Server A</li>
+      <li><input type="checkbox" class="checkbox"> Disconnect then immediately join Server B (within 200ms)</li>
+      <li><input type="checkbox" class="checkbox"> Check sync.log on Server A</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Expected:</strong>
+    <ul>
+      <li>Server A may log <code>[GUARD]</code> (last_server guard blocked) if B claimed during A's save</li>
+      <li>If blocked: <code>[SAVE_SKIP] LOGOUT skipped: core guard blocked</code></li>
+      <li>Player inventory on B = inventory as it was on A (no merge, no overwrite)</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Regression checks</h2>
+
+<div class="regression">
+<strong>Watch for these regressions after Phase 0-5 deployment:</strong>
+<ul>
+  <li>TPS drop during auto-save ticks (periodic save at 10 min should be invisible to gameplay)</li>
+  <li>HikariCP leak warnings — <code>leakDetectionThreshold=25000</code>, warnings mean a connection held &gt;25s</li>
+  <li>CallerRunsPolicy triggering (queue full) — look for WARN <code>[pool-stats] executor queue high</code></li>
+  <li>Deadlock on logout → join (bgLock serialization) — log should show <code>[SAVE] LOGOUT completed</code> within ~500ms</li>
+  <li>Reflection fallback firing repeatedly — means upstream removeBackpackContents / removeStorageContents API broke</li>
+</ul>
+</div>
+
+<div class="lang-sep"></div>
+
+<!-- ================================================================ -->
+<!-- FRENCH VERSION                                                    -->
+<!-- ================================================================ -->
+
+<h1>Procédure de Test — PlayerSync v2.1.5 (Version Française)</h1>
+<div class="meta">Date : <strong>2026-04-22</strong> &nbsp;|&nbsp; Branche : <code>1.21.1-dev</code> &nbsp;|&nbsp; Minecraft 1.21.1 / NeoForge 21.1.137 / Java 21</div>
+
+<h2>Mise en place</h2>
+
+<ol>
+  <li>Démarrer MariaDB dev : <code>docker compose up -d</code></li>
+  <li>Build : <code>./gradlew build</code> — le JAR sort dans <code>build/libs/playersync-1.21.1-2.1.5.jar</code></li>
+  <li>Deux instances serveur nécessaires : <code>./gradlew runServer</code> (Serveur A) + copie avec <code>Server_id</code> différent dans <code>run-2/config/playersync-common.toml</code> (Serveur B)</li>
+  <li>Adminer : <code>http://localhost:8080</code> (login <code>playersync</code>/<code>playersync</code>)</li>
+  <li>Monitorer en continu : <code>tail -f run/logs/playersync/sync.log</code></li>
+</ol>
+
+<h2>Scénarios à tester</h2>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITIQUE</span>
+  <h3>1. Drop + déco rapide + reco (régression Phase 0)</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Serveur A, remplir l'inventaire avec une épée de diamant</li>
+      <li><input type="checkbox" class="checkbox"> Drop l'épée avec Q</li>
+      <li><input type="checkbox" class="checkbox"> Déconnecter immédiatement (moins d'une seconde)</li>
+      <li><input type="checkbox" class="checkbox"> Rejoin Serveur A</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>L'inventaire ne contient PAS l'épée</li>
+      <li>L'ItemEntity est toujours au sol où elle a été drop</li>
+      <li>Le joueur a exactement 1 copie de l'épée au total</li>
+      <li>Logs : <code>[SAVE] LOGOUT completed</code> puis soit aucun write SaveToFile BG, soit <code>[GUARD] SaveToFile BG skipped — player already offline in DB</code></li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITIQUE</span>
+  <h3>2. Duplication Backpack (Sophisticated Backpacks)</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Serveur A, craft un SophisticatedBackpack, remplir avec 10 blocs de diamant</li>
+      <li><input type="checkbox" class="checkbox"> Déconnecter</li>
+      <li><input type="checkbox" class="checkbox"> Join Serveur B (configurer un Server_id différent)</li>
+      <li><input type="checkbox" class="checkbox"> Ouvrir le backpack, compter les blocs de diamant</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>Exactement 10 blocs de diamant (pas de duplication)</li>
+      <li>Logs : <code>[restore-backpack] uuid=... nbt_keys=... cleared_via=api</code> (ou <code>reflection</code> en fallback)</li>
+      <li>Aucun WARN sur un removeBackpackContents raté</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITIQUE</span>
+  <h3>3. Duplication shulker Sophisticated Storage</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Serveur A, packer un shulker plein de diamants dans l'inventaire</li>
+      <li><input type="checkbox" class="checkbox"> Faire ouvrir l'inventaire par un autre Joueur B (via admin / échange / viewer)</li>
+      <li><input type="checkbox" class="checkbox"> Déconnecter le Joueur A</li>
+      <li><input type="checkbox" class="checkbox"> Joueur A se reconnecte sur Serveur B</li>
+      <li><input type="checkbox" class="checkbox"> Déballer le shulker, compter les diamants</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>Compte de diamants identique à l'original</li>
+      <li>Logs : <code>[CONTAINER_CLOSE]</code> pour le Joueur B (viewer force-fermé)</li>
+      <li>Logs : <code>[restore-ss] uuid=... nbt_keys=...</code></li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario critical">
+  <span class="tag tag-critical">CRITIQUE</span>
+  <h3>4. Recovery kill -9 / OOM</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Join Serveur A, mettre l'inventaire dans un état connu (poser un diamant nommé)</li>
+      <li><input type="checkbox" class="checkbox"> Trouver le PID java du serveur : <code>jps | grep Forge</code></li>
+      <li><input type="checkbox" class="checkbox"> Kill brutal : <code>kill -9 &lt;pid&gt;</code> (ou Task Manager → End Task sur Windows)</li>
+      <li><input type="checkbox" class="checkbox"> Redémarrer le serveur A</li>
+      <li><input type="checkbox" class="checkbox"> Join Serveur A, vérifier l'inventaire</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>Au boot : log <code>[crash-recovery] cleared N orphan online=1 rows</code></li>
+      <li>Au boot : <code>[crash-recovery] JVM shutdown hook installed</code> ET idéalement (si le hook a tourné) : <code>[emergency-flush] flushed N players</code></li>
+      <li>L'inventaire correspond au dernier état avant kill (dans la fenêtre auto-save ~10 min)</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>5. Join sur serveur peer zombie (pas d'attente 30s)</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Dans Adminer, setter manuellement <code>player_data.last_server=99999</code> et <code>online=1</code> pour un UUID test</li>
+      <li><input type="checkbox" class="checkbox"> Joindre n'importe quel serveur en cours avec cet UUID</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>La connexion se fait en quelques secondes (pas 30s)</li>
+      <li>Logs : <code>[RACE] Peer server 99999 is dead/zombie — taking over</code></li>
+      <li>La DB affiche maintenant <code>last_server=&lt;thisServer&gt;</code>, <code>online=1</code></li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>6. Auto-save périodique (10 min)</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Setter <code>auto_save_interval_minutes=1</code> en config pour un test rapide</li>
+      <li><input type="checkbox" class="checkbox"> Join le serveur, ajouter des items à l'inventaire</li>
+      <li><input type="checkbox" class="checkbox"> Attendre 1 minute (surveiller sync.log)</li>
+      <li><input type="checkbox" class="checkbox"> Kill -9 du serveur</li>
+      <li><input type="checkbox" class="checkbox"> Redémarrer, rejoin, vérifier l'inventaire</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>Log : <code>[periodic-save] queued snapshots for N player(s)</code> après 1 min</li>
+      <li>L'inventaire post-crash reflète l'état AU dernier tick périodique</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>7. Log WARN sur saturation pool</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Attendre 5 minutes après le boot du serveur (premier tick PoolStatsReporter)</li>
+      <li><input type="checkbox" class="checkbox"> Grep sync.log pour <code>[POOL]</code></li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>Au moins une ligne comme <code>[POOL] executor active=0 queue=0 pool_idle=4 | hikari active=0 idle=4</code></li>
+      <li>Aucun WARN sauf sous charge</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario high">
+  <span class="tag tag-high">HIGH</span>
+  <h3>8. Heartbeat update server_info</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Dans Adminer, surveiller <code>server_info.last_update</code> pour l'id de ce serveur</li>
+      <li><input type="checkbox" class="checkbox"> Refresh toutes les 20s pendant 1 minute</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li><code>last_update</code> avance de ~10000 ms à chaque refresh</li>
+      <li>Log : <code>[heartbeat] started</code> au boot</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario">
+  <span class="tag tag-medium">MEDIUM</span>
+  <h3>9. Capability Curios absente — pas de wipe</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Équiper des items curios, mourir dans la lave</li>
+      <li><input type="checkbox" class="checkbox"> Force-déconnecter pendant l'animation de mort</li>
+      <li><input type="checkbox" class="checkbox"> Reconnexion</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>Si cap absente : log <code>[store-curios] handler unavailable for ... skipping write</code></li>
+      <li>Row curios en DB NON wipée</li>
+    </ul>
+  </div>
+</div>
+
+<div class="scenario">
+  <span class="tag tag-medium">MEDIUM</span>
+  <h3>10. Claim cross-server + court-circuit downstream</h3>
+  <div class="steps">
+    <strong>Étapes :</strong>
+    <ol>
+      <li><input type="checkbox" class="checkbox"> Joueur connecté sur Serveur A</li>
+      <li><input type="checkbox" class="checkbox"> Déco puis immédiatement join Serveur B (&lt;200ms)</li>
+      <li><input type="checkbox" class="checkbox"> Vérifier sync.log sur Serveur A</li>
+    </ol>
+  </div>
+  <div class="expected">
+    <strong>Résultat attendu :</strong>
+    <ul>
+      <li>Serveur A peut logger <code>[GUARD]</code> (last_server guard a bloqué) si B a claim pendant la save de A</li>
+      <li>Si blocké : <code>[SAVE_SKIP] LOGOUT skipped: core guard blocked</code></li>
+      <li>Inventaire joueur sur B = inventaire tel qu'il était sur A (pas de merge, pas d'overwrite)</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Vérifications régressions</h2>
+
+<div class="regression">
+<strong>Surveiller ces régressions après le déploiement Phases 0-5 :</strong>
+<ul>
+  <li>TPS drop pendant les ticks auto-save (la save périodique à 10 min doit être invisible gameplay)</li>
+  <li>Warnings HikariCP leak — <code>leakDetectionThreshold=25000</code>, warnings = connexion tenue &gt;25s</li>
+  <li>Déclenchement CallerRunsPolicy (queue pleine) — WARN <code>[pool-stats] executor queue high</code></li>
+  <li>Deadlock sur logout → join (sérialisation bgLock) — le log doit montrer <code>[SAVE] LOGOUT completed</code> en ~500ms</li>
+  <li>Fallback reflection qui tourne répétitivement — signifie que l'API upstream removeBackpackContents / removeStorageContents a été cassée</li>
+</ul>
+</div>
+
+<p style="text-align: center; color: #999; margin-top: 3em; font-size: 0.9em;">
+Author: vyrriox &nbsp;|&nbsp; PlayerSync v2.1.5 &nbsp;|&nbsp; 2026-04-22
+</p>
+
+</body>
+</html>

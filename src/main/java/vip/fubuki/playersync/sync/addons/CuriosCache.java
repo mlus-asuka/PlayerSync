@@ -36,8 +36,11 @@ public class CuriosCache {
     //Create a method to store temporary curios data when player is dead.
     //Then check player status in the logged out event,and take a normal sync if player is alive.
     //If player is dead or dying,the cache will be used to prevent the empty data from the failure of getting handlerOpt.
+    // FIX H-5: Cache curios on death regardless of keepInventory. Without this,
+    // players on servers WITHOUT keepInventory who die then disconnect before respawning
+    // would have their curios data overwritten with empty data (Curios API returns empty for dead players).
     public static void tryStoreCuriosToCache(net.minecraft.world.entity.player.Player player) {
-        if (!ModList.get().isLoaded("curios") || !CuriosCache.isKeepInventoryActive(player)) {
+        if (!ModList.get().isLoaded("curios")) {
             return;
         }
 
@@ -71,8 +74,18 @@ public class CuriosCache {
                 for (int i = 0; i < dynStacks.getSlots(); i++) {
                     ItemStack stack = dynStacks.getStackInSlot(i);
                     if (!stack.isEmpty()) {
-                        String serialized = VanillaSync.getNbtForStorage(stack);
-                        flatMap.put(slotType + ":" + i, serialized);
+                        flatMap.put(slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
+                    }
+                }
+                // FIX A2: capture cosmetic stacks in the death cache, matching the
+                // snapshot/apply format ("cos:slotType:index"). Without this, a player
+                // who died with a cosmetic curio would lose it on rejoin because the
+                // apply path clears cosmetic slots unconditionally.
+                IDynamicStackHandler cosStacks = stacksHandler.getCosmeticStacks();
+                for (int i = 0; i < cosStacks.getSlots(); i++) {
+                    ItemStack stack = cosStacks.getStackInSlot(i);
+                    if (!stack.isEmpty()) {
+                        flatMap.put("cos:" + slotType + ":" + i, VanillaSync.getNbtForStorage(stack));
                     }
                 }
             });
