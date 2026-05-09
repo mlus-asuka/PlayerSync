@@ -43,15 +43,27 @@ import java.nio.file.Files;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 @Mod.EventBusSubscriber
 public class VanillaSync {
 
     public static void register() {}
 
-    static ExecutorService executorService = Executors.newCachedThreadPool(new PSThreadPoolFactory("PlayerSync"));
+    // FIX: Replace unbounded CachedThreadPool with a bounded ThreadPoolExecutor.
+    // CachedThreadPool creates unlimited threads — with many players and slow DB queries,
+    // thread count can explode to 25000+ causing memory leaks and server crashes.
+    // Bounded pool: 2 core threads, max 8 threads, 30s keepalive, 256-task queue.
+    // If the queue is full, tasks run on the calling thread (CallerRunsPolicy) which
+    // provides natural backpressure instead of creating more threads.
+    static ExecutorService executorService = new ThreadPoolExecutor(
+            2,                          // core pool size
+            8,                          // maximum pool size
+            30L, TimeUnit.SECONDS,      // idle thread keepalive
+            new LinkedBlockingQueue<>(256),  // bounded work queue
+            new PSThreadPoolFactory("PlayerSync"),
+            new ThreadPoolExecutor.CallerRunsPolicy()  // backpressure: run on caller thread if queue full
+    );
 
     @SubscribeEvent
     public static void onDataPackSyncEvent(OnDatapackSyncEvent event) throws SQLException, IOException {
