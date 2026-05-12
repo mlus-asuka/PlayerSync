@@ -48,3 +48,7 @@ _bmb/
 
 # compat mods (local jars for analysis)
 compat-mods/*.jar
+
+# Test procedure artefacts (local QA only — never push)
+test-procedures/
+TEST_PROCEDURE_*.html
