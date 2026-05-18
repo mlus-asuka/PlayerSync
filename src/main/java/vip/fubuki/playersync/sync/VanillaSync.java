@@ -2153,6 +2153,46 @@ public class VanillaSync {
         return writeSnapshotToDB(s, false);
     }
 
+    /**
+     * FIX DUP-DEATH: writes ONLY non-item progression fields (XP, food, score, health,
+     * effects, advancements). Used by the death-save to preserve recent progress as a
+     * safety net for server crashes between death and logout, WITHOUT touching the
+     * inventory.
+     *
+     * <p>Why this matters: when a corpse / gravestone mod is loaded, items dropped on
+     * death are persisted in the corpse entity / block forever. If the death-save wrote
+     * the pre-death inventory to the DB, it could win a race against the logout-save's
+     * post-death snapshot (empty) and the player would rejoin with their full inventory
+     * AND a corpse still holding the items — duplication.
+     *
+     * <p>Inventory / armor / enderchest / left-hand / cursors / curios / accessories /
+     * cosmetic armor / backpacks / SS / RS2 are all handled exclusively by the
+     * logout-save (or shutdown-save), which captures post-drop state.
+     *
+     * @return true if the core write affected ≥ 1 row, false if the last_server guard
+     *         blocked it (a non-fatal no-op).
+     */
+    private static boolean writeNonItemSnapshotToDB(PlayerDataSnapshot s) throws Exception {
+        int serverId = JdbcConfig.SERVER_ID.get();
+        String serverGuard = "(last_server=? OR last_server IS NULL)";
+        String sql = "UPDATE " + Tables.playerData()
+                + " SET xp=?, effects=?, score=?, food_level=?, health=?,"
+                + "     advancements=COALESCE(?, advancements), last_server=?"
+                + " WHERE uuid=? AND " + serverGuard;
+        int[] counts = JDBCsetUp.executeBatchTransaction(new Object[][]{
+                new Object[]{sql,
+                        s.xp(), s.effects(), s.score(), s.foodLevel(), s.health(),
+                        s.advancements(), serverId,
+                        s.uuid(), serverId}
+        });
+        if (counts.length > 0 && counts[0] == 0) {
+            SyncLogger.guardBlocked(s.uuid(), serverId,
+                    "death-save non-item UPDATE affected 0 rows — last_server mismatch");
+            return false;
+        }
+        return true;
+    }
+
     private static String getSyncWorldForServer() {
         if (!JdbcConfig.SYNC_WORLD.get().isEmpty()) {
             PlayerSync.LOGGER.warn("Using configuration 'sync_world' on servers is deprecated. Please leave the array empty. Falling back to first entry.");
@@ -2422,22 +2462,10 @@ public class VanillaSync {
         ReentrantLock lock = getPlayerLock(puuid);
         if (!lock.tryLock()) return; // Skip if another save is in progress
         try {
-            // PHASE 18: freeze on main thread, materialize on BG.
+            // FIX DUP-DEATH: death-save writes ONLY non-item progression fields, so we
+            // skip the backpack / SS / RS2 main-thread snapshots that the logout-save
+            // would normally produce. Saves CPU on the hot death path too.
             final DeferredPlayerSnapshot frozen = snapshotPlayerData(player);
-            final Map<UUID, CompoundTag> backpackSnapshots = ModsSupport.snapshotBackpackData(player);
-            final Map<UUID, CompoundTag> ssSnapshots = ModsSupport.snapshotSSData(ModsSupport.collectSSUuids(player));
-            final List<UUID> rs2DiskUuids;
-            final ServerLevel rs2Level;
-            final HolderLookup.Provider rs2Registry;
-            if (ModList.get().isLoaded("refinedstorage")) {
-                rs2DiskUuids = ModsSupport.collectRS2DiskUuids(player);
-                rs2Level = player.serverLevel();
-                rs2Registry = player.getServer().registryAccess();
-            } else {
-                rs2DiskUuids = List.of();
-                rs2Level = null;
-                rs2Registry = null;
-            }
 
             executorService.submit(() -> {
                 if (!playerLocks.containsKey(puuid)) return;
@@ -2461,16 +2489,16 @@ public class VanillaSync {
                     long t0 = System.currentTimeMillis();
                     // PHASE 18: materialize the frozen snapshot on BG.
                     PlayerDataSnapshot snapshot = frozen.materialize();
-                    // FIX P0-2: short-circuit backpack/SS/RS2 if core guard blocked.
-                    boolean persisted = writeSnapshotToDB(snapshot);
+                    // FIX DUP-DEATH: write ONLY non-item progression fields. Items are
+                    // owned by the logout-save (post-drop / post-corpse). Writing the
+                    // pre-death inventory here would dup with the corpse mod's items.
+                    // Unused snapshot fields (backpackSnapshots, ssSnapshots, rs2DiskUuids,
+                    // rs2Level, rs2Registry) are intentionally not persisted by the
+                    // death-save: they are item-bearing and belong to the logout-save.
+                    boolean persisted = writeNonItemSnapshotToDB(snapshot);
                     if (persisted) {
-                        ModsSupport.saveBackpackSnapshots(backpackSnapshots);
-                        ModsSupport.saveSSSnapshots(ssSnapshots);
-                        if (!rs2DiskUuids.isEmpty() && rs2Level != null) {
-                            ModsSupport.saveRS2DisksByLevel(rs2DiskUuids, rs2Level, rs2Registry);
-                        }
                         long dur = System.currentTimeMillis() - t0;
-                        PlayerSync.LOGGER.info("Death-save completed for player {} in {}ms", puuid, dur);
+                        PlayerSync.LOGGER.info("Death-save (non-item) completed for player {} in {}ms", puuid, dur);
                         SyncLogger.saveCompleted(puuid, "DEATH", dur);
                     } else {
                         PlayerSync.LOGGER.warn("Death-save: core write blocked for {} — downstream skipped", puuid);
