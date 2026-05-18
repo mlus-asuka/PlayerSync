@@ -876,26 +876,49 @@ public class ModsSupport {
     /**
      * Clears a Sophisticated Storage entry (by UUID) from the ItemContentsStorage
      * SavedData. Tries public {@code removeStorageContents} first, then reflection.
+     *
+     * <p>PERF (A4): the reflection result is cached the first time we encounter a
+     * given concrete SS storage class. Without the cache, every restored SS item
+     * re-walked {@code getDeclaredFields()} and re-resolved {@code removeStorageContents}
+     * — visible on main thread during mass joins.
      */
+    private static volatile Class<?> ssCachedClass;
+    private static volatile java.lang.reflect.Method ssRemoveMethod;
+    private static volatile java.lang.reflect.Field[] ssMapFields;
+
     private static void clearSSStorageContents(
             net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage store, UUID uuid) {
         try {
-            // Attempt public API removal (exists in some SS versions)
-            try {
-                java.lang.reflect.Method m = store.getClass().getMethod("removeStorageContents", UUID.class);
-                m.invoke(store, uuid);
-                return;
-            } catch (NoSuchMethodException nsm) {
-                // Fall through to reflection map-clear
-            }
-            for (java.lang.reflect.Field f : store.getClass().getDeclaredFields()) {
-                if (java.util.Map.class.isAssignableFrom(f.getType())) {
-                    f.setAccessible(true);
-                    Object map = f.get(store);
-                    if (map instanceof java.util.Map<?, ?> m) {
-                        ((java.util.Map<Object, Object>) m).remove(uuid);
-                        ((java.util.Map<Object, Object>) m).remove(uuid.toString());
+            Class<?> klass = store.getClass();
+            if (ssCachedClass != klass) {
+                synchronized (ModsSupport.class) {
+                    if (ssCachedClass != klass) {
+                        java.lang.reflect.Method m = null;
+                        try {
+                            m = klass.getMethod("removeStorageContents", UUID.class);
+                        } catch (NoSuchMethodException ignored) {}
+                        java.util.List<java.lang.reflect.Field> maps = new java.util.ArrayList<>();
+                        for (java.lang.reflect.Field f : klass.getDeclaredFields()) {
+                            if (java.util.Map.class.isAssignableFrom(f.getType())) {
+                                f.setAccessible(true);
+                                maps.add(f);
+                            }
+                        }
+                        ssRemoveMethod = m;
+                        ssMapFields = maps.toArray(new java.lang.reflect.Field[0]);
+                        ssCachedClass = klass;
                     }
+                }
+            }
+            if (ssRemoveMethod != null) {
+                ssRemoveMethod.invoke(store, uuid);
+                return;
+            }
+            for (java.lang.reflect.Field f : ssMapFields) {
+                Object map = f.get(store);
+                if (map instanceof java.util.Map<?, ?> m) {
+                    ((java.util.Map<Object, Object>) m).remove(uuid);
+                    ((java.util.Map<Object, Object>) m).remove(uuid.toString());
                 }
             }
             store.setDirty();

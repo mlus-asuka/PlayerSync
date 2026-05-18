@@ -200,12 +200,15 @@ public class VanillaSync {
     /**
      * Checks if a player is still in the server's online player list.
      * Used to avoid applying sync data to a player entity that already disconnected.
+     * <p>PERF (A5): O(1) lookup via PlayerList's internal UUID→player map instead of
+     * the previous O(n) iteration with a per-player {@code UUID#toString} allocation.
      */
     private static boolean isPlayerOnline(MinecraftServer server, String uuid) {
-        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
-            if (p.getUUID().toString().equals(uuid)) return true;
+        try {
+            return server.getPlayerList().getPlayer(UUID.fromString(uuid)) != null;
+        } catch (IllegalArgumentException ignored) {
+            return false;
         }
-        return false;
     }
 
     @SubscribeEvent
@@ -241,6 +244,21 @@ public class VanillaSync {
         }
 
         byte[] bytes = advancementsData.getBytes(StandardCharsets.UTF_8);
+
+        // PERF (A3): skip the file write + playeradvancements.reload() if the DB content
+        // is identical to what we last applied for this player. reload() walks every
+        // criterion of every advancement and can take 5-50 ms on a large datapack.
+        // CRC32 is enough — collisions on advancement JSON are astronomically unlikely
+        // and a stale skip just means the player sees their progression with the same
+        // (already-applied) data, never with corruption.
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(bytes);
+        long contentHash = crc.getValue();
+        Long lastHash = lastAppliedAdvancementsHash.get(player_uuid);
+        if (lastHash != null && lastHash == contentHash) {
+            PlayerSync.LOGGER.debug("Skip advancements re-apply for {} (CRC32 unchanged: {})", player_uuid, contentHash);
+            return;
+        }
 
         // Restore Advancements
         Path path = serverPlayer.getServer().getServerDirectory().resolve(getSyncWorldForServer());
@@ -288,6 +306,9 @@ public class VanillaSync {
                 Files.write(file.toPath(), bytes);
             }
         }
+        // PERF (A3): record the hash of what we just applied. Next call with the same
+        // DB content short-circuits before touching the disk and reload().
+        lastAppliedAdvancementsHash.put(player_uuid, contentHash);
     }
 
     public static void doPlayerConnect(PlayerNegotiationEvent event) {
@@ -303,7 +324,7 @@ public class VanillaSync {
                 ResultSet rs1 = qr1.resultSet();
                 if (!rs1.next()) {
                     PlayerSync.LOGGER.info("A new-player connection detected");
-                    connectCheckCache.put(player_uuid, new int[]{0, 0, 0, 0}); // new player
+                    connectCheckCache.put(player_uuid, new CachedConnectCheck(new int[]{0, 0, 0, 0}, System.currentTimeMillis())); // new player
                     return;
                 }
                 online = rs1.getBoolean("online");
@@ -332,7 +353,9 @@ public class VanillaSync {
             }
 
             // FIX PERF: Cache the result for onPlayerLoggedInKickCheck (avoids re-querying on main thread)
-            connectCheckCache.put(player_uuid, new int[]{online ? 1 : 0, lastServer, serverAlive, alreadyKicked});
+            connectCheckCache.put(player_uuid, new CachedConnectCheck(
+                    new int[]{online ? 1 : 0, lastServer, serverAlive, alreadyKicked},
+                    System.currentTimeMillis()));
         } catch (Exception e) {
             PlayerSync.LOGGER.error("SqlException detected!", e);
             event.getConnection().disconnect(Component.translatableWithFallback("playersync.sqlexception","SqlException detected!Connection lost,please contact with your admin."));
@@ -348,8 +371,23 @@ public class VanillaSync {
     // FIX PERF: Cache from doPlayerConnect (network thread) for onPlayerLoggedInKickCheck (main thread).
     // Eliminates 2-4 redundant DB queries per join on the main thread.
     // Entry: uuid → {online, lastServer, serverAlive, alreadyHandled}
-    private static final ConcurrentHashMap<String, int[]> connectCheckCache = new ConcurrentHashMap<>();
     // int[0]=online(0/1), int[1]=lastServer, int[2]=serverAlive(0/1), int[3]=alreadyKicked(0/1)
+    //
+    // PERF (A7): wrapped in a record with insertion timestamp so we can purge stale
+    // entries when PlayerNegotiationEvent fires but PlayerLoggedInEvent never does
+    // (player drops the connection mid-handshake). The sweep runs on the existing
+    // server-tick handler — no extra thread.
+    private record CachedConnectCheck(int[] data, long insertedAt) {}
+    private static final ConcurrentHashMap<String, CachedConnectCheck> connectCheckCache = new ConcurrentHashMap<>();
+    private static final long CONNECT_CHECK_TTL_MS = 60_000L; // 60 s — generous: handshake usually completes in < 5 s
+    private static long lastConnectCheckSweepTick = 0L;
+
+    // PERF (A3): per-UUID hash of the last advancements payload we wrote to disk.
+    // onDataPackSyncEvent currently always Files.writes + playeradvancements.reload()s
+    // on the main thread; reload() walks every criterion of every advancement which
+    // can be 5-50 ms on a large datapack. Skip both when the DB content hashes to the
+    // same value we last applied for this player.
+    private static final ConcurrentHashMap<String, Long> lastAppliedAdvancementsHash = new ConcurrentHashMap<>();
 
     public static void doPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
@@ -596,32 +634,9 @@ public class VanillaSync {
 
             // === PHASE 1: DB reads on background thread (thread-safe) ===
 
-            boolean playerExists;
-            try (JDBCsetUp.QueryResult qr1 = JDBCsetUp.executePreparedQuery(
-                    "SELECT uuid FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
-                playerExists = qr1.resultSet().next();
-            }
-
-            if (!playerExists) {
-                server.execute(() -> {
-                    if (!isPlayerOnline(server, player_uuid)) {
-                        syncNotCompletedPlayer.remove(player_uuid);
-                        return;
-                    }
-                    try {
-                        new ModsSupport().doCuriosRestore(serverPlayer);
-                        store(serverPlayer, true);
-                        serverPlayer.addTag("player_synced");
-                    } catch (Exception e) {
-                        PlayerSync.LOGGER.error("Error initializing new player {}", player_uuid, e);
-                    } finally {
-                        syncNotCompletedPlayer.remove(player_uuid);
-                    }
-                });
-                return;
-            }
-
-            // Read all DB data into local variables (background thread - safe)
+            // PERF (A8): single SELECT * — covers both the existence check (rs.next()==false
+             // means "new player, run init path") and the full data read. Previously two
+             // separate SELECTs on the same row produced two MySQL round-trips per join.
             final int health, foodLevel, xp, score;
             final String leftHand, cursors, armorData, inventoryData, enderChestData, effectData;
 
@@ -629,8 +644,22 @@ public class VanillaSync {
                     "SELECT * FROM " + Tables.playerData() + " WHERE uuid=?", player_uuid)) {
                 ResultSet rs2 = qr2.resultSet();
                 if (!rs2.next()) {
-                    PlayerSync.LOGGER.warn("No data found for existing player {}", player_uuid);
-                    syncNotCompletedPlayer.remove(player_uuid);
+                    // No row in DB → brand new player, run the init path on main thread.
+                    server.execute(() -> {
+                        if (!isPlayerOnline(server, player_uuid)) {
+                            syncNotCompletedPlayer.remove(player_uuid);
+                            return;
+                        }
+                        try {
+                            new ModsSupport().doCuriosRestore(serverPlayer);
+                            store(serverPlayer, true);
+                            serverPlayer.addTag("player_synced");
+                        } catch (Exception e) {
+                            PlayerSync.LOGGER.error("Error initializing new player {}", player_uuid, e);
+                        } finally {
+                            syncNotCompletedPlayer.remove(player_uuid);
+                        }
+                    });
                     return;
                 }
                 health = rs2.getInt("health");
@@ -843,7 +872,11 @@ public class VanillaSync {
         // FIX PERF: Use cached data from doPlayerConnect (network thread) instead of
         // re-querying the DB. Eliminates 2-4 blocking DB queries from the MAIN THREAD.
         // doPlayerConnect already ran the same checks on the network thread and cached results.
-        int[] cached = connectCheckCache.remove(player_uuid);
+        CachedConnectCheck cachedEntry = connectCheckCache.remove(player_uuid);
+        // PERF (A7): treat stale entries (> TTL) as cache miss → forces the safe fallback DB
+        // path. Stops a stale 5-min-old entry from making the wrong kick decision.
+        int[] cached = (cachedEntry != null && System.currentTimeMillis() - cachedEntry.insertedAt() <= CONNECT_CHECK_TTL_MS)
+                ? cachedEntry.data() : null;
 
         if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) {
             // PHASE 14 FIX: do NOT pre-mark online=1 here. Previously this UPDATE ran on
@@ -2270,6 +2303,18 @@ public class VanillaSync {
         heartbeatTickCounter++;
         autoSaveTickCounter++;
         autoCleanCuriosCacheTickCounter++;
+
+        // PERF (A7): every 600 ticks (~30 s) drop any connectCheckCache entry older
+        // than CONNECT_CHECK_TTL_MS. Stops the map from leaking when a player triggers
+        // PlayerNegotiationEvent but never reaches PlayerLoggedInEvent (e.g. client
+        // closes the window mid-handshake).
+        if (++lastConnectCheckSweepTick >= 600L) {
+            lastConnectCheckSweepTick = 0L;
+            if (!connectCheckCache.isEmpty()) {
+                long cutoff = System.currentTimeMillis() - CONNECT_CHECK_TTL_MS;
+                connectCheckCache.entrySet().removeIf(e -> e.getValue().insertedAt() < cutoff);
+            }
+        }
 
         // Heartbeat: update server_info to prove this server is alive
         if (heartbeatTickCounter >= HEARTBEAT_INTERVAL_TICKS) {
