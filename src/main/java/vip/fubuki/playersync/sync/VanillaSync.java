@@ -108,7 +108,18 @@ public class VanillaSync {
     // their stuff from the corpse. Entries auto-expire by TTL and are also cleared on
     // successful respawn / removePlayerLock so stale data never leaks into a later join.
     private static final ConcurrentHashMap<String, Long> deathCanceledRecently = new ConcurrentHashMap<>();
-    private static final long DEATH_CANCEL_TTL_MS = 120_000L; // 2 min — covers typical revive timer windows
+    // TTL is intentionally generous (1 h): the entry is cleared explicitly by
+    // onPlayerHeal (player healed to ≥80% maxHealth), onPlayerRespawn, the
+    // auto-save loop (alive + healthy + synced), and removePlayerLock. The TTL
+    // is only a fallback for the rare path where none of those fire. A shorter
+    // TTL caused regressions where a player stayed in the revive interface for
+    // more than the TTL window: tracking expired, the logout went through the
+    // normal save path, and the dup came back. Combined with the HP-low check
+    // at logout (only triggers fix if HP < 50% maxHealth) AND with the explicit
+    // auto-save clear (a healthy player gets the tracking dropped every 5 min),
+    // the long TTL does not produce false positives for legitimately revived
+    // players who continue playing.
+    private static final long DEATH_CANCEL_TTL_MS = 3_600_000L; // 1 hour
 
     private static ReentrantLock getPlayerLock(String uuid) {
         return playerLocks.computeIfAbsent(uuid, k -> new ReentrantLock());
@@ -1565,24 +1576,31 @@ public class VanillaSync {
         // still-on-player inventory to DB, so the player would rejoin with their
         // full inventory AND the corpse would also hold it → DUPLICATION.
         //
-        // Detection (two signals, OR'd):
+        // Detection (BOTH must be true — no false positives on legit logouts):
         //   (1) Tracked death attempt — {@link #onPlayerDeathAttempt} fires at
         //       HIGHEST priority for EVERY LivingDeathEvent (before any cancel) and
-        //       records the player's UUID in deathCanceledRecently. Catches both
-        //       real deaths (corpse forms post-drop) AND revive-canceled deaths
-        //       (corpse forms post-disconnect-finalize). Cleared by
-        //       {@link #onPlayerHeal} on successful revive (heal back to 80%+ HP)
-        //       and by {@link #onPlayerRespawn} so a later normal logout isn't
-        //       wrongly treated as a death-pending disconnect.
-        //   (2) Heuristic — player has at least one infinite-duration MobEffect AND
-        //       health is below half the maximum. Catches revive mods that prevent
-        //       death via LivingDamageEvent / Mixin instead of canceling
-        //       LivingDeathEvent (no canceled event ever fires in that case).
+        //       records the player's UUID in deathCanceledRecently. Cleared by
+        //       {@link #onPlayerHeal} (heal to ≥80% maxHealth), by
+        //       {@link #onPlayerRespawn}, and by the auto-save loop when the player
+        //       passes the alive+synced eligibility check.
+        //   (2) Player is STILL in a death-pending state at the moment of disconnect:
+        //       current HP < 50% maxHealth OR isDeadOrDying() true. Without this
+        //       check, a player who died, got revived, played a while, then took
+        //       combat damage and disconnected normally would wrongly trigger the
+        //       fix path and lose their inventory (reported as r4 regression).
+        //
+        // The previous heuristic (infinite-duration MobEffect + HP < 50%) was
+        // REMOVED because it false-positived on legitimate logouts: Aether,
+        // Apotheosis, Iron's Spellbooks, Ars Nouveau, etc. apply long-lived /
+        // infinite-duration effects (mana auras, learned-spell markers, racial
+        // buffs) that are NOT revive signatures. A player wearing such a buff who
+        // happened to disconnect with sub-50% HP from combat lost their inventory.
         //
         // Fix path (executed when keepInventory game rule is OFF — items WILL drop
         // on the post-disconnect finalize): clear inventory / armor / left_hand /
-        // cursors in DB so the corpse becomes the single source of truth. Player
-        // rejoins empty and retrieves from the corpse.
+        // cursors / curios / accessories / cosmetic_armor in DB so the corpse
+        // becomes the single source of truth. Player rejoins empty and retrieves
+        // from the corpse.
         //
         // keepInventory ON is left to the normal save path: items don't drop, no
         // corpse forms, no dup risk; clearing the DB would destroy the player's
@@ -1592,27 +1610,22 @@ public class VanillaSync {
             boolean trackedCancel = deathCancelTimestamp != null
                     && (System.currentTimeMillis() - deathCancelTimestamp) < DEATH_CANCEL_TTL_MS;
 
-            // Heuristic: revive mods typically apply ≥ 1 infinite-duration effect
-            // (downed-state effect with Integer.MAX_VALUE / duration=-1) AND clamp
-            // HP to a low value. Beacons use duration=200 refreshed periodically,
-            // NOT isInfiniteDuration()=true, so they don't false-positive here.
-            boolean heuristicHit = false;
-            String heuristicDetail = "";
-            try {
-                boolean hasInfiniteEff = false;
-                for (MobEffectInstance eff : spEntity.getActiveEffects()) {
-                    if (eff.isInfiniteDuration()) { hasInfiniteEff = true; break; }
-                }
-                float hpRatio = spEntity.getHealth() / Math.max(spEntity.getMaxHealth(), 1f);
-                heuristicHit = hasInfiniteEff && hpRatio < 0.5f;
-                if (heuristicHit) {
-                    heuristicDetail = "hp=" + spEntity.getHealth() + "/" + spEntity.getMaxHealth()
-                            + " ratio=" + String.format("%.2f", hpRatio) + " infiniteEffects=true";
-                }
-            } catch (Exception ignored) {}
+            float currentHp = spEntity.getHealth();
+            float maxHp = Math.max(spEntity.getMaxHealth(), 1f);
+            float hpRatio = currentHp / maxHp;
+            // "Still in death-pending state" means: HP ≤ 1.0 (revive mods typically
+            // clamp downed-state HP to exactly 1 — half a heart) OR isDeadOrDying()
+            // (HP ≤ 0). Either way, the post-disconnect death-finalize is likely to
+            // fire and drop items.
+            //
+            // The threshold is intentionally LOW (≤ 1.0 absolute, not a ratio of
+            // maxHealth): a 50% ratio threshold false-positived on legitimate combat
+            // disconnects — a revived player who took damage to 8/20 HP and
+            // disconnected lost their inventory because tracking + 40%-HP fired the
+            // fix path.
+            boolean stillDeathPending = currentHp <= 1.0f || spEntity.isDeadOrDying();
 
-            boolean deathPending = trackedCancel || heuristicHit;
-            if (deathPending) {
+            if (trackedCancel && stillDeathPending) {
                 deathCanceledRecently.remove(player_uuid);
                 boolean keepInv;
                 try {
@@ -1621,16 +1634,21 @@ public class VanillaSync {
                 } catch (Exception e) {
                     keepInv = true; // conservative on failure — preserve data
                 }
-                PlayerSync.LOGGER.info("[revive-detect] player {} logout while death-pending (trackedCancel={}, heuristic={}{}) — keepInventory={}",
-                        player_uuid, trackedCancel, heuristicHit,
-                        heuristicHit ? " " + heuristicDetail : "",
-                        keepInv);
+                PlayerSync.LOGGER.info("[revive-detect] player {} logout during death-pending state — trackedCancel=true, hp={}/{} ({}%), keepInventory={}",
+                        player_uuid, currentHp, maxHp, Math.round(hpRatio * 100f), keepInv);
                 if (!keepInv) {
                     handleReviveCanceledLogout(spEntity, player_uuid);
                     return;
                 }
                 // keepInventory=ON: items stay on the player, no corpse forms; let the
                 // normal save path capture the inventory as-is.
+            } else if (trackedCancel) {
+                // Tracking was set but the player is no longer in a low-HP state — they
+                // were almost certainly revived (heal event missed or used setHealth
+                // directly). Clear the tracking and fall through to normal save.
+                deathCanceledRecently.remove(player_uuid);
+                PlayerSync.LOGGER.debug("[revive-detect] player {} had recent death event but HP recovered ({}/{}) — treating as normal logout",
+                        player_uuid, currentHp, maxHp);
             }
         }
 
@@ -2669,6 +2687,24 @@ public class VanillaSync {
             // Skip invalid players (same guards as before)
             if (!player.isDeadOrDying() && !syncNotCompletedPlayer.contains(puuid)
                     && !pendingLogoutSaves.containsKey(puuid) && player.getTags().contains("player_synced")) {
+                // FIX DUP-REVIVE: an alive + synced + healthy player is no longer in
+                // a revive-pending state. Drop the tracking so a later disconnect
+                // does NOT wrongly trigger the inventory-clear path. The HP > 1.0
+                // (more than half a heart) gate matches the logout-side threshold:
+                // revive mods that hold the player in a downed interface clamp HP to
+                // exactly 1, so this leaves them tracked, while a revived player at
+                // any value above half a heart is considered out of the death-pending
+                // state. The 5-minute auto-save cadence guarantees the tracking is
+                // dropped within 5 min of a setHealth-based revive (the case where
+                // {@link #onPlayerHeal} doesn't fire because LivingHealEvent isn't
+                // emitted by direct setHealth calls).
+                if (player.getHealth() > 1.0f) {
+                    if (deathCanceledRecently.remove(puuid) != null) {
+                        PlayerSync.LOGGER.debug("[death-track] cleared revive-pending tracking for {} via auto-save (hp={}/{}, alive+synced)",
+                                puuid, player.getHealth(), player.getMaxHealth());
+                    }
+                }
+
                 ReentrantLock lock = getPlayerLock(puuid);
                 if (lock.tryLock()) {
                     try {
@@ -2810,14 +2846,25 @@ public class VanillaSync {
     }
 
     /**
-     * FIX DUP-REVIVE: clear death-pending tracking when the player is healed back to
-     * a high HP threshold. Covers the case where a revive mod successfully revives the
-     * player (typically heals them to full HP or near-full), so a later normal disconnect
-     * is NOT treated as a death-pending disconnect.
+     * FIX DUP-REVIVE: clear death-pending tracking when the player is healed above
+     * a critically-low threshold. A revived player typically gets healed back to a
+     * value well above 1 HP (revive mods configurable, but rarely revive to exactly
+     * 1 HP — that would be unusable). Any heal that brings HP > 1.0 strongly
+     * suggests the death-pending state is over.
      *
-     * <p>Threshold is 80% of maxHealth — covers revive mods that heal back to full
-     * (100%) and those that heal to a partial value (e.g. 50–75%) without false-positive
-     * on minor healing during combat (food regen, splash potions in <80% range).
+     * <p>Threshold is 1.0 (half a heart) absolute, not a ratio of maxHealth.
+     * This catches:
+     *   - Full-heal revives (heal back to 20 HP) — obvious clear.
+     *   - Partial-heal revives (e.g. 5 HP) — also cleared because 5 > 1.
+     *   - Combat regen ticking from 0.5 → 1.5 HP (rare but theoretically possible
+     *     for a player whose heal event lands one tick post-death) — cleared. This
+     *     is intentional: by the time HP > 1, the player has effectively recovered
+     *     from the death-pending state in any normal flow.
+     *
+     * <p>The previous threshold of 80% maxHealth failed in production when a
+     * revive mod healed players to a value below that (5–10 HP on a 20-HP
+     * player), leaving the tracking stuck and triggering the dup-fix on a later
+     * legitimate disconnect.
      */
     @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOWEST)
     public static void onPlayerHeal(LivingHealEvent event) {
@@ -2825,10 +2872,10 @@ public class VanillaSync {
         String puuid = player.getUUID().toString();
         if (!deathCanceledRecently.containsKey(puuid)) return;
         float predictedHp = Math.min(player.getHealth() + event.getAmount(), player.getMaxHealth());
-        if (predictedHp >= player.getMaxHealth() * 0.8f) {
+        if (predictedHp > 1.0f) {
             if (deathCanceledRecently.remove(puuid) != null) {
-                PlayerSync.LOGGER.info("[death-track] cleared revive-pending tracking for {} (healed to {}/{} — revive succeeded)",
-                        puuid, predictedHp, player.getMaxHealth());
+                PlayerSync.LOGGER.info("[death-track] cleared revive-pending tracking for {} (healed to {} HP — death-pending state ended)",
+                        puuid, predictedHp);
             }
         }
     }

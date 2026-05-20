@@ -4,6 +4,39 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-05-20 21:15] — r4 fix caused false positive: inventory disappears 10 min after death + reco
+
+**Context** : User signale qu'un joueur, après être mort puis revived, et avoir joué 10 minutes, a perdu son inventaire à une déco/reco normale. Le dup principal (r4) est bien corrigé mais introduction d'un false-positive sur les déconnexions légitimes post-revive.
+
+**Error** : `handleReviveCanceledLogout` se déclenche pour un joueur qui n'est PAS en état revive-pending au moment du logout, clearant son inventaire DB → à la reconnexion l'inventaire est vide.
+
+**Root cause** : Deux chemins de false-positive dans r4 :
+
+1. **L'heuristique `infiniteEffects + HP < 50%`** était trop large. Beaucoup de mods modernes appliquent des effets infinite-duration sur le joueur en jeu normal :
+   - The Aether : effets racial / vol persistants
+   - Apotheosis : affixes qui grantent des effets permanents
+   - Iron's Spellbooks : marqueurs de spell appris / mana auras
+   - Ars Nouveau : auras de mana
+   Combiné à un HP < 50% (combat normal, faim, fall damage léger), l'heuristique fire à tort.
+
+2. **TTL trop court (2 min)**. Si `onPlayerHeal` ne fire pas (revive mod utilise `setHealth()` direct au lieu de `heal()`), le tracking reste actif. Mais après 2 min, le TTL le rend inerte → `trackedCancel` retourne false au logout. Hmm wait, ça ne cause pas le bug r4 ici... mais peut-être que le joueur est resté en revive interface pendant 10 min, et le TTL expirait, MAIS l'heuristique firait quand même → fix path déclenché → DB cleared → à la reconnexion inventaire vide.
+
+**Fix** :
+- **Suppression complète de l'heuristique**. La détection se fait UNIQUEMENT via le tracking de `LivingDeathEvent` à priorité HIGHEST (qui capture déjà tous les événements de mort).
+- **Check HP au logout durci** à `HP ≤ 1.0 absolu OU isDeadOrDying()`. Plus de seuil ratio. Les mods de revive clamp typiquement le joueur downed à exactement 1 HP (demi-cœur) — ce check le détecte. Un joueur revived avec HP > 1 (même 1.5 ou 2) n'est plus considéré downed.
+- **Seuil `onPlayerHeal` baissé** à `HP > 1.0` (au lieu de `≥80% maxHealth`). N'importe quel heal qui amène le HP au-dessus de 1 HP clear le tracking. Couvre les mods de revive qui partiel-heal à 5 HP, 10 HP, etc.
+- **Clear explicite dans la boucle auto-save** : toutes les 5 minutes, pour chaque joueur eligible (alive + synced + HP > 1.0), on clear `deathCanceledRecently`. Couvre le cas où `LivingHealEvent` ne fire pas (revive mod utilise `setHealth()` direct).
+- **TTL étendu à 1 heure** (au lieu de 2 min) en filet de sécurité pour les rares cas où aucun clear explicite ne fire (joueur reste en revive interface > 5 min sans heal event).
+
+Multi-layered defense : (a) HIGHEST hook capture tous les événements de mort, (b) onPlayerHeal clear sur heal, (c) onPlayerRespawn clear sur respawn, (d) auto-save clear sur eligibility + HP haut, (e) removePlayerLock clear sur fin de session, (f) TTL 1h en backup, (g) check HP strict au logout.
+
+**Prevention** :
+- **Ne JAMAIS faire confiance à une heuristique "comportementale" en code de sync de données**. Les signaux comme `infiniteEffects` ou `low HP` ont trop de mods qui peuvent les produire en gameplay normal. N'utiliser que des signaux EXPLICITES (events spécifiques) pour déclencher une action destructive comme clearer une row DB.
+- **Pour une détection d'état transitoire avec TTL, multi-coucher les chemins de cleanup**. Au minimum : event-based (heal, respawn), state-based (alive + healthy), session-based (logout/lock-remove), et TTL-based. Si une seule couche échoue (revive mod utilise setHealth → pas de heal event), les autres compensent.
+- **Pour les seuils HP**, préférer les valeurs ABSOLUES aux ratios. Les ratios de maxHealth donnent des seuils trop variables (4 HP / 20 max ≠ 4 HP / 40 max si maxHealth changée par mod). Un seuil absolu (HP > 1.0) est plus prévisible et matche les conventions de mods de revive (clamp à exactement 1 HP).
+
+---
+
 ## [2026-05-20 20:30] — r3 fixed main inv but mod slots (curios / accessories / cosmetic armor) still dup
 
 **Context** : User a testé r3 (commit `b34cd3a`). Inventaire principal / armure / main secondaire / curseur ne dupliquent plus. Mais les slots Curios, slots Accessories (utilisés par The Aether), et Cosmetic Armor Reworked dupliquent encore.

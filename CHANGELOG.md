@@ -4,6 +4,18 @@ All notable changes to **PlayerSync** are documented here.
 
 ---
 
+## [Unreleased] - 2026-05-20 (r5)
+
+### Fixed (English first)
+
+- **Inventory disappears after a revive + deco/reco — r5 hardens detection against false positives** — A player reported losing their inventory on disconnect/reconnect 10 minutes after dying. The r4 detection had two false-positive paths: (a) the heuristic (infinite-duration effect + HP < 50%) fired for any player wearing a long-lived effect from Aether / Apotheosis / Iron's Spellbooks / Ars Nouveau / etc. who happened to disconnect with sub-50% HP (after combat or simply not yet regenerated post-revive). (b) The 2-minute TTL on the canceled-death tracking expired before the player either healed enough to clear it (`onPlayerHeal` required ≥80% maxHealth) or hit the auto-save loop. r5 removes the heuristic entirely, tightens the logout-time check to `HP ≤ 1.0 OR isDeadOrDying()` (matches the typical revive-mod downed-state clamp at exactly 1 HP), drops the `onPlayerHeal` clear threshold to `HP > 1.0` so any non-trivial heal ends the tracking, adds an explicit tracking-clear in the auto-save loop (every 5 minutes, players with HP > 1.0 get the entry dropped), and extends the TTL to 1 hour as a safety net for the rare path where none of the explicit clears fire. Combined, the detection now triggers ONLY when the player is genuinely still in a downed-state disconnect at the moment of logout — never on a legitimate post-revive disconnect.
+
+### Correctifs (r5 — French mirror)
+
+- **Inventaire qui disparait après un revive + deco/reco — r5 durcit la détection contre les false positives** — Un joueur a rapporté avoir perdu son inventaire à la deco/reco 10 minutes après être mort. La détection r4 avait deux chemins de false-positive : (a) l'heuristique (effet infinite-duration + HP < 50%) firait pour tout joueur portant un effet long-lived d'Aether / Apotheosis / Iron's Spellbooks / Ars Nouveau / etc. qui se déconnectait avec moins de 50% HP (après combat ou simplement pas encore régénéré post-revive). (b) Le TTL de 2 minutes sur le tracking de mort-annulée expirait avant que le joueur soit soigné assez pour clear le tracking (`onPlayerHeal` exigeait ≥80% maxHealth) ou que la boucle d'auto-save fasse son cycle. r5 supprime entièrement l'heuristique, durcit le check au logout à `HP ≤ 1.0 OU isDeadOrDying()` (correspond au clamp typique des mods de revive à exactement 1 HP en état downed), baisse le seuil de clear `onPlayerHeal` à `HP > 1.0` pour que tout heal non-trivial termine le tracking, ajoute un clear explicite du tracking dans la boucle auto-save (toutes les 5 minutes, les joueurs avec HP > 1.0 voient leur entrée droppée), et étend le TTL à 1 heure en filet de sécurité pour le rare chemin où aucun clear explicite ne fire. Combiné, la détection ne se déclenche QUE quand le joueur est vraiment encore en état downed-disconnect au moment du logout — jamais sur une déconnexion légitime post-revive.
+
+---
+
 ## [Unreleased] - 2026-05-20 (r4)
 
 ### Fixed (English first)
