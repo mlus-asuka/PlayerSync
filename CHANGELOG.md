@@ -4,6 +4,18 @@ All notable changes to **PlayerSync** are documented here.
 
 ---
 
+## [Unreleased] - 2026-05-20
+
+### Fixed (English first)
+
+- **Item duplication on death + disconnect from revive interface + reconnect** — When a revive mod (Revive Me / Hardcore Revival / Corail Tombstone) canceled `LivingDeathEvent` at NORMAL/HIGH priority, NeoForge skipped PlayerSync's LOW-priority handler entirely (`receiveCanceled` defaulted to `false`), so the mod had no record of the canceled death. The player kept their full inventory in the downed state; on disconnect the logout-save captured that inventory and wrote it to DB. The revive timer then finalized the death post-disconnect, items dropped, and the corpse/gravestone mod created a body holding the same inventory. On reconnect: the player respawned with the restored inventory AND the corpse held a second copy — full duplication. Fix tracks canceled `LivingDeathEvent` firings (via `receiveCanceled = true` on `onPlayerDeath`) in a new `deathCanceledRecently` map (2-min TTL). When a tracked player disconnects with the `keepInventory` game rule off, the new `handleReviveCanceledLogout` path persists progression (xp / effects / score / food / health / advancements) but explicitly clears the item-dropping columns (`inventory`, `armor`, `left_hand`, `cursors`) in DB so the corpse becomes the single source of truth. Tracking entries auto-clear on `PlayerRespawnEvent` and `removePlayerLock`. The keepInventory=on branch falls through to the normal save path (no drop, no corpse, no dup risk — clearing would destroy the player's items).
+
+### Correctifs (French mirror)
+
+- **Duplication d'items mort + déconnexion depuis l'interface revive + reconnexion** — Quand un mod de revive (Revive Me / Hardcore Revival / Corail Tombstone) annulait `LivingDeathEvent` en priorité NORMAL/HIGH, NeoForge sautait complètement le handler LOW de PlayerSync (`receiveCanceled` par défaut à `false`), donc le mod n'avait aucune trace de la mort annulée. Le joueur conservait son inventaire complet en état "downed" ; à la déconnexion la sauvegarde logout capturait cet inventaire et l'écrivait en DB. Le timer de revive finalisait ensuite la mort post-déconnexion, les items tombaient, et le mod corpse/gravestone créait un corps contenant le même inventaire. Au reconnect : le joueur respawnait avec l'inventaire restauré ET le corpse contenait une seconde copie — duplication complète. Le fix track les firings de `LivingDeathEvent` annulés (via `receiveCanceled = true` sur `onPlayerDeath`) dans une nouvelle map `deathCanceledRecently` (TTL 2 min). Quand un joueur tracké se déconnecte avec la game rule `keepInventory` désactivée, le nouveau chemin `handleReviveCanceledLogout` persiste la progression (xp / effects / score / food / health / advancements) mais vide explicitement les colonnes d'items-droppables (`inventory`, `armor`, `left_hand`, `cursors`) en DB pour que le corpse devienne la seule source de vérité. Les entrées de tracking sont auto-nettoyées au `PlayerRespawnEvent` et au `removePlayerLock`. La branche keepInventory=on retombe sur le chemin normal de sauvegarde (pas de drop, pas de corpse, pas de risque de dup — vider la DB détruirait les items du joueur).
+
+---
+
 ## [2.1.5] - 2026-04-22 (cont.)
 
 ### Added (Phase 8: configs + admin commands)

@@ -4,6 +4,36 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-05-20 14:00] — Item duplication on death + disconnect from revive interface + reconnect
+
+**Context** : Un joueur meurt, le mod Revive Me (ou Hardcore Revival / Corail Tombstone) affiche son interface "downed/revive" en annulant `LivingDeathEvent`. Le joueur se déconnecte depuis cette interface. À la reconnexion : il respawn avec son inventaire complet ET un cadavre/gravestone au point de mort contient également l'inventaire complet — duplication intégrale.
+
+**Error** : Duplication reproductible 100% avec ReviveMe + un mod corpse/gravestone.
+
+**Root cause** :
+1. `@SubscribeEvent` de NeoForge a `receiveCanceled = false` par défaut → un handler n'est PAS appelé pour un événement annulé sauf opt-in explicite.
+2. `onPlayerDeath` était `@SubscribeEvent(priority = LOW)` (sans `receiveCanceled = true`) → quand ReviveMe annule `LivingDeathEvent` en NORMAL/HIGH, le handler PlayerSync est SAUTÉ. Le check `if (event.isCanceled()) return;` était donc dead code.
+3. PlayerSync n'avait aucune trace de l'état "downed" du joueur. À la déconnexion, `onPlayerLogout` exécutait son chemin normal de save : snapshot capturait l'inventaire COMPLET (encore sur le joueur, car ReviveMe n'avait pas drop les items), écriture en DB.
+4. Post-déconnexion : le timer revive expirait, la mort se finalisait, les items tombaient au sol, le mod corpse/gravestone créait un corps avec l'inventaire complet.
+5. Reconnexion : `doPlayerJoin` restaurait l'inventaire depuis DB (complet) + le cadavre dans le monde contenait l'inventaire complet → 2× items.
+
+**Fix** :
+- `onPlayerDeath` annoté `@SubscribeEvent(priority = LOW, receiveCanceled = true)` → le handler reçoit maintenant les événements annulés.
+- Branche `if (event.isCanceled())` ajoute le joueur à `deathCanceledRecently` (ConcurrentHashMap uuid → timestamp, TTL 2 min).
+- `onPlayerLogout` consulte `deathCanceledRecently` AVANT le chemin normal de save. Si entrée récente :
+  - Si `keepInventory=ON` : fall-through au chemin normal (pas de drop, pas de corpse, pas de dup risque).
+  - Si `keepInventory=OFF` : appelle `handleReviveCanceledLogout` qui persiste la progression (xp / effects / score / food / health / advancements) MAIS écrit explicitement des valeurs vides (`{}` / `B64:e30=`) dans `inventory` / `armor` / `left_hand` / `cursors`. `online=0` et `logout_started_at=NULL` set atomiquement dans le même UPDATE.
+- Nouvelle méthode `writeReviveLogoutClearItemsToDB` bypasse le guard `refuse_empty_inventory_write` (l'écriture vide est INTENTIONNELLE ici).
+- Tracking auto-nettoyé : `PlayerRespawnEvent` (joueur ressuscité) + `removePlayerLock` (nettoyage de session) + TTL 2 min.
+- `lastWrittenSnapshotHash.remove(uuid)` dans la BG task pour qu'une auto-save pending ne puisse pas ressusciter l'inventaire effacé via le skip de hash.
+
+**Prevention** :
+- **TOUJOURS spécifier `receiveCanceled = true` sur un handler qui doit fonctionner après cancellation**. Le check `if (event.isCanceled())` ne suffit pas si NeoForge n'appelle même pas le handler.
+- **NE JAMAIS faire confiance à un comment qui dit "we run after cancel and check isCanceled"** sans vérifier les flags d'annotation. La sémantique NeoForge des handlers d'événements annulés est opt-in.
+- **Tout chemin de save qui s'exécute pendant un état transitoire (downed, mort-pas-encore-finalisée, respawn-pas-encore-validé) DOIT vérifier la game rule `keepInventory`** avant de décider quoi écrire en DB — un blanket-clear casse le cas où les items doivent rester sur le joueur.
+
+---
+
 ## [2026-04-22 02:54] — Item duplication on drop + quick disconnect + reconnect
 
 **Context** : Un joueur drop un item au sol, se déconnecte très rapidement, puis se reconnecte → l'item est présent deux fois (en inventory restauré + encore au sol).
