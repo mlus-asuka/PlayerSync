@@ -4,6 +4,18 @@ All notable changes to **PlayerSync** are documented here.
 
 ---
 
+## [Unreleased] - 2026-05-20 (r4)
+
+### Fixed (English first)
+
+- **Item dup on revive-disconnect — mod-slot extension (r4)** — r3 fixed the main inventory / armor / off-hand / cursor dup but the `writeReviveLogoutClearItemsToDB` clear-list was limited to the `player_data` row. Curios slots, Accessories slots (used by The Aether), and Cosmetic Armor Reworked slots are stored in separate tables (`curios.curios_item`, `mod_player_data.data_value` for `mod_id IN ('accessories','cosmeticarmor')`), and the corpse mod's curios/accessories compat catches their items into the corpse on the post-disconnect death finalize — so they were still dup'ing on the next join. r4 extends the revive-logout batch to also clear those columns (set to the empty-map encoding `{}` which the `apply*FromData` functions interpret as "no data, leave slots empty"). NeoForge attachments (`mod_id='neoforge_attachments'`) are deliberately left untouched: they hold per-player progression (Aether `AETHER_PLAYER` — portals, darts, flight timer, life shards; Apotheosis `WORLD_TIER`; Apothic Attributes `AUX_DMG_TRACKER`; Ars Nouveau mana; Iron's Spellbooks mana; etc.), not items. All clears run in the same `executeBatchTransaction` as the core `player_data` UPDATE, so they only commit when the cross-server `last_server` guard passes.
+
+### Correctifs (r4 — French mirror)
+
+- **Dup items revive-disconnect — extension slots mod (r4)** — r3 corrigeait la dup de l'inventaire principal / armure / main secondaire / curseur mais la clear-list de `writeReviveLogoutClearItemsToDB` se limitait à la row `player_data`. Les slots Curios, Accessories (utilisés par The Aether), et Cosmetic Armor Reworked sont stockés dans des tables séparées (`curios.curios_item`, `mod_player_data.data_value` pour `mod_id IN ('accessories','cosmeticarmor')`), et le compat curios/accessories du mod corpse capture leurs items dans le cadavre à la finalisation de mort post-déconnexion — donc ils dupliquaient toujours au prochain join. r4 étend le batch revive-logout pour clear ces colonnes aussi (set à l'encodage map vide `{}` que les fonctions `apply*FromData` interprètent comme "pas de données, laisser slots vides"). Les attachments NeoForge (`mod_id='neoforge_attachments'`) restent volontairement intouchés : ils contiennent de la progression par joueur (Aether `AETHER_PLAYER` — portails, dards, timer de vol, life shards ; Apotheosis `WORLD_TIER` ; Apothic Attributes `AUX_DMG_TRACKER` ; Ars Nouveau mana ; Iron's Spellbooks mana ; etc.), pas des items. Tous les clears tournent dans le même `executeBatchTransaction` que l'UPDATE core `player_data`, donc ils ne commit que quand le guard cross-server `last_server` passe.
+
+---
+
 ## [Unreleased] - 2026-05-20 (r3)
 
 ### Fixed (English first)

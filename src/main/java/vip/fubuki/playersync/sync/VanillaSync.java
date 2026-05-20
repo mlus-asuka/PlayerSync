@@ -2434,14 +2434,30 @@ public class VanillaSync {
      * FIX DUP-REVIVE: write path used when a player disconnects in a revive-canceled
      * death state (ReviveMe / HardcoreRevival / CorailTombstone). Persists progression
      * fields (xp / effects / score / food / health / advancements) AND explicitly
-     * clears the item-dropping columns (inventory / armor / left_hand / cursors).
-     * Enderchest is preserved (does not drop on vanilla death). Curios / backpacks
-     * / SS / RS2 are intentionally NOT touched — their drop behavior is handled by
-     * their respective compat layers / cache mechanisms.
+     * clears every item-bearing column that would otherwise dup with the corpse:
      *
-     * <p>online=0 and logout_started_at=NULL are set atomically in the same UPDATE
-     * to close the cross-server race window (a joining peer sees clean state in one
-     * step, never a half-applied row).
+     * <ul>
+     *   <li>{@code player_data} — inventory / armor / left_hand / cursors</li>
+     *   <li>{@code curios} — curios_item (Curios mod functional + cosmetic slots)</li>
+     *   <li>{@code mod_player_data} where {@code mod_id IN ('accessories', 'cosmeticarmor')}
+     *       (Accessories slots used by The Aether, Cosmetic Armor Reworked 4 slots)</li>
+     * </ul>
+     *
+     * <p>NOT touched:
+     * <ul>
+     *   <li>{@code enderchest} — does not drop on vanilla death</li>
+     *   <li>{@code backpack_data}, {@code sophisticatedstorage}, {@code refinedstorage}
+     *       — keyed by ITEM UUID (not player UUID); the item drops into the corpse
+     *       with its UUID, and the data follows the item on retrieval (no dup)</li>
+     *   <li>{@code mod_player_data} where {@code mod_id='neoforge_attachments'}
+     *       — holds player progression / state (Aether AETHER_PLAYER: portals,
+     *       dart count, flight timer, life shards; Apotheosis WORLD_TIER;
+     *       Apothic Attributes AUX_DMG_TRACKER; etc.). NOT items. MUST preserve.</li>
+     * </ul>
+     *
+     * <p>online=0 and logout_started_at=NULL are set atomically in the same core
+     * UPDATE to close the cross-server race window (a joining peer sees clean state
+     * in one step, never a half-applied row).
      *
      * <p>Bypasses the {@code refuse_empty_inventory_write} safety because the empty
      * write is intentional here: the items go into the corpse formed by the corpse /
@@ -2449,31 +2465,68 @@ public class VanillaSync {
      * them from there. Skipping the clear would dup the corpse contents with the DB
      * snapshot on the next join.
      *
-     * @return true if the core UPDATE persisted, false if the last_server guard blocked.
+     * @return true if the core UPDATE persisted, false if the last_server guard blocked
+     *         it. Downstream clears (curios, accessories, cosmeticarmor) execute in the
+     *         same batched transaction, so they only commit when the core write does.
      */
     private static boolean writeReviveLogoutClearItemsToDB(PlayerDataSnapshot s) throws Exception {
         int serverId = JdbcConfig.SERVER_ID.get();
         String serverGuard = "(last_server=? OR last_server IS NULL)";
-        // "{}" is the canonical empty map encoding consumed by LocalJsonUtil.StringToEntryMap
-        // — restore code skips length() <= 2 entries, leaving the cleared inventory empty.
+        // "{}" is the canonical empty-map encoding consumed by LocalJsonUtil.StringToEntryMap
+        // and applyCuriosFromData / applyAccessoriesFromData / applyCosmeticArmorFromData
+        // (all three skip restoration when data.length() <= 2, leaving slots cleared).
         // "B64:e30=" is the canonical empty-item encoding (Base64 of "{}") consumed by
         // deserializeAndCreatePlaceholderIfNeeded — returns ItemStack.EMPTY.
         final String emptyMap = "{}";
         final String emptyItem = "B64:e30=";
 
-        String sql = "UPDATE " + Tables.playerData()
+        List<Object[]> batch = new ArrayList<>();
+
+        // 1. Core player_data row — inventory / armor / left_hand / cursors cleared,
+        //    progression persisted, online=0, logout_started_at=NULL, last_server set.
+        String coreSql = "UPDATE " + Tables.playerData()
                 + " SET inventory=?, armor=?, left_hand=?, cursors=?,"
                 + "     xp=?, effects=?, score=?, food_level=?, health=?,"
                 + "     advancements=COALESCE(?, advancements),"
                 + "     online=0, last_server=?, logout_started_at=NULL"
                 + " WHERE uuid=? AND " + serverGuard;
-        int[] counts = JDBCsetUp.executeBatchTransaction(new Object[][]{
-                new Object[]{sql,
-                        emptyMap, emptyMap, emptyItem, emptyItem,
-                        s.xp(), s.effects(), s.score(), s.foodLevel(), s.health(),
-                        s.advancements(), serverId,
-                        s.uuid(), serverId}
-        });
+        batch.add(new Object[]{coreSql,
+                emptyMap, emptyMap, emptyItem, emptyItem,
+                s.xp(), s.effects(), s.score(), s.foodLevel(), s.health(),
+                s.advancements(), serverId,
+                s.uuid(), serverId});
+
+        // 2. Curios — clear the player's curios_item column. The corpse mod's curios
+        //    compat catches dropped curios into the corpse, so the DB row must be
+        //    cleared too (otherwise rejoin restores them AND the corpse holds them).
+        //    Guarded by EXISTS(...) so we never wipe a row owned by a peer server.
+        String curioGuard = "EXISTS (SELECT 1 FROM " + Tables.playerData()
+                + " WHERE uuid=? AND " + serverGuard + ")";
+        batch.add(new Object[]{
+                "UPDATE " + Tables.curios() + " SET curios_item=? WHERE uuid=? AND " + curioGuard,
+                emptyMap, s.uuid(), s.uuid(), serverId});
+
+        // 3. Accessories slots (used by The Aether). Stored in mod_player_data.
+        String modDataGuard = "EXISTS (SELECT 1 FROM " + Tables.playerData()
+                + " WHERE uuid=? AND " + serverGuard + ")";
+        batch.add(new Object[]{
+                "UPDATE " + Tables.modPlayerData() + " SET data_value=?"
+                        + " WHERE uuid=? AND mod_id=? AND " + modDataGuard,
+                emptyMap, s.uuid(), "accessories", s.uuid(), serverId});
+
+        // 4. Cosmetic Armor (Reworked) 4 cosmetic slots. Stored in mod_player_data.
+        batch.add(new Object[]{
+                "UPDATE " + Tables.modPlayerData() + " SET data_value=?"
+                        + " WHERE uuid=? AND mod_id=? AND " + modDataGuard,
+                emptyMap, s.uuid(), "cosmeticarmor", s.uuid(), serverId});
+
+        // NOTE: mod_id='neoforge_attachments' is INTENTIONALLY NOT cleared. It holds
+        // per-player progression (Aether portals/darts/flight/life-shards via the
+        // AETHER_PLAYER attachment, Apotheosis world tier, Apothic Attributes aux
+        // damage tracker, Ars Nouveau mana, Iron's Spellbooks mana, etc.) which is
+        // never lost on death and MUST persist across the revive-disconnect cycle.
+
+        int[] counts = JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
         if (counts.length > 0 && counts[0] == 0) {
             SyncLogger.guardBlocked(s.uuid(), serverId,
                     "revive-logout clear-items UPDATE affected 0 rows — last_server mismatch");

@@ -4,6 +4,40 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-05-20 20:30] — r3 fixed main inv but mod slots (curios / accessories / cosmetic armor) still dup
+
+**Context** : User a testé r3 (commit `b34cd3a`). Inventaire principal / armure / main secondaire / curseur ne dupliquent plus. Mais les slots Curios, slots Accessories (utilisés par The Aether), et Cosmetic Armor Reworked dupliquent encore.
+
+**Error** : Duplication partielle — seulement sur les slots de mods, pas les slots vanilla.
+
+**Root cause** : `writeReviveLogoutClearItemsToDB` ne mettait à jour QUE la row `player_data`. Les items de mods sont dans des tables séparées :
+- Curios → table `curios` (colonne `curios_item`), keyed par player UUID
+- Accessories → table `mod_player_data` avec `mod_id='accessories'`
+- Cosmetic Armor → table `mod_player_data` avec `mod_id='cosmeticarmor'`
+
+Au moment où le corpse mod capture les items dropped post-finalize, il capture aussi les curios/accessories/cosmétiques via leur compat respectif. La DB gardait l'ancienne copie de ces items → au rejoin, restored + corpse contient = dup.
+
+**Fix** : Extension de `writeReviveLogoutClearItemsToDB` pour clear aussi :
+- `UPDATE curios SET curios_item='{}' WHERE uuid=?`
+- `UPDATE mod_player_data SET data_value='{}' WHERE uuid=? AND mod_id='accessories'`
+- `UPDATE mod_player_data SET data_value='{}' WHERE uuid=? AND mod_id='cosmeticarmor'`
+
+Les fonctions `applyCuriosFromData` / `applyAccessoriesFromData` / `applyCosmeticArmorFromData` détectent toutes `data == null || data.length() <= 2` et skip la restauration (les slots restent vides après le clear initial). `{}` (length 2) déclenche ce skip-path.
+
+Tous les clears sont dans le même `executeBatchTransaction` que l'UPDATE core, donc atomiquement guardés par `last_server` pour la safety cross-server.
+
+**MUST PRESERVE** :
+- `mod_player_data` avec `mod_id='neoforge_attachments'` — contient la progression par joueur (Aether AETHER_PLAYER : portails / dards / timer de vol / life shards ; Apotheosis WORLD_TIER ; Apothic Attributes AUX_DMG_TRACKER ; Ars Nouveau mana ; Iron's Spellbooks mana ; etc.). Ce ne sont PAS des items et ils ne droppent PAS sur la mort. Clear → destruction de progression.
+- `backpack_data`, `sophisticatedstorage_data`, RS2 data — keyed par ITEM UUID, pas par player UUID. Le backpack/shulker drop dans le corpse avec son UUID propre, et la data suit l'item au retrieval. Pas de dup.
+- `enderchest` — ne drop pas en vanilla, ne forme pas de cadavre.
+
+**Prevention** :
+- **Pour tout fix de duplication d'items, TOUJOURS auditer TOUTES les tables qui stockent des items**, pas juste celle qu'on suspecte. PlayerSync utilise au moins 5 tables différentes pour des items (player_data, curios, mod_player_data, backpack_data, et SS/RS2 sont dans modPlayerData ou backpack_data selon le mod).
+- **Distinguer items-keyed-par-player vs items-keyed-par-UUID-d'item** : seuls les premiers ont besoin d'être cleared (les seconds suivent leur item physique).
+- **Distinguer items vs progression** dans `mod_player_data` par `mod_id` : clear items, préserver progression.
+
+---
+
 ## [2026-05-20 19:45] — r2 fix still leaks: revive mods may prevent death without canceling LivingDeathEvent
 
 **Context** : User a testé le fix r2 (commit `8e945a8`) → bug toujours présent. Duplication reproductible. Le tracking via le listener programmatique LOWEST + receiveCanceled=true ne fire pas, et l'heuristique (infinite effects + HP < 50%) ne fire pas non plus.
