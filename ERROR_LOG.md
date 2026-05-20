@@ -4,6 +4,30 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-05-20 19:45] — r2 fix still leaks: revive mods may prevent death without canceling LivingDeathEvent
+
+**Context** : User a testé le fix r2 (commit `8e945a8`) → bug toujours présent. Duplication reproductible. Le tracking via le listener programmatique LOWEST + receiveCanceled=true ne fire pas, et l'heuristique (infinite effects + HP < 50%) ne fire pas non plus.
+
+**Error** : Ni le tracking ni l'heuristique ne détectaient l'état "revive me interface".
+
+**Root cause** : Deux failles dans r2 :
+1. **Le listener programmatique LOWEST avec receiveCanceled=true ne fire que si LivingDeathEvent est ANNULÉ**. Mais certains mods de revive empêchent la mort SANS annuler `LivingDeathEvent` — ils annulent `LivingDamageEvent` plus tôt dans le pipeline, OU utilisent un Mixin sur `LivingEntity.die()` ou `LivingEntity.actuallyHurt()`. Dans ces cas, `LivingDeathEvent` ne fire JAMAIS, donc notre listener n'a rien à voir, et le tracking reste vide.
+2. **L'heuristique (infinite-duration effects + HP < 50%) est trop restrictive**. Le mod de revive utilisé par le user n'applique peut-être pas d'effet infinite-duration, OU clamp HP à une valeur ≥ 50% du max, OU les deux. L'heuristique ne fire pas → fall-through au save normal → duplication.
+
+**Fix** :
+- **Hook à priorité HIGHEST** : nouveau `@SubscribeEvent(priority = HIGHEST) onPlayerDeathAttempt(LivingDeathEvent)`. À priorité HIGHEST, AUCUN autre handler n'a encore eu la chance d'annuler l'event. `event.isCanceled()` est toujours `false` au moment où on tourne. Le dispatcher délivre TOUJOURS l'event à notre handler. → On capture TOUTE tentative de mort, qu'elle soit ensuite annulée ou non.
+- **Suppression du listener programmatique LOWEST** (devenu redondant).
+- **Suppression de la branche `if (event.isCanceled())` morte dans `onPlayerDeath` LOW** (le dispatcher la skip déjà — code mort).
+- **Nouveau hook `LivingHealEvent`** : si le joueur est soigné à ≥80% de maxHealth, clear le tracking. Couvre le cas "revived avec succès et continue à jouer" pour éviter de clear l'inventaire DB lors d'une déconnexion normale plus tard.
+- **Conservation de l'heuristique en filet de sécurité** pour les mods qui empêchent la mort sans firer `LivingDeathEvent` du tout (cancel `LivingDamageEvent` / Mixin pur).
+
+**Prevention** :
+- **Pour détecter une cancellation d'event, hooker à HIGHEST priority** (avant tout cancel) plutôt qu'à LOWEST + `receiveCanceled=true`. Plus simple, plus robuste, marche pour tous les types de mods (priority-based, Mixin-based, alternative-event-based).
+- **Ne jamais reposer sur un seul signal pour un fix critique de duplication**. Avoir au moins (a) un event-based primary + (b) un state-based fallback (heuristique sur health/effects/etc.).
+- **Le check de `event.isCanceled()` dans un handler `@SubscribeEvent` est presque toujours du code mort** dans NeoForge bus 8.x. Le dispatcher skip les events annulés automatiquement. Soit on n'a pas besoin du check (le handler ne fire jamais sur cancel), soit on doit utiliser `addListener(priority, true, ...)` programmatique pour recevoir les cancels.
+
+---
+
 ## [2026-05-20 18:30] — r1 fix non-effective: @SubscribeEvent(receiveCanceled=true) ignored by NeoForge bus 8.x
 
 **Context** : User a testé le fix r1 (commit `39aee07`) → bug toujours présent, duplication identique. Le tracking via `deathCanceledRecently` ne fonctionnait pas.

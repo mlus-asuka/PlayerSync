@@ -4,6 +4,18 @@ All notable changes to **PlayerSync** are documented here.
 
 ---
 
+## [Unreleased] - 2026-05-20 (r3)
+
+### Fixed (English first)
+
+- **Item dup on revive-disconnect — r2 still leaked (r3)** — The r2 fix detected canceled `LivingDeathEvent` via a programmatic listener at LOWEST priority + a heuristic (infinite-duration effects + HP < 50%). It still failed in production because (a) some revive mods may prevent death without ever canceling `LivingDeathEvent` (they cancel `LivingDamageEvent` or use Mixins, so no canceled event ever reaches our listener), and (b) the heuristic required infinite-duration effects which not every revive mod applies. r3 fixes both gaps by moving detection to a `@SubscribeEvent(priority = HIGHEST)` hook (`onPlayerDeathAttempt`) that fires for EVERY `LivingDeathEvent` BEFORE any other handler can cancel it. The cancel filter is bypassed cleanly: at HIGHEST priority, no earlier handler exists, so `isCanceled()` is always `false` when our handler runs and the dispatcher always delivers the event. Adds a new `LivingHealEvent` hook (`onPlayerHeal`) that clears the tracking when the player is healed back to ≥80% maxHealth — covers the legitimate "revived and continued playing" case so a later normal logout isn't wrongly treated as a death-pending disconnect. The heuristic in `onPlayerLogout` is kept as a secondary safety net for revive mods that prevent death entirely without firing `LivingDeathEvent`. Removes the now-unused programmatic listener from `register()` and the dead `if (event.isCanceled())` branch in the LOW-priority `onPlayerDeath`.
+
+### Correctifs (r3 — French mirror)
+
+- **Dup items revive-disconnect — r2 fuyait encore (r3)** — Le fix r2 détectait les `LivingDeathEvent` annulés via un listener programmatique à priorité LOWEST + une heuristique (effets infinite-duration + HP < 50%). Il échouait toujours en production parce que (a) certains mods de revive peuvent empêcher la mort sans jamais annuler `LivingDeathEvent` (ils annulent `LivingDamageEvent` ou utilisent des Mixins, donc aucun event annulé n'arrive à notre listener), et (b) l'heuristique exigeait des effets infinite-duration qui ne sont pas appliqués par tous les mods de revive. r3 corrige les deux failles en déplaçant la détection vers un hook `@SubscribeEvent(priority = HIGHEST)` (`onPlayerDeathAttempt`) qui fire pour TOUT `LivingDeathEvent` AVANT que tout autre handler puisse l'annuler. Le filtre de cancellation est contourné proprement : à priorité HIGHEST, aucun handler antérieur n'existe, donc `isCanceled()` retourne toujours `false` quand notre handler tourne et le dispatcher livre toujours l'event. Ajoute un nouveau hook `LivingHealEvent` (`onPlayerHeal`) qui efface le tracking quand le joueur est soigné à ≥80% de maxHealth — couvre le cas légitime "revived et continue à jouer" pour qu'une déconnexion normale plus tard ne soit pas faussement traitée comme un disconnect death-pending. L'heuristique dans `onPlayerLogout` est conservée comme filet de sécurité secondaire pour les mods de revive qui empêchent complètement la mort sans firer `LivingDeathEvent`. Supprime le listener programmatique désormais inutilisé de `register()` et la branche `if (event.isCanceled())` morte dans le `onPlayerDeath` LOW.
+
+---
+
 ## [Unreleased] - 2026-05-20 (r2)
 
 ### Fixed (English first)

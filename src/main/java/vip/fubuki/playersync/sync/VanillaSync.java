@@ -36,6 +36,7 @@ import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.entity.living.LivingHealEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerNegotiationEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
@@ -65,24 +66,7 @@ import java.util.concurrent.locks.ReentrantLock;
 @EventBusSubscriber(modid = PlayerSync.MODID)
 public class VanillaSync {
 
-    /**
-     * Called from {@link PlayerSync#commonSetup} during mod init.
-     *
-     * <p>Registers a programmatic LivingDeathEvent listener with
-     * {@code receiveCanceled = true}. This is REQUIRED to detect canceled deaths:
-     * in NeoForge bus 8.x, the {@code receiveCanceled} field on {@link SubscribeEvent}
-     * is parsed BUT NEVER consulted at dispatch time
-     * ({@code SubscribeEventListener.invoke} always skips canceled events for
-     * {@code ICancellableEvent}). Only {@code addListener(priority, receiveCanceled, ...)}
-     * respects the flag. Used by the revive-mod compat (see {@link #onCanceledLivingDeath}).
-     */
-    public static void register() {
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
-                net.neoforged.bus.api.EventPriority.LOWEST,
-                true, // receiveCanceled — non-negotiable, see method comment
-                LivingDeathEvent.class,
-                VanillaSync::onCanceledLivingDeath);
-    }
+    public static void register() {}
 
     // FIX: Replace unbounded CachedThreadPool with a bounded ThreadPoolExecutor.
     // CachedThreadPool creates unlimited threads — with many players and slow DB queries,
@@ -1582,8 +1566,14 @@ public class VanillaSync {
         // full inventory AND the corpse would also hold it → DUPLICATION.
         //
         // Detection (two signals, OR'd):
-        //   (1) Tracked canceled LivingDeathEvent — handled by the programmatic
-        //       listener {@link #onCanceledLivingDeath}; sets deathCanceledRecently.
+        //   (1) Tracked death attempt — {@link #onPlayerDeathAttempt} fires at
+        //       HIGHEST priority for EVERY LivingDeathEvent (before any cancel) and
+        //       records the player's UUID in deathCanceledRecently. Catches both
+        //       real deaths (corpse forms post-drop) AND revive-canceled deaths
+        //       (corpse forms post-disconnect-finalize). Cleared by
+        //       {@link #onPlayerHeal} on successful revive (heal back to 80%+ HP)
+        //       and by {@link #onPlayerRespawn} so a later normal logout isn't
+        //       wrongly treated as a death-pending disconnect.
         //   (2) Heuristic — player has at least one infinite-duration MobEffect AND
         //       health is below half the maximum. Catches revive mods that prevent
         //       death via LivingDamageEvent / Mixin instead of canceling
@@ -2736,40 +2726,70 @@ public class VanillaSync {
     }
 
     /**
-     * FIX DUP-REVIVE: programmatic listener registered in {@link #register()} with
-     * {@code receiveCanceled = true}. Called for canceled LivingDeathEvent firings
-     * (revive mods like Revive Me / HardcoreRevival / CorailTombstone that cancel
-     * the death at NORMAL/HIGH priority). Records the player so the onPlayerLogout
-     * handler can clear the DB inventory if the disconnect follows.
+     * FIX DUP-REVIVE: HIGHEST-priority hook on LivingDeathEvent. Fires for EVERY
+     * death attempt BEFORE any other handler has a chance to cancel — so we always
+     * record the attempt regardless of whether Revive Me / HardcoreRevival /
+     * CorailTombstone cancel later in the priority chain.
      *
-     * <p>Registered at LOWEST priority so it runs AFTER any other handler that
-     * cancels the event — guarantees we always see the final cancellation state.
+     * <p>Why HIGHEST instead of {@code receiveCanceled = true} on a later priority:
+     * the {@code receiveCanceled} field on {@link SubscribeEvent} is silently ignored
+     * by NeoForge bus 8.x's {@code SubscribeEventListener.invoke} (the dispatcher
+     * unconditionally skips canceled events for {@code ICancellableEvent}; only
+     * programmatic {@code addListener(priority, true, ...)} respects the flag).
+     * HIGHEST avoids the cancellation filter entirely: at HIGHEST the event is
+     * always un-canceled when our handler runs (no prior handler could have set it).
+     *
+     * <p>The {@link #onPlayerLogout} handler reads this tracking to decide whether
+     * to clear the DB inventory on disconnect. Cleared on
+     * {@link PlayerEvent.PlayerRespawnEvent} (real death + respawn) and on
+     * {@link #onPlayerHeal} (player healed back to high HP after a canceled death,
+     * i.e. successfully revived).
      */
-    private static void onCanceledLivingDeath(LivingDeathEvent event) {
-        if (!event.isCanceled()) return;
+    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.HIGHEST)
+    public static void onPlayerDeathAttempt(LivingDeathEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         String puuid = player.getUUID().toString();
         deathCanceledRecently.put(puuid, System.currentTimeMillis());
-        PlayerSync.LOGGER.info("[revive-track] caught canceled LivingDeathEvent for {} — DB inventory will be cleared if a logout follows within {}ms",
+        PlayerSync.LOGGER.info("[death-track] LivingDeathEvent for {} (priority=HIGHEST, pre-cancel) — tracking for logout-clear within {}ms",
                 puuid, DEATH_CANCEL_TTL_MS);
-        SyncLogger.playerEvent(puuid, "DEATH_CANCELED",
-                "LivingDeathEvent canceled by revive mod — tracking for logout-clear");
+        SyncLogger.playerEvent(puuid, "DEATH_ATTEMPT",
+                "LivingDeathEvent fired (pre-cancel) — tracking for logout-clear");
+    }
+
+    /**
+     * FIX DUP-REVIVE: clear death-pending tracking when the player is healed back to
+     * a high HP threshold. Covers the case where a revive mod successfully revives the
+     * player (typically heals them to full HP or near-full), so a later normal disconnect
+     * is NOT treated as a death-pending disconnect.
+     *
+     * <p>Threshold is 80% of maxHealth — covers revive mods that heal back to full
+     * (100%) and those that heal to a partial value (e.g. 50–75%) without false-positive
+     * on minor healing during combat (food regen, splash potions in <80% range).
+     */
+    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOWEST)
+    public static void onPlayerHeal(LivingHealEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        String puuid = player.getUUID().toString();
+        if (!deathCanceledRecently.containsKey(puuid)) return;
+        float predictedHp = Math.min(player.getHealth() + event.getAmount(), player.getMaxHealth());
+        if (predictedHp >= player.getMaxHealth() * 0.8f) {
+            if (deathCanceledRecently.remove(puuid) != null) {
+                PlayerSync.LOGGER.info("[death-track] cleared revive-pending tracking for {} (healed to {}/{} — revive succeeded)",
+                        puuid, predictedHp, player.getMaxHealth());
+            }
+        }
     }
 
     @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOW)
     public static void onPlayerDeath(LivingDeathEvent event) {
         // NOTE: this handler does NOT see canceled events. NeoForge bus 8.x always
         // skips canceled events at the @SubscribeEvent dispatcher level, ignoring
-        // the receiveCanceled flag. Canceled deaths are handled by the programmatic
-        // {@link #onCanceledLivingDeath} listener registered in {@link #register()}.
+        // the receiveCanceled flag. The HIGHEST-priority {@link #onPlayerDeathAttempt}
+        // catches death attempts BEFORE any cancel happens — that's where revive
+        // tracking is recorded. This handler runs only for un-canceled deaths and
+        // performs the death-save (non-item progression).
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         String puuid = player.getUUID().toString();
-
-        // Real (un-canceled) death: items will drop through the normal path and the
-        // logout-save will capture the post-drop (empty) inventory. Clear any stale
-        // revive tracking from an earlier canceled-then-completed death sequence so
-        // we don't wrongly clear inventory on the upcoming logout.
-        deathCanceledRecently.remove(puuid);
 
         if (deadPlayerWhileLogging.contains(puuid)) return;
 
