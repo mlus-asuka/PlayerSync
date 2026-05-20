@@ -1593,21 +1593,52 @@ public class VanillaSync {
             return;
         }
 
-        // === FIX DUP-REVIVE ===
-        // When a player disconnects while in Revive Me's "fallen" (downed) state, the
-        // normal save path below writes their still-attached inventory to DB. Revive Me
-        // pauses the fall timer on logout and resumes it on reconnect; once it expires
-        // the death finalizes and a corpse / gravestone mod captures the inventory.
-        // The dup happened because doPlayerJoin restored the DB inventory AFTER the
-        // corpse had already been formed.
+        // === FIX DUP-REVIVE: disconnect while fallen (ReviveMe downed) or dead ===
+        // Decompiling revive_me-1.21.1-5.7.14 + corpse-neoforge-1.1.13 revealed the
+        // exact mechanism:
+        //   - ReviveMe.CapabilityEvents.onLogout (NORMAL priority) runs on disconnect:
+        //     for a fallen player it pauses the fall timer, removes effects, and — when
+        //     the config dieOnDisconnect is true — calls FallenData.forceDeath().
+        //   - forceDeath() applies lethal damage → LivingDeathEvent → LivingDropsEvent.
+        //   - Corpse mod (DeathEvents) creates the corpse on LivingDropsEvent; its
+        //     curios / cosmetic compat mods pull those items into the corpse too.
+        // So on a disconnect from the fallen state the player's items are bound for a
+        // corpse. If PlayerSync's normal logout-save wrote the still-attached inventory
+        // (it runs at NORMAL priority — ordering vs ReviveMe's onLogout is undefined),
+        // the rejoining player would get the DB copy AND the corpse would hold one =
+        // duplication.
         //
-        // The fix lives entirely on the JOIN side: doPlayerJoin skips the data apply
-        // when the rejoining player is still fallen (see isReviveMeFallen + the skip
-        // block in doPlayerJoin's apply phase), leaving the vanilla .dat inventory in
-        // place as the single source of truth. The logout save here stays UNCHANGED —
-        // it writes an accurate DB backup that is simply not consumed while the player
-        // is fallen, and gets corrected by onPlayerRespawn (death path) or the next
-        // normal save (revive path).
+        // Detection is EXACT (no heuristics): the player is fallen iff Revive Me's
+        // FallenData.isFallen() says so; or already dead iff isDeadOrDying(). Either
+        // state — regardless of whether PlayerSync's handler ran before or after
+        // ReviveMe's forceDeath — means the items are corpse-bound. We clear every
+        // item-bearing DB column (inventory / armor / left_hand / cursors / curios /
+        // accessories / cosmetic_armor) so the corpse is the single source of truth.
+        //
+        // The matching JOIN-side guard (doPlayerJoin skips the data apply when the
+        // rejoining player is still fallen) ensures the dieOnDisconnect=false path —
+        // where the player reconnects STILL fallen — keeps their vanilla .dat
+        // inventory instead of having it overwritten by this cleared DB row.
+        //
+        // keepInventory game rule: when ON, a death drops NOTHING and forms NO corpse
+        // — the items stay on the player. Clearing the DB then would DESTROY them. So
+        // the clear is gated on keepInventory being OFF; with it ON the normal save
+        // path runs and the player keeps their inventory across the death.
+        if (event.getEntity() instanceof ServerPlayer fallenOrDead
+                && (isReviveMeFallen(fallenOrDead) || fallenOrDead.isDeadOrDying())) {
+            boolean keepInv;
+            try {
+                keepInv = fallenOrDead.serverLevel().getGameRules()
+                        .getBoolean(net.minecraft.world.level.GameRules.RULE_KEEPINVENTORY);
+            } catch (Exception e) {
+                keepInv = false; // unreadable → err toward clearing (dup is the reported bug)
+            }
+            if (!keepInv) {
+                handleFallenLogout(fallenOrDead, player_uuid);
+                return;
+            }
+            PlayerSync.LOGGER.info("[revive-detect] player {} disconnecting fallen/dead but keepInventory=ON — normal save (items stay with player, no corpse)", player_uuid);
+        }
 
         // === Normal save path ===
         Player player = event.getEntity();
@@ -1807,6 +1838,103 @@ public class VanillaSync {
             removePlayerLock(player_uuid);
             // FIX REGRESSION: if snapshot failed AFTER pendingLogoutSaves.put, complete
             // the future so a rejoining doPlayerJoin doesn't hang 15 s on .get().
+            if (saveFuture != null) {
+                pendingLogoutSaves.remove(player_uuid);
+                saveFuture.completeExceptionally(e);
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * FIX DUP-REVIVE: logout path for a player disconnecting while in Revive Me's
+     * "fallen" state or already dead. The items are bound for a corpse (Revive Me's
+     * forceDeath on dieOnDisconnect=true, or the post-disconnect revive-timer death
+     * on dieOnDisconnect=false), so the DB item columns are explicitly cleared via
+     * {@link #writeReviveLogoutClearItemsToDB} — the corpse becomes the single source
+     * of truth and a later restore can no longer dup with it.
+     *
+     * <p>Mirrors the normal logout-save's structure (per-player lock, pendingLogoutSaves
+     * future, logout_started_at marker, bg executor) so every cross-server race guard
+     * still holds. Backpack / SS / RS2 snapshots are intentionally NOT captured: those
+     * stores are keyed by item UUID and follow the item into the corpse.
+     */
+    private static void handleFallenLogout(ServerPlayer player, String player_uuid) {
+        PlayerSync.LOGGER.info("[revive-detect] player {} disconnecting while fallen/dead (fallen={}, deadOrDying={}) — clearing DB item columns to prevent corpse dup",
+                player_uuid, isReviveMeFallen(player), player.isDeadOrDying());
+        SyncLogger.playerEvent(player_uuid, "LOGOUT_FALLEN",
+                "Disconnect while fallen/dead — DB item columns cleared (corpse dup prevention)");
+
+        ReentrantLock lock = getPlayerLock(player_uuid);
+        lock.lock();
+        CompletableFuture<Void> saveFuture = null;
+        try {
+            // Snapshot non-item progression. The deferred item arrays are captured too
+            // (snapshotPlayerData has no non-item variant) but writeReviveLogoutClearItemsToDB
+            // ignores them and writes empty item columns instead.
+            final DeferredPlayerSnapshot frozen = snapshotPlayerData(player);
+
+            saveFuture = new CompletableFuture<>();
+            pendingLogoutSaves.put(player_uuid, saveFuture);
+
+            try {
+                JDBCsetUp.executePreparedUpdate(
+                        "UPDATE " + Tables.playerData() + " SET logout_started_at=? WHERE uuid=?",
+                        System.currentTimeMillis(), player_uuid);
+            } catch (Exception e) {
+                PlayerSync.LOGGER.warn("[revive-logout] could not mark logout_started_at for {}: {}", player_uuid, e.getMessage());
+            }
+
+            final CompletableFuture<Void> futureRef = saveFuture;
+            try {
+                executorService.execute(() -> {
+                    ReentrantLock bgLock = getPlayerLock(player_uuid);
+                    bgLock.lock();
+                    try {
+                        long t0 = System.currentTimeMillis();
+                        PlayerDataSnapshot snapshot = frozen.materialize();
+                        boolean persisted = writeReviveLogoutClearItemsToDB(snapshot);
+                        long total = System.currentTimeMillis() - t0;
+                        if (persisted) {
+                            // Invalidate the hash cache so a pending auto-save BG cannot
+                            // resurrect the cleared inventory via the hash-skip shortcut.
+                            lastWrittenSnapshotHash.remove(player_uuid);
+                            PlayerSync.LOGGER.info("Fallen-logout completed for player {} in {}ms (item columns cleared)", player_uuid, total);
+                            SyncLogger.saveCompleted(player_uuid, "LOGOUT_FALLEN", total);
+                        } else {
+                            PlayerSync.LOGGER.warn("Fallen-logout: core write blocked for {} (another server claimed)", player_uuid);
+                            SyncLogger.saveSkipped(player_uuid, "LOGOUT_FALLEN", "core guard blocked");
+                        }
+                    } catch (Exception e) {
+                        PlayerSync.LOGGER.error("Error during fallen-logout save for {}", player_uuid, e);
+                        SyncLogger.saveFailed(player_uuid, "LOGOUT_FALLEN", e.getMessage());
+                        try {
+                            JDBCsetUp.executePreparedUpdate(
+                                    "UPDATE " + Tables.playerData() + " SET online=0, logout_started_at=NULL WHERE uuid=? AND last_server=?",
+                                    player_uuid, JdbcConfig.SERVER_ID.get());
+                        } catch (Exception ignored) {}
+                    } finally {
+                        removePlayerLock(player_uuid);
+                        pendingLogoutSaves.remove(player_uuid);
+                        futureRef.complete(null);
+                        try { bgLock.unlock(); } catch (Exception ignored) {}
+                    }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException rex) {
+                PlayerSync.LOGGER.warn("Fallen-logout executor rejected task for player {} (likely shutdown in progress)", player_uuid);
+                pendingLogoutSaves.remove(player_uuid);
+                futureRef.completeExceptionally(rex);
+                removePlayerLock(player_uuid);
+            }
+        } catch (Exception e) {
+            PlayerSync.LOGGER.error("Error during fallen-logout for {}", player_uuid, e);
+            try {
+                JDBCsetUp.executePreparedUpdate(
+                        "UPDATE " + Tables.playerData() + " SET online=0, logout_started_at=NULL WHERE uuid=? AND last_server=?",
+                        player_uuid, JdbcConfig.SERVER_ID.get());
+            } catch (Exception ignored) {}
+            removePlayerLock(player_uuid);
             if (saveFuture != null) {
                 pendingLogoutSaves.remove(player_uuid);
                 saveFuture.completeExceptionally(e);
@@ -2264,6 +2392,80 @@ public class VanillaSync {
     /** Backwards-compatible overload for periodic saves (no offline flag). */
     private static boolean writeSnapshotToDB(PlayerDataSnapshot s) throws Exception {
         return writeSnapshotToDB(s, false);
+    }
+
+    /**
+     * FIX DUP-REVIVE: write path used when a player disconnects while in Revive Me's
+     * "fallen" state OR already dead. Persists progression (xp / effects / score /
+     * food / health / advancements) AND explicitly clears every item-bearing column
+     * that would otherwise dup with the corpse the corpse/gravestone mod forms:
+     *
+     * <ul>
+     *   <li>{@code player_data} — inventory / armor / left_hand / cursors</li>
+     *   <li>{@code curios} — curios_item (caught into the corpse by corpsecurioscompat)</li>
+     *   <li>{@code mod_player_data} where {@code mod_id IN ('accessories','cosmeticarmor')}
+     *       (Accessories slots used by The Aether; Cosmetic Armor Reworked, caught by
+     *       cosmeticcorpsecompat)</li>
+     * </ul>
+     *
+     * <p>NOT touched: {@code enderchest} (does not drop on death), backpack/SS/RS2
+     * (keyed by ITEM UUID — the item itself drops into the corpse with its data), and
+     * {@code mod_id='neoforge_attachments'} (per-player progression: Aether portals /
+     * darts / flight / life-shards, Apotheosis world tier, Ars Nouveau / Iron's
+     * Spellbooks mana, etc. — never lost on death, MUST persist).
+     *
+     * <p>online=0 + logout_started_at=NULL are set atomically in the core UPDATE.
+     * Bypasses {@code refuse_empty_inventory_write} — the empty write is intentional.
+     *
+     * @return true if the core UPDATE persisted, false if the last_server guard blocked.
+     */
+    private static boolean writeReviveLogoutClearItemsToDB(PlayerDataSnapshot s) throws Exception {
+        int serverId = JdbcConfig.SERVER_ID.get();
+        String serverGuard = "(last_server=? OR last_server IS NULL)";
+        // "{}" — canonical empty-map encoding; LocalJsonUtil.StringToEntryMap and the
+        // apply*FromData functions skip restoration when data.length() <= 2.
+        // "B64:e30=" — canonical empty-item encoding (Base64 of "{}").
+        final String emptyMap = "{}";
+        final String emptyItem = "B64:e30=";
+
+        List<Object[]> batch = new ArrayList<>();
+
+        String coreSql = "UPDATE " + Tables.playerData()
+                + " SET inventory=?, armor=?, left_hand=?, cursors=?,"
+                + "     xp=?, effects=?, score=?, food_level=?, health=?,"
+                + "     advancements=COALESCE(?, advancements),"
+                + "     online=0, last_server=?, logout_started_at=NULL"
+                + " WHERE uuid=? AND " + serverGuard;
+        batch.add(new Object[]{coreSql,
+                emptyMap, emptyMap, emptyItem, emptyItem,
+                s.xp(), s.effects(), s.score(), s.foodLevel(), s.health(),
+                s.advancements(), serverId,
+                s.uuid(), serverId});
+
+        String curioGuard = "EXISTS (SELECT 1 FROM " + Tables.playerData()
+                + " WHERE uuid=? AND " + serverGuard + ")";
+        batch.add(new Object[]{
+                "UPDATE " + Tables.curios() + " SET curios_item=? WHERE uuid=? AND " + curioGuard,
+                emptyMap, s.uuid(), s.uuid(), serverId});
+
+        String modDataGuard = "EXISTS (SELECT 1 FROM " + Tables.playerData()
+                + " WHERE uuid=? AND " + serverGuard + ")";
+        batch.add(new Object[]{
+                "UPDATE " + Tables.modPlayerData() + " SET data_value=?"
+                        + " WHERE uuid=? AND mod_id=? AND " + modDataGuard,
+                emptyMap, s.uuid(), "accessories", s.uuid(), serverId});
+        batch.add(new Object[]{
+                "UPDATE " + Tables.modPlayerData() + " SET data_value=?"
+                        + " WHERE uuid=? AND mod_id=? AND " + modDataGuard,
+                emptyMap, s.uuid(), "cosmeticarmor", s.uuid(), serverId});
+
+        int[] counts = JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
+        if (counts.length > 0 && counts[0] == 0) {
+            SyncLogger.guardBlocked(s.uuid(), serverId,
+                    "revive-logout clear-items UPDATE affected 0 rows — last_server mismatch");
+            return false;
+        }
+        return true;
     }
 
     /**

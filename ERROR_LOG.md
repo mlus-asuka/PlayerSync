@@ -4,6 +4,32 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-05-21 — r6 incomplete: ReviveMe dieOnDisconnect force-deaths the player at logout
+
+**Context** : Après r6, le user rapporte que la dup revient. Scénario : joueur tombe → fallen → déco → reco → cadavre au sol + stuff dans l'inventaire = dup.
+
+**Error** : r6 (skip apply au join si fallen) ne se déclenchait pas — au reconnect le joueur n'était PAS fallen.
+
+**Root cause** (décompilation `revive_me-1.21.1-5.7.14.jar` `CapabilityEvents` + `corpse-neoforge-1.21.1-1.1.13.jar` `DeathEvents`) :
+- `CapabilityEvents.onLogout(PlayerLoggedOutEvent)` de ReviveMe : si le joueur est fallen → `pauseTimerOnLogout()` + `removeAllEffects()` + **si `ReviveMeConfig.dieOnDisconnect` == true → `FallenData.forceDeath()`**.
+- `forceDeath()` applique des dégâts létaux → `LivingDeathEvent` → `LivingDropsEvent`.
+- Mod Corpse : `DeathEvents.playerDeath(LivingDropsEvent)` → crée le cadavre via `DeathManager.addDeath()`. (Le hook `LivingDeathEvent` ne fait que `Death.fromPlayer` — le cadavre est créé sur `LivingDropsEvent`.) Les compats `corpsecurioscompat` + `cosmeticcorpsecompat` y mettent curios + cosmétiques.
+- Donc avec `dieOnDisconnect=true`, le joueur est FORCE-TUÉ à la déconnexion. Au reconnect il n'est plus fallen → le skip-apply r6 ne fire pas → `doPlayerJoin` restaure l'inventaire DB → dup avec le cadavre.
+- `onLogout` de ReviveMe et `onPlayerLogout` de PlayerSync sont tous deux en priorité NORMAL → ordre indéfini. Si PlayerSync passe en premier, il sauve l'inventaire pré-mort complet en DB avant le `forceDeath`.
+
+**Fix (r7)** :
+- `onPlayerLogout` : nouvelle branche AVANT le save normal — si `isReviveMeFallen(player) || player.isDeadOrDying()` (détection exacte via `FallenData`) ET `keepInventory` OFF → `handleFallenLogout`.
+- `handleFallenLogout` + `writeReviveLogoutClearItemsToDB` : vide TOUTES les colonnes d'items en DB (inventory/armor/left_hand/cursors + curios + accessories + cosmeticarmor), sauve la progression non-item, online=0. Marche quel que soit l'ordre des handlers : si PlayerSync passe avant ReviveMe → joueur fallen détecté → clear ; si après → joueur dead détecté → clear.
+- Garde `keepInventory` : si la game rule est ON, la mort ne drop rien et ne forme pas de cadavre → on NE clear PAS (ça détruirait les items) → save normal.
+- Le skip-apply côté-join de r6 est conservé pour le cas `dieOnDisconnect=false` (joueur se reco encore fallen → garde son `.dat`).
+
+**Prevention** :
+- **Décompiler le handler logout/login du mod, pas seulement son state**. r6 avait la bonne détection (`isFallen()`) mais ratait que ReviveMe FORCE la mort au logout — il fallait lire `CapabilityEvents.onLogout` en entier.
+- **Quand deux mods hookent le même event à priorité égale (NORMAL), l'ordre est indéfini**. Une correction qui dépend de "qui passe en premier" est cassée. La solution doit être correcte dans les DEUX ordres → ici, détecter `fallen OR dead` couvre PlayerSync-avant (fallen) ET PlayerSync-après (dead).
+- **Toujours garder la game rule `keepInventory` en tête** pour toute logique qui vide des items en DB.
+
+---
+
 ## [2026-05-20 22:30] — r2-r5 wrong approach: revive dup needs JOIN-side fix + exact ReviveMe state, not logout heuristics
 
 **Context** : Après r5, le user clarifie le scénario exact : un joueur tombe de haut, ReviveMe le met en état "fallen" (mort-mais-encore-en-vie). Il se déconnecte PENDANT cette phase. Au reconnect → cadavre au sol avec son stuff + stuff dans son inventaire = duplication.
