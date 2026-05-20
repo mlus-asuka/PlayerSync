@@ -36,7 +36,6 @@ import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
-import net.neoforged.neoforge.event.entity.living.LivingHealEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerNegotiationEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
@@ -95,32 +94,6 @@ public class VanillaSync {
     // previous session's save is still in flight.
     private static final ConcurrentHashMap<String, CompletableFuture<Void>> pendingLogoutSaves = new ConcurrentHashMap<>();
 
-    // FIX DUP-REVIVE: track players whose recent LivingDeathEvent was canceled by a
-    // revive mod (ReviveMe / HardcoreRevival / CorailTombstone). When such a player
-    // disconnects from the revive interface, the revive timer finalizes the death
-    // post-disconnect → items drop → corpse / gravestone mod creates a body holding
-    // the inventory. If onPlayerLogout had captured the still-on-player inventory and
-    // written it to DB, the player would rejoin with the full inventory AND a corpse
-    // at the death point would also hold the inventory — full item duplication.
-    // onPlayerLogout consults this map: when an entry is recent AND the keepInventory
-    // game rule is OFF, the item-dropping columns (inventory / armor / left_hand /
-    // cursors) are explicitly cleared in DB so the player rejoins empty and retrieves
-    // their stuff from the corpse. Entries auto-expire by TTL and are also cleared on
-    // successful respawn / removePlayerLock so stale data never leaks into a later join.
-    private static final ConcurrentHashMap<String, Long> deathCanceledRecently = new ConcurrentHashMap<>();
-    // TTL is intentionally generous (1 h): the entry is cleared explicitly by
-    // onPlayerHeal (player healed to ≥80% maxHealth), onPlayerRespawn, the
-    // auto-save loop (alive + healthy + synced), and removePlayerLock. The TTL
-    // is only a fallback for the rare path where none of those fire. A shorter
-    // TTL caused regressions where a player stayed in the revive interface for
-    // more than the TTL window: tracking expired, the logout went through the
-    // normal save path, and the dup came back. Combined with the HP-low check
-    // at logout (only triggers fix if HP < 50% maxHealth) AND with the explicit
-    // auto-save clear (a healthy player gets the tracking dropped every 5 min),
-    // the long TTL does not produce false positives for legitimately revived
-    // players who continue playing.
-    private static final long DEATH_CANCEL_TTL_MS = 3_600_000L; // 1 hour
-
     private static ReentrantLock getPlayerLock(String uuid) {
         return playerLocks.computeIfAbsent(uuid, k -> new ReentrantLock());
     }
@@ -173,11 +146,42 @@ public class VanillaSync {
     public static void removePlayerLock(String uuid) {
         playerLocks.remove(uuid);
         lastWrittenSnapshotHash.remove(uuid);
-        // FIX DUP-REVIVE: clear stale revive-death tracking so a re-joining session
-        // starts with a clean slate (TTL would expire anyway, but explicit cleanup
-        // protects against rare cases where the same UUID re-acquires a lock before
-        // expiration).
-        deathCanceledRecently.remove(uuid);
+    }
+
+    /**
+     * FIX DUP-REVIVE: returns true if the player is currently in the Revive Me mod's
+     * "fallen" (downed) state — the "dead but still alive" phase shown after lethal
+     * damage when Revive Me intercepts the death.
+     *
+     * <p>Queried reflectively against Revive Me's own state
+     * ({@code invoker54.reviveme.common.capability.FallenData.get(player).isFallen()})
+     * so PlayerSync keeps a soft (optional) dependency on the mod. The FallenData is a
+     * NeoForge AttachmentType ({@code revive_me:fallen_data}); it is serialized into
+     * the player's .dat file, so on a SAME-server reconnect the entity is already
+     * carrying the fallen flag by the time {@link #doPlayerJoin} runs.
+     *
+     * <p>This is an EXACT signal — no heuristics, no false positives. A player is
+     * fallen if and only if Revive Me says so.
+     *
+     * @return true only if the {@code revive_me} mod is loaded AND the player is
+     *         currently fallen; false on any error or if the mod is absent.
+     */
+    public static boolean isReviveMeFallen(net.minecraft.world.entity.player.Player player) {
+        if (player == null) return false;
+        if (!ModList.get().isLoaded("revive_me")) return false;
+        try {
+            Class<?> fallenDataClass = Class.forName("invoker54.reviveme.common.capability.FallenData");
+            Object fallenData = fallenDataClass
+                    .getMethod("get", net.minecraft.world.entity.LivingEntity.class)
+                    .invoke(null, player);
+            if (fallenData == null) return false;
+            Object result = fallenDataClass.getMethod("isFallen").invoke(fallenData);
+            return result instanceof Boolean b && b;
+        } catch (Throwable t) {
+            PlayerSync.LOGGER.debug("[revive-detect] could not query ReviveMe FallenData for {}: {}",
+                    player.getUUID(), t.toString());
+            return false;
+        }
     }
 
     /**
@@ -760,6 +764,34 @@ public class VanillaSync {
                         return;
                     }
 
+                    // === FIX DUP-REVIVE ===
+                    // If the rejoining player is still in Revive Me's "fallen" (downed)
+                    // state — or has already died during the join delay — DO NOT apply
+                    // the DB data. The vanilla .dat file is the single source of truth
+                    // for the player's items in this transient phase:
+                    //
+                    //  - Fallen player reconnecting: the .dat carries the exact inventory
+                    //    they had when they fell. Restoring the DB copy here is what
+                    //    caused the dup — Revive Me resumes the fall timer on reconnect,
+                    //    the death finalizes, a corpse / gravestone mod captures the
+                    //    inventory, and THEN this apply re-granted a second copy from DB.
+                    //  - Player who died mid-join: their entity inventory was already
+                    //    emptied by the death; re-applying the DB copy would dup with
+                    //    the corpse.
+                    //
+                    // Skipping the apply leaves the .dat state untouched. When the player
+                    // leaves the fallen state the normal sync resumes: a successful revive
+                    // is captured by the next auto-save / logout-save; a finalized death is
+                    // captured by onPlayerRespawn (empty inventory → DB). No dup, no loss.
+                    if (isReviveMeFallen(serverPlayer) || serverPlayer.isDeadOrDying()) {
+                        PlayerSync.LOGGER.info("[revive-detect] player {} joined in a fallen/dead state (fallen={}, deadOrDying={}) — skipping DB apply, keeping .dat inventory to avoid corpse dup",
+                                player_uuid, isReviveMeFallen(serverPlayer), serverPlayer.isDeadOrDying());
+                        SyncLogger.playerEvent(player_uuid, "JOIN_FALLEN_SKIP",
+                                "Joined in ReviveMe fallen/dead state — DB apply skipped, vanilla .dat kept (corpse dup prevention)");
+                        serverPlayer.addTag("player_synced");
+                        return; // syncNotCompletedPlayer cleanup runs in the finally block
+                    }
+
                     // ANTI-DUPLICATION: Clear all inventories BEFORE restoring
                     serverPlayer.getInventory().clearContent();
                     serverPlayer.getEnderChestInventory().clearContent();
@@ -1216,12 +1248,6 @@ public class VanillaSync {
     @SubscribeEvent
     public static void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
         try {
-            // FIX DUP-REVIVE: a respawn means the death sequence is fully resolved
-            // (whether the player was revived then died, or died and respawned normally).
-            // Clear any stale canceled-death tracking so a later disconnect doesn't
-            // wrongly clear the inventory.
-            deathCanceledRecently.remove(event.getEntity().getUUID().toString());
-
             if (!JdbcConfig.SAVE_ON_RESPAWN.get()) return;
             if (event.isEndConquered()) return; // End-portal exit, not a death respawn
             Player player = event.getEntity();
@@ -1567,90 +1593,21 @@ public class VanillaSync {
             return;
         }
 
-        // === FIX DUP-REVIVE: revive-canceled-death disconnect ===
-        // Revive Me / HardcoreRevival / CorailTombstone intercept lethal damage and
-        // put the player in a downed / revive interface with the inventory still
-        // attached. If the player disconnects from that interface, the revive timer
-        // finalizes the death post-disconnect → items drop → a corpse / gravestone
-        // mod catches them. The normal logout-save would have written the
-        // still-on-player inventory to DB, so the player would rejoin with their
-        // full inventory AND the corpse would also hold it → DUPLICATION.
+        // === FIX DUP-REVIVE ===
+        // When a player disconnects while in Revive Me's "fallen" (downed) state, the
+        // normal save path below writes their still-attached inventory to DB. Revive Me
+        // pauses the fall timer on logout and resumes it on reconnect; once it expires
+        // the death finalizes and a corpse / gravestone mod captures the inventory.
+        // The dup happened because doPlayerJoin restored the DB inventory AFTER the
+        // corpse had already been formed.
         //
-        // Detection (BOTH must be true — no false positives on legit logouts):
-        //   (1) Tracked death attempt — {@link #onPlayerDeathAttempt} fires at
-        //       HIGHEST priority for EVERY LivingDeathEvent (before any cancel) and
-        //       records the player's UUID in deathCanceledRecently. Cleared by
-        //       {@link #onPlayerHeal} (heal to ≥80% maxHealth), by
-        //       {@link #onPlayerRespawn}, and by the auto-save loop when the player
-        //       passes the alive+synced eligibility check.
-        //   (2) Player is STILL in a death-pending state at the moment of disconnect:
-        //       current HP < 50% maxHealth OR isDeadOrDying() true. Without this
-        //       check, a player who died, got revived, played a while, then took
-        //       combat damage and disconnected normally would wrongly trigger the
-        //       fix path and lose their inventory (reported as r4 regression).
-        //
-        // The previous heuristic (infinite-duration MobEffect + HP < 50%) was
-        // REMOVED because it false-positived on legitimate logouts: Aether,
-        // Apotheosis, Iron's Spellbooks, Ars Nouveau, etc. apply long-lived /
-        // infinite-duration effects (mana auras, learned-spell markers, racial
-        // buffs) that are NOT revive signatures. A player wearing such a buff who
-        // happened to disconnect with sub-50% HP from combat lost their inventory.
-        //
-        // Fix path (executed when keepInventory game rule is OFF — items WILL drop
-        // on the post-disconnect finalize): clear inventory / armor / left_hand /
-        // cursors / curios / accessories / cosmetic_armor in DB so the corpse
-        // becomes the single source of truth. Player rejoins empty and retrieves
-        // from the corpse.
-        //
-        // keepInventory ON is left to the normal save path: items don't drop, no
-        // corpse forms, no dup risk; clearing the DB would destroy the player's
-        // items.
-        if (event.getEntity() instanceof ServerPlayer spEntity) {
-            Long deathCancelTimestamp = deathCanceledRecently.get(player_uuid);
-            boolean trackedCancel = deathCancelTimestamp != null
-                    && (System.currentTimeMillis() - deathCancelTimestamp) < DEATH_CANCEL_TTL_MS;
-
-            float currentHp = spEntity.getHealth();
-            float maxHp = Math.max(spEntity.getMaxHealth(), 1f);
-            float hpRatio = currentHp / maxHp;
-            // "Still in death-pending state" means: HP ≤ 1.0 (revive mods typically
-            // clamp downed-state HP to exactly 1 — half a heart) OR isDeadOrDying()
-            // (HP ≤ 0). Either way, the post-disconnect death-finalize is likely to
-            // fire and drop items.
-            //
-            // The threshold is intentionally LOW (≤ 1.0 absolute, not a ratio of
-            // maxHealth): a 50% ratio threshold false-positived on legitimate combat
-            // disconnects — a revived player who took damage to 8/20 HP and
-            // disconnected lost their inventory because tracking + 40%-HP fired the
-            // fix path.
-            boolean stillDeathPending = currentHp <= 1.0f || spEntity.isDeadOrDying();
-
-            if (trackedCancel && stillDeathPending) {
-                deathCanceledRecently.remove(player_uuid);
-                boolean keepInv;
-                try {
-                    keepInv = spEntity.serverLevel().getGameRules()
-                            .getBoolean(net.minecraft.world.level.GameRules.RULE_KEEPINVENTORY);
-                } catch (Exception e) {
-                    keepInv = true; // conservative on failure — preserve data
-                }
-                PlayerSync.LOGGER.info("[revive-detect] player {} logout during death-pending state — trackedCancel=true, hp={}/{} ({}%), keepInventory={}",
-                        player_uuid, currentHp, maxHp, Math.round(hpRatio * 100f), keepInv);
-                if (!keepInv) {
-                    handleReviveCanceledLogout(spEntity, player_uuid);
-                    return;
-                }
-                // keepInventory=ON: items stay on the player, no corpse forms; let the
-                // normal save path capture the inventory as-is.
-            } else if (trackedCancel) {
-                // Tracking was set but the player is no longer in a low-HP state — they
-                // were almost certainly revived (heal event missed or used setHealth
-                // directly). Clear the tracking and fall through to normal save.
-                deathCanceledRecently.remove(player_uuid);
-                PlayerSync.LOGGER.debug("[revive-detect] player {} had recent death event but HP recovered ({}/{}) — treating as normal logout",
-                        player_uuid, currentHp, maxHp);
-            }
-        }
+        // The fix lives entirely on the JOIN side: doPlayerJoin skips the data apply
+        // when the rejoining player is still fallen (see isReviveMeFallen + the skip
+        // block in doPlayerJoin's apply phase), leaving the vanilla .dat inventory in
+        // place as the single source of truth. The logout save here stays UNCHANGED —
+        // it writes an accurate DB backup that is simply not consumed while the player
+        // is fallen, and gets corrected by onPlayerRespawn (death path) or the next
+        // normal save (revive path).
 
         // === Normal save path ===
         Player player = event.getEntity();
@@ -1850,105 +1807,6 @@ public class VanillaSync {
             removePlayerLock(player_uuid);
             // FIX REGRESSION: if snapshot failed AFTER pendingLogoutSaves.put, complete
             // the future so a rejoining doPlayerJoin doesn't hang 15 s on .get().
-            if (saveFuture != null) {
-                pendingLogoutSaves.remove(player_uuid);
-                saveFuture.completeExceptionally(e);
-            }
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    /**
-     * FIX DUP-REVIVE: dedicated logout path for players disconnecting from a revive
-     * interface (ReviveMe / HardcoreRevival / CorailTombstone canceled their death).
-     *
-     * <p>Mirrors the structure of the normal logout-save (lock + pendingLogoutSaves
-     * future + logout_started_at marker + bg executor) so all the cross-server race
-     * guards still apply — only difference is the BG task writes via
-     * {@link #writeReviveLogoutClearItemsToDB} which clears the item-dropping columns
-     * instead of persisting the still-on-player snapshot.
-     *
-     * <p>Backpack / SS / RS2 snapshots are intentionally NOT captured: the player
-     * isn't actually dead yet at the time of disconnect (revive mod canceled), so
-     * those mod-specific stores have the post-revive state already. Capturing them
-     * now would write the pre-death contents and trigger the same dup pattern.
-     */
-    private static void handleReviveCanceledLogout(ServerPlayer player, String player_uuid) {
-        PlayerSync.LOGGER.info("Player {} disconnecting during revive-canceled-death state — clearing DB inventory to prevent corpse dup", player_uuid);
-        SyncLogger.playerEvent(player_uuid, "LOGOUT_REVIVE_PENDING",
-                "Disconnect during revive-canceled death — DB inventory cleared (corpse dup prevention)");
-
-        ReentrantLock lock = getPlayerLock(player_uuid);
-        lock.lock();
-        CompletableFuture<Void> saveFuture = null;
-        try {
-            // Snapshot non-item progression only. ItemStack arrays are still captured
-            // here (snapshotPlayerData doesn't have a non-item variant), but the BG
-            // writer ignores them — only xp / effects / food / score / health /
-            // advancements are persisted (and items are explicitly cleared in DB).
-            final DeferredPlayerSnapshot frozen = snapshotPlayerData(player);
-
-            saveFuture = new CompletableFuture<>();
-            pendingLogoutSaves.put(player_uuid, saveFuture);
-
-            try {
-                JDBCsetUp.executePreparedUpdate(
-                        "UPDATE " + Tables.playerData() + " SET logout_started_at=? WHERE uuid=?",
-                        System.currentTimeMillis(), player_uuid);
-            } catch (Exception e) {
-                PlayerSync.LOGGER.warn("[revive-logout] could not mark logout_started_at for {}: {}", player_uuid, e.getMessage());
-            }
-
-            final CompletableFuture<Void> futureRef = saveFuture;
-            try {
-                executorService.execute(() -> {
-                    ReentrantLock bgLock = getPlayerLock(player_uuid);
-                    bgLock.lock();
-                    try {
-                        long t0 = System.currentTimeMillis();
-                        PlayerDataSnapshot snapshot = frozen.materialize();
-                        boolean persisted = writeReviveLogoutClearItemsToDB(snapshot);
-                        long total = System.currentTimeMillis() - t0;
-                        if (persisted) {
-                            // Force-invalidate the hash cache so any pending auto-save BG cannot
-                            // resurrect the cleared inventory by skipping the write on hash-match.
-                            lastWrittenSnapshotHash.remove(player_uuid);
-                            PlayerSync.LOGGER.info("Revive-pending logout completed for player {} in {}ms (items cleared)", player_uuid, total);
-                            SyncLogger.saveCompleted(player_uuid, "LOGOUT_REVIVE_PENDING", total);
-                        } else {
-                            PlayerSync.LOGGER.warn("Revive-pending logout: core write blocked for {} (another server claimed)", player_uuid);
-                            SyncLogger.saveSkipped(player_uuid, "LOGOUT_REVIVE_PENDING", "core guard blocked");
-                        }
-                    } catch (Exception e) {
-                        PlayerSync.LOGGER.error("Error during revive-pending logout save for {}", player_uuid, e);
-                        SyncLogger.saveFailed(player_uuid, "LOGOUT_REVIVE_PENDING", e.getMessage());
-                        try {
-                            JDBCsetUp.executePreparedUpdate(
-                                    "UPDATE " + Tables.playerData() + " SET online=0, logout_started_at=NULL WHERE uuid=? AND last_server=?",
-                                    player_uuid, JdbcConfig.SERVER_ID.get());
-                        } catch (Exception ignored) {}
-                    } finally {
-                        removePlayerLock(player_uuid);
-                        pendingLogoutSaves.remove(player_uuid);
-                        futureRef.complete(null);
-                        try { bgLock.unlock(); } catch (Exception ignored) {}
-                    }
-                });
-            } catch (java.util.concurrent.RejectedExecutionException rex) {
-                PlayerSync.LOGGER.warn("Revive-pending logout executor rejected task for player {} (likely shutdown in progress)", player_uuid);
-                pendingLogoutSaves.remove(player_uuid);
-                futureRef.completeExceptionally(rex);
-                removePlayerLock(player_uuid);
-            }
-        } catch (Exception e) {
-            PlayerSync.LOGGER.error("Error during revive-pending logout for {}", player_uuid, e);
-            try {
-                JDBCsetUp.executePreparedUpdate(
-                        "UPDATE " + Tables.playerData() + " SET online=0, logout_started_at=NULL WHERE uuid=? AND last_server=?",
-                        player_uuid, JdbcConfig.SERVER_ID.get());
-            } catch (Exception ignored) {}
-            removePlayerLock(player_uuid);
             if (saveFuture != null) {
                 pendingLogoutSaves.remove(player_uuid);
                 saveFuture.completeExceptionally(e);
@@ -2448,111 +2306,6 @@ public class VanillaSync {
         return true;
     }
 
-    /**
-     * FIX DUP-REVIVE: write path used when a player disconnects in a revive-canceled
-     * death state (ReviveMe / HardcoreRevival / CorailTombstone). Persists progression
-     * fields (xp / effects / score / food / health / advancements) AND explicitly
-     * clears every item-bearing column that would otherwise dup with the corpse:
-     *
-     * <ul>
-     *   <li>{@code player_data} — inventory / armor / left_hand / cursors</li>
-     *   <li>{@code curios} — curios_item (Curios mod functional + cosmetic slots)</li>
-     *   <li>{@code mod_player_data} where {@code mod_id IN ('accessories', 'cosmeticarmor')}
-     *       (Accessories slots used by The Aether, Cosmetic Armor Reworked 4 slots)</li>
-     * </ul>
-     *
-     * <p>NOT touched:
-     * <ul>
-     *   <li>{@code enderchest} — does not drop on vanilla death</li>
-     *   <li>{@code backpack_data}, {@code sophisticatedstorage}, {@code refinedstorage}
-     *       — keyed by ITEM UUID (not player UUID); the item drops into the corpse
-     *       with its UUID, and the data follows the item on retrieval (no dup)</li>
-     *   <li>{@code mod_player_data} where {@code mod_id='neoforge_attachments'}
-     *       — holds player progression / state (Aether AETHER_PLAYER: portals,
-     *       dart count, flight timer, life shards; Apotheosis WORLD_TIER;
-     *       Apothic Attributes AUX_DMG_TRACKER; etc.). NOT items. MUST preserve.</li>
-     * </ul>
-     *
-     * <p>online=0 and logout_started_at=NULL are set atomically in the same core
-     * UPDATE to close the cross-server race window (a joining peer sees clean state
-     * in one step, never a half-applied row).
-     *
-     * <p>Bypasses the {@code refuse_empty_inventory_write} safety because the empty
-     * write is intentional here: the items go into the corpse formed by the corpse /
-     * gravestone mod when the death finalizes post-disconnect, and the player retrieves
-     * them from there. Skipping the clear would dup the corpse contents with the DB
-     * snapshot on the next join.
-     *
-     * @return true if the core UPDATE persisted, false if the last_server guard blocked
-     *         it. Downstream clears (curios, accessories, cosmeticarmor) execute in the
-     *         same batched transaction, so they only commit when the core write does.
-     */
-    private static boolean writeReviveLogoutClearItemsToDB(PlayerDataSnapshot s) throws Exception {
-        int serverId = JdbcConfig.SERVER_ID.get();
-        String serverGuard = "(last_server=? OR last_server IS NULL)";
-        // "{}" is the canonical empty-map encoding consumed by LocalJsonUtil.StringToEntryMap
-        // and applyCuriosFromData / applyAccessoriesFromData / applyCosmeticArmorFromData
-        // (all three skip restoration when data.length() <= 2, leaving slots cleared).
-        // "B64:e30=" is the canonical empty-item encoding (Base64 of "{}") consumed by
-        // deserializeAndCreatePlaceholderIfNeeded — returns ItemStack.EMPTY.
-        final String emptyMap = "{}";
-        final String emptyItem = "B64:e30=";
-
-        List<Object[]> batch = new ArrayList<>();
-
-        // 1. Core player_data row — inventory / armor / left_hand / cursors cleared,
-        //    progression persisted, online=0, logout_started_at=NULL, last_server set.
-        String coreSql = "UPDATE " + Tables.playerData()
-                + " SET inventory=?, armor=?, left_hand=?, cursors=?,"
-                + "     xp=?, effects=?, score=?, food_level=?, health=?,"
-                + "     advancements=COALESCE(?, advancements),"
-                + "     online=0, last_server=?, logout_started_at=NULL"
-                + " WHERE uuid=? AND " + serverGuard;
-        batch.add(new Object[]{coreSql,
-                emptyMap, emptyMap, emptyItem, emptyItem,
-                s.xp(), s.effects(), s.score(), s.foodLevel(), s.health(),
-                s.advancements(), serverId,
-                s.uuid(), serverId});
-
-        // 2. Curios — clear the player's curios_item column. The corpse mod's curios
-        //    compat catches dropped curios into the corpse, so the DB row must be
-        //    cleared too (otherwise rejoin restores them AND the corpse holds them).
-        //    Guarded by EXISTS(...) so we never wipe a row owned by a peer server.
-        String curioGuard = "EXISTS (SELECT 1 FROM " + Tables.playerData()
-                + " WHERE uuid=? AND " + serverGuard + ")";
-        batch.add(new Object[]{
-                "UPDATE " + Tables.curios() + " SET curios_item=? WHERE uuid=? AND " + curioGuard,
-                emptyMap, s.uuid(), s.uuid(), serverId});
-
-        // 3. Accessories slots (used by The Aether). Stored in mod_player_data.
-        String modDataGuard = "EXISTS (SELECT 1 FROM " + Tables.playerData()
-                + " WHERE uuid=? AND " + serverGuard + ")";
-        batch.add(new Object[]{
-                "UPDATE " + Tables.modPlayerData() + " SET data_value=?"
-                        + " WHERE uuid=? AND mod_id=? AND " + modDataGuard,
-                emptyMap, s.uuid(), "accessories", s.uuid(), serverId});
-
-        // 4. Cosmetic Armor (Reworked) 4 cosmetic slots. Stored in mod_player_data.
-        batch.add(new Object[]{
-                "UPDATE " + Tables.modPlayerData() + " SET data_value=?"
-                        + " WHERE uuid=? AND mod_id=? AND " + modDataGuard,
-                emptyMap, s.uuid(), "cosmeticarmor", s.uuid(), serverId});
-
-        // NOTE: mod_id='neoforge_attachments' is INTENTIONALLY NOT cleared. It holds
-        // per-player progression (Aether portals/darts/flight/life-shards via the
-        // AETHER_PLAYER attachment, Apotheosis world tier, Apothic Attributes aux
-        // damage tracker, Ars Nouveau mana, Iron's Spellbooks mana, etc.) which is
-        // never lost on death and MUST persist across the revive-disconnect cycle.
-
-        int[] counts = JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
-        if (counts.length > 0 && counts[0] == 0) {
-            SyncLogger.guardBlocked(s.uuid(), serverId,
-                    "revive-logout clear-items UPDATE affected 0 rows — last_server mismatch");
-            return false;
-        }
-        return true;
-    }
-
     private static String getSyncWorldForServer() {
         if (!JdbcConfig.SYNC_WORLD.get().isEmpty()) {
             PlayerSync.LOGGER.warn("Using configuration 'sync_world' on servers is deprecated. Please leave the array empty. Falling back to first entry.");
@@ -2687,24 +2440,6 @@ public class VanillaSync {
             // Skip invalid players (same guards as before)
             if (!player.isDeadOrDying() && !syncNotCompletedPlayer.contains(puuid)
                     && !pendingLogoutSaves.containsKey(puuid) && player.getTags().contains("player_synced")) {
-                // FIX DUP-REVIVE: an alive + synced + healthy player is no longer in
-                // a revive-pending state. Drop the tracking so a later disconnect
-                // does NOT wrongly trigger the inventory-clear path. The HP > 1.0
-                // (more than half a heart) gate matches the logout-side threshold:
-                // revive mods that hold the player in a downed interface clamp HP to
-                // exactly 1, so this leaves them tracked, while a revived player at
-                // any value above half a heart is considered out of the death-pending
-                // state. The 5-minute auto-save cadence guarantees the tracking is
-                // dropped within 5 min of a setHealth-based revive (the case where
-                // {@link #onPlayerHeal} doesn't fire because LivingHealEvent isn't
-                // emitted by direct setHealth calls).
-                if (player.getHealth() > 1.0f) {
-                    if (deathCanceledRecently.remove(puuid) != null) {
-                        PlayerSync.LOGGER.debug("[death-track] cleared revive-pending tracking for {} via auto-save (hp={}/{}, alive+synced)",
-                                puuid, player.getHealth(), player.getMaxHealth());
-                    }
-                }
-
                 ReentrantLock lock = getPlayerLock(puuid);
                 if (lock.tryLock()) {
                     try {
@@ -2814,80 +2549,13 @@ public class VanillaSync {
         return totalXp;
     }
 
-    /**
-     * FIX DUP-REVIVE: HIGHEST-priority hook on LivingDeathEvent. Fires for EVERY
-     * death attempt BEFORE any other handler has a chance to cancel — so we always
-     * record the attempt regardless of whether Revive Me / HardcoreRevival /
-     * CorailTombstone cancel later in the priority chain.
-     *
-     * <p>Why HIGHEST instead of {@code receiveCanceled = true} on a later priority:
-     * the {@code receiveCanceled} field on {@link SubscribeEvent} is silently ignored
-     * by NeoForge bus 8.x's {@code SubscribeEventListener.invoke} (the dispatcher
-     * unconditionally skips canceled events for {@code ICancellableEvent}; only
-     * programmatic {@code addListener(priority, true, ...)} respects the flag).
-     * HIGHEST avoids the cancellation filter entirely: at HIGHEST the event is
-     * always un-canceled when our handler runs (no prior handler could have set it).
-     *
-     * <p>The {@link #onPlayerLogout} handler reads this tracking to decide whether
-     * to clear the DB inventory on disconnect. Cleared on
-     * {@link PlayerEvent.PlayerRespawnEvent} (real death + respawn) and on
-     * {@link #onPlayerHeal} (player healed back to high HP after a canceled death,
-     * i.e. successfully revived).
-     */
-    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.HIGHEST)
-    public static void onPlayerDeathAttempt(LivingDeathEvent event) {
-        if (!(event.getEntity() instanceof ServerPlayer player)) return;
-        String puuid = player.getUUID().toString();
-        deathCanceledRecently.put(puuid, System.currentTimeMillis());
-        PlayerSync.LOGGER.info("[death-track] LivingDeathEvent for {} (priority=HIGHEST, pre-cancel) — tracking for logout-clear within {}ms",
-                puuid, DEATH_CANCEL_TTL_MS);
-        SyncLogger.playerEvent(puuid, "DEATH_ATTEMPT",
-                "LivingDeathEvent fired (pre-cancel) — tracking for logout-clear");
-    }
-
-    /**
-     * FIX DUP-REVIVE: clear death-pending tracking when the player is healed above
-     * a critically-low threshold. A revived player typically gets healed back to a
-     * value well above 1 HP (revive mods configurable, but rarely revive to exactly
-     * 1 HP — that would be unusable). Any heal that brings HP > 1.0 strongly
-     * suggests the death-pending state is over.
-     *
-     * <p>Threshold is 1.0 (half a heart) absolute, not a ratio of maxHealth.
-     * This catches:
-     *   - Full-heal revives (heal back to 20 HP) — obvious clear.
-     *   - Partial-heal revives (e.g. 5 HP) — also cleared because 5 > 1.
-     *   - Combat regen ticking from 0.5 → 1.5 HP (rare but theoretically possible
-     *     for a player whose heal event lands one tick post-death) — cleared. This
-     *     is intentional: by the time HP > 1, the player has effectively recovered
-     *     from the death-pending state in any normal flow.
-     *
-     * <p>The previous threshold of 80% maxHealth failed in production when a
-     * revive mod healed players to a value below that (5–10 HP on a 20-HP
-     * player), leaving the tracking stuck and triggering the dup-fix on a later
-     * legitimate disconnect.
-     */
-    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOWEST)
-    public static void onPlayerHeal(LivingHealEvent event) {
-        if (!(event.getEntity() instanceof ServerPlayer player)) return;
-        String puuid = player.getUUID().toString();
-        if (!deathCanceledRecently.containsKey(puuid)) return;
-        float predictedHp = Math.min(player.getHealth() + event.getAmount(), player.getMaxHealth());
-        if (predictedHp > 1.0f) {
-            if (deathCanceledRecently.remove(puuid) != null) {
-                PlayerSync.LOGGER.info("[death-track] cleared revive-pending tracking for {} (healed to {} HP — death-pending state ended)",
-                        puuid, predictedHp);
-            }
-        }
-    }
-
+    // FIX COMPAT: priority=LOW so we run after revive mods (Revive Me / HardcoreRevival
+    // / CorailTombstone) that cancel LivingDeathEvent at NORMAL/HIGH priority. NeoForge
+    // bus 8.x skips canceled events at the @SubscribeEvent dispatcher level, so this
+    // handler runs ONLY for un-canceled (real, finalized) deaths — exactly when the
+    // death-save (non-item progression) should fire.
     @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOW)
     public static void onPlayerDeath(LivingDeathEvent event) {
-        // NOTE: this handler does NOT see canceled events. NeoForge bus 8.x always
-        // skips canceled events at the @SubscribeEvent dispatcher level, ignoring
-        // the receiveCanceled flag. The HIGHEST-priority {@link #onPlayerDeathAttempt}
-        // catches death attempts BEFORE any cancel happens — that's where revive
-        // tracking is recorded. This handler runs only for un-canceled deaths and
-        // performs the death-save (non-item progression).
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         String puuid = player.getUUID().toString();
 

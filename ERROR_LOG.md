@@ -4,6 +4,32 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-05-20 22:30] — r2-r5 wrong approach: revive dup needs JOIN-side fix + exact ReviveMe state, not logout heuristics
+
+**Context** : Après r5, le user clarifie le scénario exact : un joueur tombe de haut, ReviveMe le met en état "fallen" (mort-mais-encore-en-vie). Il se déconnecte PENDANT cette phase. Au reconnect → cadavre au sol avec son stuff + stuff dans son inventaire = duplication.
+
+**Error** : r2-r5 corrigeaient au mauvais endroit (côté logout) avec des heuristiques peu fiables. Soit ça ratait l'état fallen (dup), soit ça false-positivait (perte d'inventaire).
+
+**Root cause** (identifiée en décompilant `revive_me-1.21.1-5.7.14.jar` via `javap`) :
+- ReviveMe maintient un joueur downed dans un état "fallen" via la classe `invoker54.reviveme.common.capability.FallenData`, un AttachmentType NeoForge enregistré `revive_me:fallen_data`.
+- `FallenData` expose `public static FallenData get(LivingEntity)` + `public boolean isFallen()`.
+- ReviveMe `pauseTimerOnLogout()` au logout, `resumeFallTimer()` au reconnect.
+- La VRAIE séquence de dup : joueur fallen se déco → `.dat` sauvé avec inventaire complet + attachment fallen. PlayerSync sauve aussi en DB. Reconnect → ReviveMe reprend le timer → la mort se finalise → corpse mod capture l'inventaire dans un cadavre. MAIS `doPlayerJoin` restaure l'inventaire DB **APRÈS** que le cadavre soit formé (race : doPlayerJoin est async + `server.execute()` différé) → le joueur a l'inventaire restauré + le cadavre a une copie = DUP.
+
+**Fix (r6 — refonte complète de l'approche)** :
+- Nouveau `isReviveMeFallen(Player)` : détection EXACTE par réflexion — `Class.forName("invoker54.reviveme.common.capability.FallenData").getMethod("get", LivingEntity.class).invoke(null, player)` puis `.isFallen()`. Zéro heuristique, zéro false positive. Le joueur est fallen si et seulement si ReviveMe le dit.
+- `doPlayerJoin` : dans le bloc apply (`server.execute`), AVANT le `clearContent()` + restore, si `isReviveMeFallen(player) || player.isDeadOrDying()` → **skip tout l'apply**. Le `.dat` vanilla reste la source unique de vérité pour l'inventaire pendant la phase transitoire. Le `|| isDeadOrDying()` couvre la race où la mort se finalise pendant le délai async du join.
+- Suppression COMPLÈTE de toute la machinerie r2-r5 côté logout : `deathCanceledRecently`, `onPlayerDeathAttempt`, `onPlayerHeal`, `handleReviveCanceledLogout`, `writeReviveLogoutClearItemsToDB`, le clear de tracking dans l'auto-save, le clear dans `onPlayerRespawn`/`removePlayerLock`. `onPlayerLogout` revient à la baseline pré-r2 (save normal).
+- Résultat : revive réussi → joueur garde son `.dat` → prochaine save normale capture l'état. Mort finalisée → cadavre prend l'inventaire `.dat`, joueur respawn vide → `onPlayerRespawn` sauve vide en DB. Pas de dup, pas de perte.
+
+**Prevention** :
+- **Pour un état spécifique à un mod, détecter via l'API/state EXACT de ce mod (réflexion sur sa capability/attachment), JAMAIS via heuristique**. Décompiler le jar du mod (`javap -p -c`) pour trouver le bon hook. 5 itérations d'heuristiques ratées vs 1 détection exacte qui marche.
+- **Corriger au bon endroit dans le pipeline**. La dup venait de `doPlayerJoin` qui restaurait trop tard (après formation du cadavre). Corriger côté logout (r2-r5) ne pouvait jamais marcher proprement — le problème était le RESTORE, pas le SAVE.
+- **Quand un état est transitoire et géré par un autre mod (downed/fallen), s'écarter complètement** : laisser le `.dat` vanilla gérer, ne pas imposer la DB. PlayerSync reprend la main quand l'état transitoire est résolu.
+- **Décompiler tôt**. J'aurais dû décompiler ReviveMe dès r1 au lieu de supposer "ReviveMe annule LivingDeathEvent". Le jar était disponible sur le système (`Desktop/serverpack/mods/`).
+
+---
+
 ## [2026-05-20 21:15] — r4 fix caused false positive: inventory disappears 10 min after death + reco
 
 **Context** : User signale qu'un joueur, après être mort puis revived, et avoir joué 10 minutes, a perdu son inventaire à une déco/reco normale. Le dup principal (r4) est bien corrigé mais introduction d'un false-positive sur les déconnexions légitimes post-revive.
