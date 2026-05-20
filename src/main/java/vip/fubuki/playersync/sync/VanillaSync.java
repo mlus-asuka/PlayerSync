@@ -65,7 +65,24 @@ import java.util.concurrent.locks.ReentrantLock;
 @EventBusSubscriber(modid = PlayerSync.MODID)
 public class VanillaSync {
 
-    public static void register() {}
+    /**
+     * Called from {@link PlayerSync#commonSetup} during mod init.
+     *
+     * <p>Registers a programmatic LivingDeathEvent listener with
+     * {@code receiveCanceled = true}. This is REQUIRED to detect canceled deaths:
+     * in NeoForge bus 8.x, the {@code receiveCanceled} field on {@link SubscribeEvent}
+     * is parsed BUT NEVER consulted at dispatch time
+     * ({@code SubscribeEventListener.invoke} always skips canceled events for
+     * {@code ICancellableEvent}). Only {@code addListener(priority, receiveCanceled, ...)}
+     * respects the flag. Used by the revive-mod compat (see {@link #onCanceledLivingDeath}).
+     */
+    public static void register() {
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                net.neoforged.bus.api.EventPriority.LOWEST,
+                true, // receiveCanceled — non-negotiable, see method comment
+                LivingDeathEvent.class,
+                VanillaSync::onCanceledLivingDeath);
+    }
 
     // FIX: Replace unbounded CachedThreadPool with a bounded ThreadPoolExecutor.
     // CachedThreadPool creates unlimited threads — with many players and slow DB queries,
@@ -1556,41 +1573,75 @@ public class VanillaSync {
         }
 
         // === FIX DUP-REVIVE: revive-canceled-death disconnect ===
-        // ReviveMe / HardcoreRevival / CorailTombstone cancel LivingDeathEvent and put
-        // the player in a downed/revive interface with the inventory still attached.
-        // If the player disconnects from that interface, the revive timer will finalize
-        // the death post-disconnect → items will drop → a corpse / gravestone mod will
-        // catch them. The normal logout-save would have written the still-on-player
-        // inventory to DB, so the player would rejoin with their full inventory AND
-        // the corpse at the death point would also hold it → DUPLICATION.
+        // Revive Me / HardcoreRevival / CorailTombstone intercept lethal damage and
+        // put the player in a downed / revive interface with the inventory still
+        // attached. If the player disconnects from that interface, the revive timer
+        // finalizes the death post-disconnect → items drop → a corpse / gravestone
+        // mod catches them. The normal logout-save would have written the
+        // still-on-player inventory to DB, so the player would rejoin with their
+        // full inventory AND the corpse would also hold it → DUPLICATION.
         //
-        // Fix: when the keepInventory game rule is OFF (items WILL drop on the
-        // post-disconnect finalize), explicitly clear the item-dropping columns in
-        // DB. The corpse becomes the single source of truth for the items, the
-        // player rejoins empty and retrieves them from the corpse.
+        // Detection (two signals, OR'd):
+        //   (1) Tracked canceled LivingDeathEvent — handled by the programmatic
+        //       listener {@link #onCanceledLivingDeath}; sets deathCanceledRecently.
+        //   (2) Heuristic — player has at least one infinite-duration MobEffect AND
+        //       health is below half the maximum. Catches revive mods that prevent
+        //       death via LivingDamageEvent / Mixin instead of canceling
+        //       LivingDeathEvent (no canceled event ever fires in that case).
         //
-        // KeepInventory ON is left to the normal save path — items don't drop, no
-        // corpse forms, no dup risk; clearing the DB would actually destroy the
-        // player's items.
-        Long deathCancelTimestamp = deathCanceledRecently.get(player_uuid);
-        boolean deathPending = deathCancelTimestamp != null
-                && (System.currentTimeMillis() - deathCancelTimestamp) < DEATH_CANCEL_TTL_MS;
-        if (deathPending && event.getEntity() instanceof ServerPlayer spEntity) {
-            deathCanceledRecently.remove(player_uuid);
-            boolean keepInv;
+        // Fix path (executed when keepInventory game rule is OFF — items WILL drop
+        // on the post-disconnect finalize): clear inventory / armor / left_hand /
+        // cursors in DB so the corpse becomes the single source of truth. Player
+        // rejoins empty and retrieves from the corpse.
+        //
+        // keepInventory ON is left to the normal save path: items don't drop, no
+        // corpse forms, no dup risk; clearing the DB would destroy the player's
+        // items.
+        if (event.getEntity() instanceof ServerPlayer spEntity) {
+            Long deathCancelTimestamp = deathCanceledRecently.get(player_uuid);
+            boolean trackedCancel = deathCancelTimestamp != null
+                    && (System.currentTimeMillis() - deathCancelTimestamp) < DEATH_CANCEL_TTL_MS;
+
+            // Heuristic: revive mods typically apply ≥ 1 infinite-duration effect
+            // (downed-state effect with Integer.MAX_VALUE / duration=-1) AND clamp
+            // HP to a low value. Beacons use duration=200 refreshed periodically,
+            // NOT isInfiniteDuration()=true, so they don't false-positive here.
+            boolean heuristicHit = false;
+            String heuristicDetail = "";
             try {
-                keepInv = spEntity.serverLevel().getGameRules()
-                        .getBoolean(net.minecraft.world.level.GameRules.RULE_KEEPINVENTORY);
-            } catch (Exception e) {
-                // Be conservative on unexpected failure — keep current data (no clear).
-                keepInv = true;
+                boolean hasInfiniteEff = false;
+                for (MobEffectInstance eff : spEntity.getActiveEffects()) {
+                    if (eff.isInfiniteDuration()) { hasInfiniteEff = true; break; }
+                }
+                float hpRatio = spEntity.getHealth() / Math.max(spEntity.getMaxHealth(), 1f);
+                heuristicHit = hasInfiniteEff && hpRatio < 0.5f;
+                if (heuristicHit) {
+                    heuristicDetail = "hp=" + spEntity.getHealth() + "/" + spEntity.getMaxHealth()
+                            + " ratio=" + String.format("%.2f", hpRatio) + " infiniteEffects=true";
+                }
+            } catch (Exception ignored) {}
+
+            boolean deathPending = trackedCancel || heuristicHit;
+            if (deathPending) {
+                deathCanceledRecently.remove(player_uuid);
+                boolean keepInv;
+                try {
+                    keepInv = spEntity.serverLevel().getGameRules()
+                            .getBoolean(net.minecraft.world.level.GameRules.RULE_KEEPINVENTORY);
+                } catch (Exception e) {
+                    keepInv = true; // conservative on failure — preserve data
+                }
+                PlayerSync.LOGGER.info("[revive-detect] player {} logout while death-pending (trackedCancel={}, heuristic={}{}) — keepInventory={}",
+                        player_uuid, trackedCancel, heuristicHit,
+                        heuristicHit ? " " + heuristicDetail : "",
+                        keepInv);
+                if (!keepInv) {
+                    handleReviveCanceledLogout(spEntity, player_uuid);
+                    return;
+                }
+                // keepInventory=ON: items stay on the player, no corpse forms; let the
+                // normal save path capture the inventory as-is.
             }
-            if (!keepInv) {
-                handleReviveCanceledLogout(spEntity, player_uuid);
-                return;
-            }
-            // keepInventory=ON: fall through to the normal save path. Items stay on the
-            // player, no corpse forms, the snapshot correctly captures the inventory.
         }
 
         // === Normal save path ===
@@ -2684,27 +2735,35 @@ public class VanillaSync {
         return totalXp;
     }
 
-    // FIX COMPAT (C1): priority=LOW + receiveCanceled=true defends against mods like
-    // Revive Me / Corail Tombstone / Hardcore Revival that cancel LivingDeathEvent at
-    // NORMAL/HIGH priority. At LOW we run after them; receiveCanceled=true ensures we
-    // are still dispatched (NeoForge skips canceled events by default), and the
-    // isCanceled() branch records the canceled-death state for onPlayerLogout to
-    // prevent the corpse/gravestone dup when the player disconnects from the revive
-    // interface (see deathCanceledRecently field comment).
-    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOW, receiveCanceled = true)
-    public static void onPlayerDeath(LivingDeathEvent event) {
+    /**
+     * FIX DUP-REVIVE: programmatic listener registered in {@link #register()} with
+     * {@code receiveCanceled = true}. Called for canceled LivingDeathEvent firings
+     * (revive mods like Revive Me / HardcoreRevival / CorailTombstone that cancel
+     * the death at NORMAL/HIGH priority). Records the player so the onPlayerLogout
+     * handler can clear the DB inventory if the disconnect follows.
+     *
+     * <p>Registered at LOWEST priority so it runs AFTER any other handler that
+     * cancels the event — guarantees we always see the final cancellation state.
+     */
+    private static void onCanceledLivingDeath(LivingDeathEvent event) {
+        if (!event.isCanceled()) return;
         if (!(event.getEntity() instanceof ServerPlayer player)) return;
         String puuid = player.getUUID().toString();
+        deathCanceledRecently.put(puuid, System.currentTimeMillis());
+        PlayerSync.LOGGER.info("[revive-track] caught canceled LivingDeathEvent for {} — DB inventory will be cleared if a logout follows within {}ms",
+                puuid, DEATH_CANCEL_TTL_MS);
+        SyncLogger.playerEvent(puuid, "DEATH_CANCELED",
+                "LivingDeathEvent canceled by revive mod — tracking for logout-clear");
+    }
 
-        if (event.isCanceled()) {
-            // Revive mod intercepted the death. The player is in a downed / revive
-            // state and still holds their full inventory. If they disconnect from
-            // the revive interface, the death will be finalized post-disconnect by
-            // the revive timer and items will drop into a corpse — track so the
-            // logout handler can clear the DB inventory and avoid the dup.
-            deathCanceledRecently.put(puuid, System.currentTimeMillis());
-            return;
-        }
+    @SubscribeEvent(priority = net.neoforged.bus.api.EventPriority.LOW)
+    public static void onPlayerDeath(LivingDeathEvent event) {
+        // NOTE: this handler does NOT see canceled events. NeoForge bus 8.x always
+        // skips canceled events at the @SubscribeEvent dispatcher level, ignoring
+        // the receiveCanceled flag. Canceled deaths are handled by the programmatic
+        // {@link #onCanceledLivingDeath} listener registered in {@link #register()}.
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        String puuid = player.getUUID().toString();
 
         // Real (un-canceled) death: items will drop through the normal path and the
         // logout-save will capture the post-drop (empty) inventory. Clear any stale

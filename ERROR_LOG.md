@@ -4,6 +4,37 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-05-20 18:30] — r1 fix non-effective: @SubscribeEvent(receiveCanceled=true) ignored by NeoForge bus 8.x
+
+**Context** : User a testé le fix r1 (commit `39aee07`) → bug toujours présent, duplication identique. Le tracking via `deathCanceledRecently` ne fonctionnait pas.
+
+**Error** : `@SubscribeEvent(priority = LOW, receiveCanceled = true)` ne livrait JAMAIS les événements annulés au handler annoté.
+
+**Root cause** : Lecture du source de `net.neoforged:bus:8.0.1` (jar dans `~/.gradle/caches`) :
+- `SubscribeEventListener.invoke()` (line 47-49) :
+  ```java
+  if (!((ICancellableEvent) event).isCanceled()) {
+      handler.invoke(event);
+  }
+  ```
+  Le dispatcher skip TOUJOURS les événements annulés pour les `ICancellableEvent`, **sans consulter le flag `receiveCanceled` de l'annotation**.
+- Le constructeur `SubscribeEventListener(target, method)` lit `subInfo = method.getAnnotation(SubscribeEvent.class)` mais n'utilise que `subInfo.priority()` — jamais `subInfo.receiveCanceled()`.
+- `ListenerList.canUnwrapListeners = !ICancellableEvent.class.isAssignableFrom(eventClass)` → pour les événements cancellables, on ne peut PAS unwrap le check de cancellation.
+- Seul `EventBus.addListener(priority, receiveCanceled, eventType, consumer)` programmatique respecte le flag via `passNotGenericFilter(receiveCanceled)`.
+
+**Fix** :
+- Le handler annoté `@SubscribeEvent(priority = LOW)` reste pour les morts non-annulées (real death path).
+- Ajout de `VanillaSync.register()` qui enregistre programmatiquement un listener sur `LivingDeathEvent` avec `NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, true, LivingDeathEvent.class, VanillaSync::onCanceledLivingDeath)`. Ce listener REÇOIT les événements annulés et alimente `deathCanceledRecently`.
+- Ajout d'une **heuristique fallback** dans `onPlayerLogout` : si le joueur a au moins un MobEffect `isInfiniteDuration() == true` ET HP < 50% du max → traiter comme downed-state. Couvre les mods de revive qui empêchent la mort via cancel de `LivingDamageEvent` ou Mixin (cas où aucun `LivingDeathEvent` n'est annulé du tout).
+- Logging diagnostique `[revive-track]` au moment du cancel et `[revive-detect]` au logout (montre quel signal a déclenché : `trackedCancel=true/false`, `heuristic=true/false`, HP ratio, keepInventory).
+
+**Prevention** :
+- **NeoForge bus 8.x : `@SubscribeEvent(receiveCanceled = true)` est SILENCIEUSEMENT NON-FONCTIONNEL pour les ICancellableEvent**. Toujours utiliser `EVENT_BUS.addListener(priority, true, eventType, consumer)` programmatique pour les listeners qui doivent recevoir des événements annulés. Documenter dans le code chaque fois qu'un listener doit être programmatique pour cette raison.
+- **Toujours vérifier l'API d'un event bus en allant lire le source du dispatcher** (`SubscribeEventListener`, `EventBus.addListener`, `ListenerList.unwrapListeners`) plutôt que de se fier aux comments existants — ceux du code initial PlayerSync disaient "`priority=LOW + skip canceled events defends against mods like Revive Me`" mais cette logique était fausse car le handler ne fire jamais en premier lieu.
+- **Pour les fixes critiques de duplication, toujours implémenter au moins deux détections indépendantes** (event-based + heuristic). Une seule détection qui échoue silencieusement = bug persistant en production.
+
+---
+
 ## [2026-05-20 14:00] — Item duplication on death + disconnect from revive interface + reconnect
 
 **Context** : Un joueur meurt, le mod Revive Me (ou Hardcore Revival / Corail Tombstone) affiche son interface "downed/revive" en annulant `LivingDeathEvent`. Le joueur se déconnecte depuis cette interface. À la reconnexion : il respawn avec son inventaire complet ET un cadavre/gravestone au point de mort contient également l'inventaire complet — duplication intégrale.
