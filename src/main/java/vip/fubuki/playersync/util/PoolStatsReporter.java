@@ -3,7 +3,6 @@ package vip.fubuki.playersync.util;
 import com.zaxxer.hikari.HikariPoolMXBean;
 import vip.fubuki.playersync.PlayerSync;
 
-import java.lang.reflect.Method;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -70,13 +69,18 @@ public final class PoolStatsReporter {
             SyncLogger.poolStats(active, queue, idle, hActive, hIdle);
 
             // Warn if queue is getting dangerously full
-            if (queue > 400) {
-                PlayerSync.LOGGER.warn("[pool-stats] executor queue high: {}/512 — risk of CallerRunsPolicy blocking main thread", queue);
-                SyncLogger.warnPlayer("SYSTEM", "Executor queue high: " + queue + "/512");
+            int queueCapacity = exec != null ? exec.getQueue().size() + exec.getQueue().remainingCapacity() : 512;
+            if (queue > (queueCapacity * 4) / 5) {
+                PlayerSync.LOGGER.warn("[pool-stats] executor queue high: {}/{} — overflow lane will engage for main-thread submissions", queue, queueCapacity);
+                SyncLogger.warnPlayer("SYSTEM", "Executor queue high: " + queue + "/" + queueCapacity);
             }
-            if (hActive >= 0 && hActive >= 14) {
-                PlayerSync.LOGGER.warn("[pool-stats] HikariCP active connections high: {}/15 — risk of connection starvation", hActive);
-                SyncLogger.warnPlayer("SYSTEM", "HikariCP active: " + hActive + "/15");
+            // AUDIT FIX: threshold derived from the configured pool size instead of
+            // hardcoded 14/15 (the pool size is config-driven now — see JDBCsetUp).
+            int maxPool;
+            try { maxPool = vip.fubuki.playersync.config.JdbcConfig.HIKARI_POOL_MAX_SIZE.get(); } catch (Throwable t) { maxPool = 15; }
+            if (hActive >= 0 && hActive >= Math.max(1, maxPool - 1)) {
+                PlayerSync.LOGGER.warn("[pool-stats] HikariCP active connections high: {}/{} — risk of connection starvation", hActive, maxPool);
+                SyncLogger.warnPlayer("SYSTEM", "HikariCP active: " + hActive + "/" + maxPool);
             }
         } catch (Throwable t) {
             PlayerSync.LOGGER.warn("[pool-stats] tick failed: {}", t.getMessage());

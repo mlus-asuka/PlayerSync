@@ -4,6 +4,22 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-06-09] — Corruption UTF-8 d'un fichier source via PowerShell 5.1 Get-Content/Set-Content
+
+**Context** : Suppression d'un bloc de lignes (méthode morte `store()`) dans `VanillaSync.java` via un one-liner PowerShell `Get-Content` + slicing + `Set-Content -Encoding utf8`.
+
+**Error** : 171 occurrences de mojibake (`→` devenu `â†'`, `§` devenu `Â§`, accents cassés) + BOM UTF-8 ajouté en tête de fichier (javac refuse le BOM : `illegal character: '﻿'`).
+
+**Root cause** : Sous Windows PowerShell 5.1, `Get-Content` sans `-Encoding` lit avec la codepage ANSI système (Windows-1252) — les octets UTF-8 multi-octets sont décodés en caractères CP1252 puis `Set-Content -Encoding utf8` les réencode en UTF-8 → mojibake. De plus `-Encoding utf8` en PS 5.1 écrit TOUJOURS un BOM.
+
+**Fix** : Inversion déterministe via .NET : `ReadAllText(path, UTF8)` (consomme le BOM) → `GetEncoding(1252).GetBytes(text)` → `UTF8.GetString(bytes)` → `WriteAllText(path, fixed, new UTF8Encoding(false))`. Réversible sans perte car le codec .NET windows-1252 fait un round-trip best-fit des octets de contrôle.
+
+**Prevention** :
+- **NE JAMAIS éditer un fichier source UTF-8 avec Get-Content/Set-Content en PowerShell 5.1.** Utiliser les outils d'édition dédiés, ou `[System.IO.File]::ReadAllText/WriteAllText` avec `System.Text.UTF8Encoding($false)` explicite.
+- **Après toute manipulation de fichier par script, vérifier** : (a) absence de BOM (`ReadAllBytes`[0..2] ≠ 239,187,191), (b) absence de mojibake (`grep 'â€|â†|Ã©|Â§'`), (c) taille du `git diff --stat` cohérente avec l'édit attendu.
+
+---
+
 ## [2026-05-21 — r6 incomplete: ReviveMe dieOnDisconnect force-deaths the player at logout
 
 **Context** : Après r6, le user rapporte que la dup revient. Scénario : joueur tombe → fallen → déco → reco → cadavre au sol + stuff dans l'inventaire = dup.

@@ -43,11 +43,18 @@ public class JDBCsetUp {
         cfg.setUsername(JdbcConfig.USERNAME.get());
         cfg.setPassword(JdbcConfig.PASSWORD.get());
 
-        // FIX PERF (C9): right-sized pool. 25 was oversized; empirical HikariCP rule is
-        // ~ cores*2 + spindles. 15 handles 35 concurrent players comfortably and reduces
-        // MySQL server-side context switching.
-        cfg.setMaximumPoolSize(15);
-        cfg.setMinimumIdle(4);
+        // AUDIT FIX: hikari_pool_max_size / hikari_leak_threshold_ms were defined,
+        // documented and displayed by the status command but never APPLIED — the pool
+        // was hardcoded to 15/25000 regardless of what admins configured. Read the
+        // config with safe fallbacks (config may not be loaded in edge paths).
+        int maxPool = 15;
+        long leakMs = 25_000L;
+        try {
+            maxPool = JdbcConfig.HIKARI_POOL_MAX_SIZE.get();
+            leakMs = JdbcConfig.HIKARI_LEAK_THRESHOLD_MS.get();
+        } catch (Throwable t) { /* config not loaded — keep safe defaults */ }
+        cfg.setMaximumPoolSize(maxPool);
+        cfg.setMinimumIdle(Math.min(4, maxPool));
 
         // Connection lifecycle
         cfg.setConnectionTimeout(10_000L);   // 10 s – fail fast on MySQL outage
@@ -58,13 +65,21 @@ public class JDBCsetUp {
         cfg.setAutoCommit(true);
         cfg.setPoolName("PlayerSync");
 
-        // FIX PERF (C9): 25s threshold — covers worst-case doPlayerJoin poll bursts without
-        // flooding logs with false positives. Previous 10s fired during legitimate 15-30s polls.
-        cfg.setLeakDetectionThreshold(25_000L);
+        // FIX PERF (C9): 25s default threshold — covers worst-case doPlayerJoin poll
+        // bursts without flooding logs with false positives.
+        cfg.setLeakDetectionThreshold(leakMs);
 
         dataSource = new HikariDataSource(cfg);
         LOGGER.info("[PlayerSync] HikariCP pool ready (maxPool={}, minIdle={})",
                 cfg.getMaximumPoolSize(), cfg.getMinimumIdle());
+
+        // AUDIT FIX (security): surface the allowPublicKeyRetrieval decision so admins
+        // on remote-host + use_ssl=false setups understand a potential auth failure.
+        if (!isPublicKeyRetrievalAllowed()) {
+            LOGGER.warn("[PlayerSync] use_ssl=false with a remote MySQL host: allowPublicKeyRetrieval is disabled to prevent"
+                    + " password disclosure to a man-in-the-middle. If the connection fails with 'Public Key Retrieval is not"
+                    + " allowed', set use_ssl=true (recommended) or use a mysql_native_password account.");
+        }
     }
 
     /**
@@ -95,6 +110,27 @@ public class JDBCsetUp {
     // Internal helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * AUDIT FIX (security — credential disclosure): allowPublicKeyRetrieval=true was
+     * appended unconditionally while use_ssl defaults to false. With
+     * caching_sha2_password over a non-TLS link, Connector/J RSA-encrypts the password
+     * with WHATEVER public key the server presents — a rogue/MITM MySQL endpoint can
+     * present its own key and recover the DB password. The flag is now only enabled
+     * when the link is TLS-protected (use_ssl=true) or the host is loopback (MITM
+     * infeasible) — the default out-of-box config (localhost) keeps working unchanged.
+     */
+    private static boolean isPublicKeyRetrievalAllowed() {
+        try {
+            if (JdbcConfig.USE_SSL.get()) return true;
+            String host = JdbcConfig.HOST.get();
+            if (host == null) return false;
+            String h = host.trim().toLowerCase(java.util.Locale.ROOT);
+            return h.equals("localhost") || h.equals("127.0.0.1") || h.equals("::1") || h.equals("[::1]");
+        } catch (Throwable t) {
+            return false; // config unreadable — err toward the safe side
+        }
+    }
+
     private static String buildUrl(boolean selectDatabase) {
         String dbName = JdbcConfig.DATABASE_NAME.get();
         String url = "jdbc:mysql://" + JdbcConfig.HOST.get() + ":" + JdbcConfig.PORT.get();
@@ -103,13 +139,15 @@ public class JDBCsetUp {
         }
         // No autoReconnect — HikariCP handles reconnection transparently.
         // FIX PERF: Added MySQL performance parameters:
-        // - rewriteBatchedStatements: rewrites batch INSERTs into multi-row (5-30x faster)
+        // - rewriteBatchedStatements: engages via addBatch()/executeBatch() — see
+        //   executeBatchTransaction, which groups identical statements into JDBC batches
         // - cachePrepStmts + useServerPrepStmts: server-side prepared statement cache (15-25% CPU reduction)
         // - prepStmtCacheSize=256: keeps compiled statements in cache across queries
         // - useCompression: compresses network traffic (40-60% reduction for large NBT blobs)
         // - tcpNoDelay: disable Nagle's algorithm for lower latency
         url += "?useUnicode=true&characterEncoding=utf-8&useSSL=" + JdbcConfig.USE_SSL.get()
-                + "&serverTimezone=UTC&allowPublicKeyRetrieval=true"
+                + "&serverTimezone=UTC"
+                + (isPublicKeyRetrievalAllowed() ? "&allowPublicKeyRetrieval=true" : "")
                 + "&rewriteBatchedStatements=true"
                 + "&cachePrepStmts=true"
                 + "&useServerPrepStmts=true"
@@ -148,34 +186,20 @@ public class JDBCsetUp {
     // Query helpers (API unchanged — callers need no modification)
     // -------------------------------------------------------------------------
 
-    public static QueryResult executeQuery(String sqlFormatString, Object... args) throws SQLException {
-        String sql = String.format(sqlFormatString, args);
+    // AUDIT FIX (security — latent SQL injection): the old executeQuery /
+    // executeUpdate(String, Object...) helpers interpolated arguments into the SQL
+    // text via String.format BEFORE preparing the statement. They had zero
+    // data-bearing callers, but sat next to the safe ?-placeholder variants with
+    // near-identical signatures — one future misuse away from injection. Removed;
+    // DDL goes through the single-arg executeUpdate below, data through the
+    // executePrepared* variants.
+    public static void executeUpdate(String sql) throws SQLException {
         LOGGER.trace(sql);
-        Connection connection = getConnection();
-        try {
-            PreparedStatement stmt = connection.prepareStatement(sql);
-            ResultSet rs = stmt.executeQuery();
-            return new QueryResult(connection, stmt, rs);
-        } catch (SQLException e) {
-            try { connection.close(); } catch (SQLException ignored) {}
-            throw e;
-        }
-    }
-
-    private static void executeUpdateInternal(boolean selectDatabase, String sqlFormatString, Object... args) throws SQLException {
-        String sql = String.format(sqlFormatString, args);
-        LOGGER.trace(sql);
-        try (Connection conn = getConnection(selectDatabase);
+        try (Connection conn = getConnection(true);
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.executeUpdate();
-            // conn.close() is called by try-with-resources:
-            //   - pool connection → returned to HikariCP pool
-            //   - raw connection  → truly closed
+            // conn.close() is called by try-with-resources → returned to HikariCP pool
         }
-    }
-
-    public static void executeUpdate(String sqlFormatString, Object... args) throws SQLException {
-        executeUpdateInternal(true, sqlFormatString, args);
     }
 
     /** Overload used by startup DDL that must bypass the pool (selectDatabase=false). */
@@ -236,16 +260,46 @@ public class JDBCsetUp {
         try (Connection conn = getConnection()) {
             conn.setAutoCommit(false);
             try {
-                for (int idx = 0; idx < statements.length; idx++) {
-                    Object[] entry = statements[idx];
-                    String sql = (String) entry[0];
+                // AUDIT FIX (batching): consecutive entries with IDENTICAL SQL are now
+                // grouped into one PreparedStatement via addBatch()/executeBatch() —
+                // this is what lets Connector/J's rewriteBatchedStatements collapse
+                // N row writes (e.g. saveBackpackSnapshots) into a single multi-row
+                // statement. Unique-SQL entries (the core player_data UPDATE whose
+                // counts[0] the callers' guard checks depend on) keep the exact
+                // per-statement executeUpdate() count as before.
+                int idx = 0;
+                while (idx < statements.length) {
+                    String sql = (String) statements[idx][0];
+                    int end = idx + 1;
+                    while (end < statements.length && sql.equals(statements[end][0])) end++;
                     LOGGER.trace(sql);
-                    try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-                        for (int i = 1; i < entry.length; i++) {
-                            stmt.setObject(i, entry[i]);
+                    if (end - idx == 1) {
+                        Object[] entry = statements[idx];
+                        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                            for (int i = 1; i < entry.length; i++) {
+                                stmt.setObject(i, entry[i]);
+                            }
+                            counts[idx] = stmt.executeUpdate();
                         }
-                        counts[idx] = stmt.executeUpdate();
+                    } else {
+                        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                            for (int k = idx; k < end; k++) {
+                                Object[] entry = statements[k];
+                                for (int i = 1; i < entry.length; i++) {
+                                    stmt.setObject(i, entry[i]);
+                                }
+                                stmt.addBatch();
+                            }
+                            int[] batchCounts = stmt.executeBatch();
+                            for (int k = 0; k < batchCounts.length && idx + k < end; k++) {
+                                // Rewritten batches may report SUCCESS_NO_INFO (-2) — map to 1
+                                // (only grouped entries are affected; callers only inspect
+                                // counts[0], which always comes from a unique-SQL entry).
+                                counts[idx + k] = batchCounts[k] == java.sql.Statement.SUCCESS_NO_INFO ? 1 : batchCounts[k];
+                            }
+                        }
                     }
+                    idx = end;
                 }
                 conn.commit();
             } catch (SQLException e) {
