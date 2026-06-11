@@ -272,6 +272,9 @@ public class VanillaSync {
                 JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
                 rs1.close();
                 qr1.close();
+                if (revertIfDisconnectedDuringSync(serverPlayer, player_uuid)) {
+                    return;
+                }
                 PlayerSync.LOGGER.info("New player detected,init completed.");
                 syncNotCompletedPlayer.remove(player_uuid);
                 return;
@@ -345,18 +348,53 @@ public class VanillaSync {
 
             modsSupport.doBackPackRestore(serverPlayer);
 
-            serverPlayer.addTag("player_synced");
-
             rs2.close();
             qr2.close();
             rs1.close();
             qr1.close();
+            if (revertIfDisconnectedDuringSync(serverPlayer, player_uuid)) {
+                return;
+            }
+            serverPlayer.addTag("player_synced");
             PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
             syncNotCompletedPlayer.remove(player_uuid);
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
+            // The disconnect may have raced this task: if the logout handler already wrote
+            // online=0 before our online=1 UPDATE landed, revert it so a failed sync does
+            // not leave the player ghost-online.
+            if (joinedPlayer.hasDisconnected()) {
+                try {
+                    markOffline(player_uuid);
+                    PlayerSync.LOGGER.warn("Player {} disconnected during failed sync,reverted online status", player_uuid);
+                } catch (SQLException revertException) {
+                    PlayerSync.LOGGER.error("Failed to revert online status for player {}", player_uuid, revertException);
+                }
+            }
             syncNotCompletedPlayer.remove(player_uuid);
         }
+    }
+
+    private static void markOffline(String player_uuid) throws SQLException {
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+    }
+
+    // The player may disconnect while the sync task is still running. In that case the
+    // logout handler has already seen the not-yet-synced marker, refused to save and
+    // written online=0 — but our own online=1 UPDATE may have landed after it, leaving
+    // the player marked online on this server with no one connected (and kicked from every
+    // server by the already-online check until this server's heartbeat goes stale). Revert it.
+    // Returns true if the player disconnected and the sync result must be discarded.
+    private static boolean revertIfDisconnectedDuringSync(ServerPlayer player, String player_uuid) throws SQLException {
+        if (!player.hasDisconnected()) {
+            return false;
+        }
+        markOffline(player_uuid);
+        // The logout handler normally removes the marker itself. This removal only matters
+        // when the logout event has not fired yet.
+        syncNotCompletedPlayer.remove(player_uuid);
+        PlayerSync.LOGGER.warn("Player {} disconnected during sync,reverted online status", player_uuid);
+        return true;
     }
 
     @SubscribeEvent
