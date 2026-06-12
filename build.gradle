@@ -225,6 +225,17 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
 
+// One entry point for the Docker-based end-to-end suite in e2e/ (requires Docker and Node
+// on PATH). Builds the mod jar, then hands off to the runner. Deliberately not wired into
+// `check`: it is slow and has external prerequisites, so it stays opt-in.
+tasks.register('e2e', Exec) {
+    group = 'verification'
+    description = 'Runs the Docker-based end-to-end test suite (Docker + Node required).'
+    dependsOn 'build'
+    workingDir projectDir
+    commandLine './e2e/run-e2e.sh'
+}
+
 // IDEA no longer automatically downloads sources/javadoc jars for dependencies, so we need to explicitly enable the behavior.
 idea {
     module {

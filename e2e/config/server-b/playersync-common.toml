@@ -1,0 +1,20 @@
+[general]
+	host = "db"
+	db_port = 3306
+	use_ssl = false
+	user_name = "playersync"
+	password = "pleaseChangeThisPassword"
+	db_name = "playersync"
+	#Server_id must differ between the two test servers and be stable across restarts
+	#(the mod defaults to a random id when the key is missing!)
+	Server_id = 2
+	sync_world = []
+	sync_advancements = true
+	sync_chat = false
+	IsChatServer = false
+	kick_when_already_online = true
+	ChatServerIP = "127.0.0.1"
+	ChatServerPort = 7900
+	use_legacy_serialization = false
+	item_placeholder_title_override = ""
+	item_placeholder_description_override = ""

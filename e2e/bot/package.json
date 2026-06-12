@@ -1,0 +1,12 @@
+{
+  "name": "playersync-e2e",
+  "private": true,
+  "description": "End-to-end test bot for PlayerSync: joins server A, receives items/XP, hops to server B and asserts the state was synchronized through the shared database.",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mineflayer": "^4.20.1",
+    "rcon-client": "^4.2.5"
+  }
+}
