@@ -1,5 +1,5 @@
 [general]
-	host = "db"
+	host = "toxiproxy"
 	db_port = 3306
 	use_ssl = false
 	user_name = "playersync"

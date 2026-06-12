@@ -5,7 +5,7 @@
 # This works with a vanilla client/bot because PlayerSync is a server-side-only mod
 # (displayTest=IGNORE_SERVER_VERSION, no network channels).
 #
-# Driven by run-e2e.sh; not intended for production use.
+# Driven by run-e2e.sh. It is not intended for production use.
 
 services:
   db:
@@ -15,11 +15,40 @@ services:
       MARIADB_USER: playersync
       MARIADB_PASSWORD: pleaseChangeThisPassword
       MARIADB_RANDOM_ROOT_PASSWORD: "true"
+    # This port serves the bot's assertions only. It is bound to loopback on a non-default
+    # host port to avoid clashing with a local MySQL. The game servers reach the DB through
+    # toxiproxy instead, so assertions read state unperturbed by injected faults.
+    ports:
+      - "127.0.0.1:13306:3306"
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 5s
       retries: 30
+
+  # TCP proxy between the game servers and MariaDB that serves as the harness's
+  # fault-injection layer. Scenarios may inject faults through the toxiproxy HTTP API on
+  # host port 8474. The scenarios in this directory drive no toxics and use the proxy as a
+  # transparent passthrough. Do NOT pause or freeze the db container to simulate faults:
+  # the mod runs some queries synchronously on the server thread, so a frozen DB deadlocks
+  # the whole server and logins die on the 30s network read timeout.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/toxiproxy.json"]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./toxiproxy.json:/toxiproxy.json:ro
+    ports:
+      - "127.0.0.1:8474:8474"
+    # `list` exits 0 only once the API is up and the proxy config is loaded, so a
+    # scenario can't POST a toxic before toxiproxy is ready to accept it.
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   server-a: &mc-server
     # Pinned by digest so a repush of the moving `java17` tag (newer JRE/base) can't drift
@@ -27,6 +56,8 @@ services:
     image: itzg/minecraft-server:java17@sha256:c3af905ce625d8626f389e67dd35c16d49d44f78154dd27c18f3213aa33df8b8
     depends_on:
       db:
+        condition: service_healthy
+      toxiproxy:
         condition: service_healthy
     environment: &mc-env
       EULA: "true"
@@ -41,15 +72,17 @@ services:
       RCON_PASSWORD: e2e-rcon
       COPY_CONFIG_DEST: /data/config
     volumes:
-      # Injected by run-e2e.sh. The default is a deliberately missing path so a stray
-      # `docker compose up` fails clearly, while `down`/`config` still parse without it.
+      # PLAYERSYNC_JAR is injected by run-e2e.sh. The default is a deliberately missing
+      # path, so a stray `docker compose up` fails clearly while `down` and `config` still
+      # parse without it.
       - ${PLAYERSYNC_JAR:-./PLAYERSYNC_JAR-not-set-run-e2e.sh-first}:/mods/playersync.jar:ro
       - ./config/server-a:/config:ro
     ports:
       - "127.0.0.1:25565:25565"
       - "127.0.0.1:25575:25575"
-    # First boot downloads Forge + generates the world; be generous before
-    # declaring the container unhealthy so `up --wait` doesn't give up early.
+    # First boot downloads Forge and generates the world, which takes minutes. Be
+    # generous before declaring the container unhealthy so `up --wait` does not give
+    # up early.
     healthcheck:
       test: ["CMD", "mc-health"]
       interval: 10s
@@ -62,8 +95,9 @@ services:
     environment:
       <<: *mc-env
     volumes:
-      # Injected by run-e2e.sh. The default is a deliberately missing path so a stray
-      # `docker compose up` fails clearly, while `down`/`config` still parse without it.
+      # PLAYERSYNC_JAR is injected by run-e2e.sh. The default is a deliberately missing
+      # path, so a stray `docker compose up` fails clearly while `down` and `config` still
+      # parse without it.
       - ${PLAYERSYNC_JAR:-./PLAYERSYNC_JAR-not-set-run-e2e.sh-first}:/mods/playersync.jar:ro
       - ./config/server-b:/config:ro
     ports:

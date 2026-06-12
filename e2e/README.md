@@ -22,12 +22,14 @@ Or drive the two steps yourself:
 ./e2e/run-e2e.sh         # ~2 min on warm caches, longer on first run (Forge download)
 ```
 
-Node (>= 18, for the global `fetch` the bot uses) must be on `PATH`. Dependencies
-install from the committed `bot/package-lock.json` (`npm ci`). Keep the environment
-up after a failure for debugging with `KEEP=1 ./e2e/run-e2e.sh`; tear down manually
-with `docker compose -f e2e/docker-compose.yml down -v`.
+Node (>= 18, the baseline the bot's mineflayer toolchain needs) must be on `PATH`.
+Dependencies install from the committed `bot/package-lock.json` (`npm ci`). Keep the
+environment up after a failure for debugging with `KEEP=1 ./e2e/run-e2e.sh`; tear down
+manually with `docker compose -f e2e/docker-compose.yml down -v`.
 
-## What the test asserts (`bot/test.js`)
+## Scenarios
+
+### `bot/test-sync-across-servers.js` — happy path
 
 1. Bot joins server A (new player → PlayerSync inserts a row in `player_data`).
 2. Via RCON the bot receives 7 diamonds and 100 XP; the bot confirms them client-side.
@@ -35,11 +37,24 @@ with `docker compose -f e2e/docker-compose.yml down -v`.
 4. Bot joins server B and must end up with the same inventory and XP (±2 for the
    float rounding inherent in the level/progress XP encoding).
 
+### `bot/test-already-online.js` — already-online kick
+
+Positive test for `kick_when_already_online`: a bot online on server A, then a second
+login on server B that must be refused while the player is online on A and accepted once
+the bot has left. The reject-then-accept contrast proves the online state is what gates the
+join; the refusal must also be attributable to the gate — the `playersync.already_online`
+kick, or the reason-less login close the mod's racy refusal path can produce — so a
+refusal with any other stated reason fails the test.
+
 ## Layout
 
-- `docker-compose.yml` — db + `server-a`/`server-b` (`itzg/minecraft-server`); the mod
-  jar path is injected via `PLAYERSYNC_JAR` by the runner script.
+- `docker-compose.yml` — db + toxiproxy + `server-a`/`server-b`
+  (`itzg/minecraft-server`); the mod jar path is injected via `PLAYERSYNC_JAR` by the
+  runner script. The servers reach MariaDB through toxiproxy (`host = "toxiproxy"`);
+  its HTTP API is on `127.0.0.1:8474` for fault injection.
 - `config/server-{a,b}/playersync-common.toml` — identical DB settings, distinct
   `Server_id` (1 and 2). The id **must** be pinned: the mod defaults to a random id
   per load when the key is missing.
-- `bot/` — the mineflayer test client.
+- `bot/` — the mineflayer test client. It also connects to MariaDB directly (published on
+  `127.0.0.1:13306`, **not** via toxiproxy) to assert persisted `player_data` state —
+  reading ground truth unperturbed by injected faults.
