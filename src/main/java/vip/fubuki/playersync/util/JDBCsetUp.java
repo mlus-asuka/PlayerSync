@@ -29,7 +29,7 @@ public class JDBCsetUp {
         // Ensure that the connection uses the desired database by explicitly issuing "USE dbName"
         if (selectDatabase && dbName != null && !dbName.isEmpty()) {
             try (Statement st = conn.createStatement()) {
-                st.execute("USE " + dbName);
+                st.execute("USE `" + dbName + "`");
             }
         }
         return conn;
@@ -49,7 +49,7 @@ public class JDBCsetUp {
         Connection connection = getConnection();  // With database selected (and "USE" already run)
         PreparedStatement queryStatement = connection.prepareStatement(sql);
         ResultSet resultSet = queryStatement.executeQuery();
-        return new QueryResult(connection, resultSet);
+        return new QueryResult(connection, queryStatement, resultSet);
     }
 
     /**
@@ -94,7 +94,7 @@ public class JDBCsetUp {
         }
     }
 
-    public record QueryResult(Connection connection, ResultSet resultSet) implements AutoCloseable {
+    public record QueryResult(Connection connection,PreparedStatement preparedStatement, ResultSet resultSet) implements AutoCloseable {
         @Override
         public void close() {
             if (resultSet != null) {
@@ -102,6 +102,14 @@ public class JDBCsetUp {
                     resultSet.close();
                 } catch (SQLException e) {
                     LOGGER.error("Error closing ResultSet", e);
+                }
+            }
+
+            if (preparedStatement != null) {
+                try {
+                    preparedStatement.close();
+                } catch (SQLException e) {
+                    LOGGER.error("Error closing PreparedStatement", e);
                 }
             }
 

@@ -1,4 +1,4 @@
-package vip.fubuki.playersync.sync;
+package vip.fubuki.playersync.sync.addons;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.nbt.CompoundTag;
@@ -11,6 +11,7 @@ import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
 import top.theillusivec4.curios.api.type.inventory.ICurioStacksHandler;
 import top.theillusivec4.curios.api.type.inventory.IDynamicStackHandler;
 import vip.fubuki.playersync.PlayerSync;
+import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 
@@ -23,12 +24,51 @@ import java.util.UUID;
 
 
 public class ModsSupport {
+    public void doBackPackRestore(Player player) {
+        if(ModList.get().isLoaded("sophisticatedbackpacks")){
+            // --- Begin Backpack Data Restore ---
+            PlayerSync.LOGGER.info("Restoring backpack data for player " + player.getUUID());
+            net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
+                net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper backpackWrapper = net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper
+                        .fromData(backpackItem);
+
+                // Retrieve the contents UUID from the backpack's NBT using NBTHelper
+                Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper
+                        .getUniqueId(backpackWrapper.getBackpack(), "contentsUuid");
+                if (uuidOpt.isPresent()) {
+                    UUID contentsUuid = uuidOpt.get();
+                    try {
+                        JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid + "'");
+                        ResultSet rsBackpack = qrBackpack.resultSet();
+                        if (rsBackpack.next()) {
+                            String serialized = rsBackpack.getString("backpack_nbt");
+                            String nbtString = VanillaSync.deserializeString(serialized);
+                            CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
+                            // Update BackpackStorage with the retrieved NBT
+                            net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
+                            PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
+                        }
+                        rsBackpack.close();
+                        qrBackpack.connection().close();
+                    } catch (SQLException e) {
+                        PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
+                    } catch (CommandSyntaxException e) {
+                        throw new RuntimeException(e);
+                    }
+                } else {
+                    PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
+                }
+                return false;
+            });
+            // --- End Backpack Data Restore ---
+        }
+    }
 
     /**
      * Restores the Curios inventory for a player.
      * The saved data is stored as a flat map with composite keys ("slotType:index").
      */
-    public void onPlayerJoin(net.minecraft.world.entity.player.Player player) throws SQLException {
+    public void doCuriosRestore(Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
             // Obtain the handler from the API.
             Optional<ICuriosItemHandler> handlerOpt = CuriosApi.getCuriosInventory(player);
@@ -90,43 +130,6 @@ public class ModsSupport {
                 StoreCurios(player, true);
             }
         }
-        if(ModList.get().isLoaded("sophisticatedbackpacks")){
-            // --- Begin Backpack Data Restore ---
-            PlayerSync.LOGGER.info("Restoring backpack data for player " + player.getUUID());
-            net.p3pp3rf1y.sophisticatedbackpacks.util.PlayerInventoryProvider.get().runOnBackpacks(player, (ItemStack backpackItem, String handler, String identifier, int slot) -> {
-                net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.IBackpackWrapper backpackWrapper = net.p3pp3rf1y.sophisticatedbackpacks.backpack.wrapper.BackpackWrapper
-                        .fromData(backpackItem);
-
-                // Retrieve the contents UUID from the backpack's NBT using NBTHelper
-                Optional<UUID> uuidOpt = net.p3pp3rf1y.sophisticatedcore.util.NBTHelper
-                        .getUniqueId(backpackWrapper.getBackpack(), "contentsUuid");
-                if (uuidOpt.isPresent()) {
-                    UUID contentsUuid = uuidOpt.get();
-                    try {
-                        JDBCsetUp.QueryResult qrBackpack = JDBCsetUp.executeQuery("SELECT backpack_nbt FROM backpack_data WHERE uuid='" + contentsUuid + "'");
-                        ResultSet rsBackpack = qrBackpack.resultSet();
-                        if (rsBackpack.next()) {
-                            String serialized = rsBackpack.getString("backpack_nbt");
-                            String nbtString = VanillaSync.deserializeString(serialized);
-                            CompoundTag backpackNbt = NbtUtils.snbtToStructure(nbtString);
-                            // Update BackpackStorage with the retrieved NBT
-                            net.p3pp3rf1y.sophisticatedbackpacks.backpack.BackpackStorage.get().setBackpackContents(contentsUuid, backpackNbt);
-                            PlayerSync.LOGGER.info("Restored backpack data for UUID " + contentsUuid);
-                        }
-                        rsBackpack.close();
-                        qrBackpack.connection().close();
-                    } catch (SQLException e) {
-                        PlayerSync.LOGGER.error("Error restoring backpack data for UUID " + contentsUuid, e);
-                    } catch (CommandSyntaxException e) {
-                        throw new RuntimeException(e);
-                    }
-                } else {
-                    PlayerSync.LOGGER.warn("Backpack item in slot " + slot + " has no contentsUuid during restore");
-                }
-                return false;
-            });
-            // --- End Backpack Data Restore ---
-        }
     }
 
     /**
@@ -135,7 +138,30 @@ public class ModsSupport {
      */
     public void onPlayerLeave(net.minecraft.world.entity.player.Player player) throws SQLException {
         if (ModList.get().isLoaded("curios")) {
-            StoreCurios(player, false);
+            if (player.isDeadOrDying()) {
+                if (!CuriosCache.curiosCache.isEmpty()) {
+                    UUID playerUuid = player.getUUID();
+                    if (CuriosCache.curiosCache.get(playerUuid) != null) {
+                        CuriosCache.CuriosCacheEntry cacheEntry = CuriosCache.curiosCache.get(playerUuid);
+                        String serializedData = cacheEntry.serializedData;
+                        JDBCsetUp.executeUpdate("UPDATE curios SET curios_item = '" + serializedData + "' WHERE uuid = '" + player.getUUID() + "'");
+                        CuriosCache.curiosCache.remove(playerUuid);
+                        PlayerSync.LOGGER.info("Saving curios data for a dead-or-dying player {} Successfully", player.getStringUUID());
+                    } else {
+                        PlayerSync.LOGGER.error("Failed to find the cache of the logged out dead-or-dying player");
+                        PlayerSync.LOGGER.error("The dead-or-dying player uuid is" + player.getStringUUID());
+                        PlayerSync.LOGGER.error("Using default data...");
+                        StoreCurios(player, false);
+                    }
+                } else {
+                    PlayerSync.LOGGER.warn("No curios cache found while executing a dead-or-dying player logout event.you can ignore this warning if keep-inventory is false");
+                    PlayerSync.LOGGER.warn("The dead-or-dying player uuid is" + player.getStringUUID());
+                    PlayerSync.LOGGER.warn("Using default data...");
+                    StoreCurios(player, false);
+                }
+            } else {
+                StoreCurios(player, false);
+            }
         }
     }
 
