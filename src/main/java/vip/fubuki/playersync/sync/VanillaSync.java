@@ -360,18 +360,24 @@ public class VanillaSync {
             syncNotCompletedPlayer.remove(player_uuid);
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
-            // The disconnect may have raced this task: if the logout handler already wrote
-            // online=0 before our online=1 UPDATE landed, revert it so a failed sync does
-            // not leave the player ghost-online.
             if (joinedPlayer.hasDisconnected()) {
+                // The disconnect raced this task: if the logout handler already wrote
+                // online=0 before our online=1 UPDATE landed, revert it so a failed sync
+                // does not leave the player ghost-online. The player is gone, so it is safe
+                // to drop the not-synced marker.
                 try {
                     markOffline(player_uuid);
                     PlayerSync.LOGGER.warn("Player {} disconnected during failed sync,reverted online status", player_uuid);
                 } catch (SQLException revertException) {
                     PlayerSync.LOGGER.error("Failed to revert online status for player {}", player_uuid, revertException);
                 }
+                syncNotCompletedPlayer.remove(player_uuid);
+            } else {
+                // Sync failed while the player is still connected. Keep the not-synced
+                // marker so logout and autosave refuse to persist the partially-restored
+                // inventory over the player's good saved data.
+                PlayerSync.LOGGER.warn("Sync failed for connected player {}; keeping not-synced marker so the partial state is not saved", player_uuid);
             }
-            syncNotCompletedPlayer.remove(player_uuid);
         }
     }
 
@@ -815,6 +821,12 @@ public class VanillaSync {
                 if (server != null) {
                     // Iterate through all online players
                     for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+                        // Skip players whose sync has not completed: their in-memory state is
+                        // not the synced data and autosaving it would overwrite good DB data
+                        // (e.g. after a sync that threw while the player stayed connected).
+                        if (syncNotCompletedPlayer.contains(player.getUUID().toString())) {
+                            continue;
+                        }
                         executorService.submit(() -> {
                             try {
                                 // Call the same store method used in logout and file save events.
