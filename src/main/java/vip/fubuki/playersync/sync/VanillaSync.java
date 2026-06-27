@@ -376,7 +376,10 @@ public class VanillaSync {
     }
 
     private static void markOffline(String player_uuid) throws SQLException {
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+        // Only clear online if this server still owns the session. A late revert from our own
+        // stale sync task must not clobber a newer session the player has since opened on
+        // another server, which would have set last_server to its own id.
+        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "' AND last_server=" + JdbcConfig.SERVER_ID.get());
     }
 
     // The player may disconnect while the sync task is still running. In that case the
