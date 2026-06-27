@@ -166,34 +166,31 @@ public class VanillaSync {
             int lastServer;
 
             // First query: check basic player data and check whether player can join into server.
-            JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
-
-            try (ResultSet rs1 = qr1.resultSet()) {
+            // try-with-resources so the connection and statement are released even if a getter throws.
+            try (JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'")) {
+                ResultSet rs1 = qr1.resultSet();
                 if (!rs1.next()) {
                     PlayerSync.LOGGER.info("A new-player connection detected");
-                    qr1.connection().close();
                     return;
                 }
                 online = rs1.getBoolean("online");
                 lastServer = rs1.getInt("last_server");
-                qr1.connection().close();
             }
 
             // Second query: Check if player is already online on another server
             if (JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get() && online && lastServer != JdbcConfig.SERVER_ID.get()) {
-                JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='" + lastServer + "'");
-                try (ResultSet rs2 = qr2.resultSet()) {
+                // try-with-resources so the connection is released even if the enable=0 UPDATE below throws.
+                try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT last_update,enable FROM server_info WHERE id='" + lastServer + "'")) {
+                    ResultSet rs2 = qr2.resultSet();
                     if (rs2.next()) {
                         long last_update = rs2.getLong("last_update");
                         boolean enable = rs2.getBoolean("enable");
                         if (enable && System.currentTimeMillis() < last_update + 300000.0) {
                             event.getConnection().disconnect(Component.translatableWithFallback("playersync.already_online","You can't join more than one synchronization server at the same time."));
-                            qr2.connection().close();
                             return;
                         }
                         JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + lastServer);
                     }
-                    qr2.connection().close();
                 }
             }
         } catch (Exception e) {
