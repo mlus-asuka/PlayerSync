@@ -3,8 +3,25 @@
 PlayerSync is a Minecraft Forge mod that synchronizes player data across multiple servers using a MySQL backend. It allows players to maintain their inventory, equipment, experience, advancements, and more when moving between servers in a network.
 
 ## Mod Support
-*   [Curios API](https://www.curseforge.com/minecraft/mc-mods/curios)
-*   [Sophisticated Backpacks](https://www.curseforge.com/minecraft/mc-mods/sophisticated-backpacks)
+
+The following mods are explicitly handled by PlayerSync — their per-player state survives a server transfer:
+
+* [Curios API](https://www.curseforge.com/minecraft/mc-mods/curios) — functional **and** cosmetic stacks across all slot types
+* [Sophisticated Backpacks](https://www.curseforge.com/minecraft/mc-mods/sophisticated-backpacks) — equipped & ender-chest backpack contents, upgrades and settings
+* [Sophisticated Storage](https://www.curseforge.com/minecraft/mc-mods/sophisticated-storage) — shulker / barrel / chest contents carried as items
+* [Sophisticated Core](https://www.curseforge.com/minecraft/mc-mods/sophisticated-core) — required dependency for the two above
+* [Refined Storage](https://www.curseforge.com/minecraft/mc-mods/refined-storage) — disk contents linked to disk items in the inventory
+* [Accessories](https://github.com/wisp-forest/accessories) — all Accessories slots (used by The Aether)
+* [The Aether](https://github.com/The-Aether-Team/The-Aether) — Accessories slots + `AETHER_PLAYER` attachment (portals, dart count, flight timer, life shards…)
+* [Cosmetic Armor Reworked](https://www.curseforge.com/minecraft/mc-mods/cosmetic-armor-reworked) — the 4 cosmetic armor slots
+* [Apotheosis](https://www.curseforge.com/minecraft/mc-mods/apotheosis) — item DataComponents (affixes, sockets, gems, purity…) + `WORLD_TIER` / `RADIAL_MINING_MODE` attachments
+* [Apothic Enchanting](https://www.curseforge.com/minecraft/mc-mods/apothic-enchanting) — DataComponents on items (CRESCENDO, CHROMATIC…)
+* [Apothic Attributes](https://www.curseforge.com/minecraft/mc-mods/apothic-attributes) — bonus attribute modifiers + `AUX_DMG_TRACKER` attachment
+* [Apothic Spawners](https://www.curseforge.com/minecraft/mc-mods/apothic-spawners) — world-side only, no per-player state to sync
+* [Revive Me](https://www.curseforge.com/minecraft/mc-mods/revive-me) — death event runs at LOW priority + cancel guard, fallen players are not falsely flagged as dead
+* [Corpse](https://www.curseforge.com/minecraft/mc-mods/corpse) / [Gravestone](https://www.curseforge.com/minecraft/mc-mods/gravestone-mod) (+ Curios-Compat) — dead players' curios are not overwritten with empty data
+
+Any other mod that stores its per-player state through **NeoForge AttachmentTypes** is synced automatically (Ars Nouveau, Iron's Spellbooks, Pehkui, Spice of Life: Onion, etc.).
 
 Any other mods support is also possible.
 

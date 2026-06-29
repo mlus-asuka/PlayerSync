@@ -55,6 +55,12 @@ import java.util.concurrent.ThreadPoolExecutor;
 public class CommandInit {
 
     private static final int PERM_OP = 2;
+    // AUDIT FIX (security): permission level 2 is the level command blocks and
+    // datapack functions execute at — any player able to place a command block could
+    // run wipe/peerkill/clearorphans/cleanup/resync. Destructive subcommands now
+    // require level 3 (excludes command blocks + datapacks, still allows console,
+    // RCON and full ops). Read-only commands stay at level 2.
+    private static final int PERM_ADMIN = 3;
 
     @SubscribeEvent
     public static void registerCommand(RegisterCommandsEvent event) {
@@ -80,9 +86,11 @@ public class CommandInit {
                         .then(Commands.argument("player", GameProfileArgument.gameProfile())
                                 .executes(CommandInit::runDump)))
                 .then(Commands.literal("resync")
+                        .requires(cs -> cs.hasPermission(PERM_ADMIN))
                         .then(Commands.argument("target", EntityArgument.player())
                                 .executes(CommandInit::runResync)))
                 .then(Commands.literal("wipe")
+                        .requires(cs -> cs.hasPermission(PERM_ADMIN))
                         .then(Commands.argument("player", GameProfileArgument.gameProfile())
                                 .then(Commands.literal("confirm")
                                         .executes(CommandInit::runWipe))))
@@ -105,14 +113,18 @@ public class CommandInit {
                 // ---- Cluster ops ----
                 .then(Commands.literal("orphans").executes(CommandInit::runOrphans))
                 .then(Commands.literal("clearorphans")
+                        .requires(cs -> cs.hasPermission(PERM_ADMIN))
                         .executes(CommandInit::runClearOrphansAll)
                         .then(Commands.argument("server_id", IntegerArgumentType.integer(0))
                                 .executes(CommandInit::runClearOrphansId)))
                 .then(Commands.literal("peers").executes(CommandInit::runPeers))
                 .then(Commands.literal("peerkill")
+                        .requires(cs -> cs.hasPermission(PERM_ADMIN))
                         .then(Commands.argument("server_id", IntegerArgumentType.integer(0))
                                 .executes(CommandInit::runPeerKill)))
-                .then(Commands.literal("cleanup").executes(CommandInit::runCleanup))
+                .then(Commands.literal("cleanup")
+                        .requires(cs -> cs.hasPermission(PERM_ADMIN))
+                        .executes(CommandInit::runCleanup))
 
                 // ---- Config ----
                 .then(Commands.literal("reload").executes(CommandInit::runReload))
@@ -124,6 +136,36 @@ public class CommandInit {
     // Command handlers
     // ========================================================================
 
+    /**
+     * AUDIT FIX (main-thread DoS): Brigadier executes command handlers on the server
+     * main thread — every synchronous JDBC call here could stall ticks for up to the
+     * pool's 10s connectionTimeout (per statement). All DB-touching command bodies
+     * now run on the sync executor and deliver chat output back via server.execute().
+     * Argument resolution stays on the main thread (Brigadier contract).
+     */
+    private static int runAsyncDb(CommandSourceStack src, String label, Runnable dbTask) {
+        ThreadPoolExecutor exec = VanillaSync.getExecutor();
+        if (exec == null || exec.isShutdown()) {
+            src.sendFailure(Component.literal("§cPlayerSync executor unavailable"));
+            return 0;
+        }
+        java.util.concurrent.CompletableFuture.runAsync(dbTask, exec).exceptionally(t -> {
+            replyFailure(src, "§c" + label + " failed: " + t.getMessage());
+            return null;
+        });
+        return 1;
+    }
+
+    /** Delivers a success line on the main thread (async command bodies must not touch chat directly). */
+    private static void replySuccess(CommandSourceStack src, String msg, boolean broadcast) {
+        src.getServer().execute(() -> src.sendSuccess(() -> Component.literal(msg), broadcast));
+    }
+
+    /** Delivers a failure line on the main thread. */
+    private static void replyFailure(CommandSourceStack src, String msg) {
+        src.getServer().execute(() -> src.sendFailure(Component.literal(msg)));
+    }
+
     private static int runVersion(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
         ctx.getSource().sendSuccess(() -> Component.literal("§ePlayerSync §f" + PlayerSync.MODID + " §7(NeoForge 1.21.1)"), false);
         return 1;
@@ -133,7 +175,7 @@ public class CommandInit {
         CommandSourceStack src = ctx.getSource();
         final int serverId = JdbcConfig.SERVER_ID.get();
 
-        // Executor stats
+        // Executor stats (read on main thread — cheap, no I/O)
         ThreadPoolExecutor exec = VanillaSync.getExecutor();
         final int active = exec != null ? exec.getActiveCount() : -1;
         final int queue = exec != null ? exec.getQueue().size() : -1;
@@ -144,26 +186,26 @@ public class CommandInit {
         final int hA = hk != null ? hk.getActiveConnections() : -1;
         final int hI = hk != null ? hk.getIdleConnections() : -1;
 
-        // Heartbeat age of this server
-        long hbAgeTmp = -1;
-        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT last_update FROM " + Tables.serverInfo() + " WHERE id=?", serverId)) {
-            ResultSet rs = qr.resultSet();
-            if (rs.next()) hbAgeTmp = System.currentTimeMillis() - rs.getLong("last_update");
-        } catch (Exception ignored) {}
-        final long hbAge = hbAgeTmp;
-
         final int online = src.getServer().getPlayerList().getPlayerCount();
 
-        src.sendSuccess(() -> Component.literal("§a=== PlayerSync status ==="), false);
-        src.sendSuccess(() -> Component.literal("§7server_id: §f" + serverId
-                + "   §7heartbeat_age: §f" + (hbAge >= 0 ? hbAge + "ms" : "§c?")), false);
-        src.sendSuccess(() -> Component.literal("§7players online (this server): §f" + online), false);
-        src.sendSuccess(() -> Component.literal("§7executor: §factive=" + active + " §7queue=§f" + queue + " §7pool=§f" + pool), false);
-        src.sendSuccess(() -> Component.literal("§7hikari: §factive=" + hA + " §7idle=§f" + hI), false);
-        src.sendSuccess(() -> Component.literal("§7auto_save: §f" + JdbcConfig.AUTO_SAVE_INTERVAL_MINUTES.get() + "min"
-                + "   §7heartbeat_interval: §f" + JdbcConfig.HEARTBEAT_INTERVAL_SECONDS.get() + "s"), false);
-        return 1;
+        return runAsyncDb(src, "status", () -> {
+            long hbAgeTmp = -1;
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT last_update FROM " + Tables.serverInfo() + " WHERE id=?", serverId)) {
+                ResultSet rs = qr.resultSet();
+                if (rs.next()) hbAgeTmp = System.currentTimeMillis() - rs.getLong("last_update");
+            } catch (Exception ignored) {}
+            final long hbAge = hbAgeTmp;
+
+            replySuccess(src, "§a=== PlayerSync status ===", false);
+            replySuccess(src, "§7server_id: §f" + serverId
+                    + "   §7heartbeat_age: §f" + (hbAge >= 0 ? hbAge + "ms" : "§c?"), false);
+            replySuccess(src, "§7players online (this server): §f" + online, false);
+            replySuccess(src, "§7executor: §factive=" + active + " §7queue=§f" + queue + " §7pool=§f" + pool, false);
+            replySuccess(src, "§7hikari: §factive=" + hA + " §7idle=§f" + hI, false);
+            replySuccess(src, "§7auto_save: §f" + JdbcConfig.AUTO_SAVE_INTERVAL_MINUTES.get() + "min"
+                    + "   §7heartbeat_interval: §f" + JdbcConfig.HEARTBEAT_INTERVAL_SECONDS.get() + "s", false);
+        });
     }
 
     private static int runPoolStats(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
@@ -216,35 +258,36 @@ public class CommandInit {
         com.mojang.authlib.GameProfile profile = profiles.iterator().next();
         UUID uuid = profile.getId();
         String name = profile.getName();
+        CommandSourceStack src = ctx.getSource();
 
-        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT last_server, online, LENGTH(inventory) AS inv_len, LENGTH(enderchest) AS ec_len,"
-                        + " LENGTH(armor) AS arm_len, xp, health FROM " + Tables.playerData() + " WHERE uuid=?",
-                uuid.toString())) {
-            ResultSet rs = qr.resultSet();
-            if (!rs.next()) {
-                ctx.getSource().sendFailure(Component.literal("§cNo DB row for " + name + " (" + uuid + ")"));
-                return 0;
+        return runAsyncDb(src, "info", () -> {
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT last_server, online, LENGTH(inventory) AS inv_len, LENGTH(enderchest) AS ec_len,"
+                            + " LENGTH(armor) AS arm_len, xp, health FROM " + Tables.playerData() + " WHERE uuid=?",
+                    uuid.toString())) {
+                ResultSet rs = qr.resultSet();
+                if (!rs.next()) {
+                    replyFailure(src, "§cNo DB row for " + name + " (" + uuid + ")");
+                    return;
+                }
+                int lastSrv = rs.getInt("last_server");
+                int onlineFlag = rs.getInt("online");
+                int invLen = rs.getInt("inv_len");
+                int ecLen = rs.getInt("ec_len");
+                int armLen = rs.getInt("arm_len");
+                int xp = rs.getInt("xp");
+                int hp = rs.getInt("health");
+                replySuccess(src, "§a=== Info: §f" + name + " §7(" + uuid + ")", false);
+                replySuccess(src, "§7last_server: §f" + lastSrv
+                        + (lastSrv == JdbcConfig.SERVER_ID.get() ? " §8(this server)" : ""), false);
+                replySuccess(src, "§7online: §f" + onlineFlag
+                        + "   §7xp: §f" + xp + "   §7health: §f" + hp, false);
+                replySuccess(src, "§7data sizes: §finventory=" + invLen
+                        + "B  armor=" + armLen + "B  enderchest=" + ecLen + "B", false);
+            } catch (Exception e) {
+                replyFailure(src, "§cQuery failed: " + e.getMessage());
             }
-            int lastSrv = rs.getInt("last_server");
-            int onlineFlag = rs.getInt("online");
-            int invLen = rs.getInt("inv_len");
-            int ecLen = rs.getInt("ec_len");
-            int armLen = rs.getInt("arm_len");
-            int xp = rs.getInt("xp");
-            int hp = rs.getInt("health");
-            ctx.getSource().sendSuccess(() -> Component.literal("§a=== Info: §f" + name + " §7(" + uuid + ")"), false);
-            ctx.getSource().sendSuccess(() -> Component.literal("§7last_server: §f" + lastSrv
-                    + (lastSrv == JdbcConfig.SERVER_ID.get() ? " §8(this server)" : "")), false);
-            ctx.getSource().sendSuccess(() -> Component.literal("§7online: §f" + onlineFlag
-                    + "   §7xp: §f" + xp + "   §7health: §f" + hp), false);
-            ctx.getSource().sendSuccess(() -> Component.literal("§7data sizes: §finventory=" + invLen
-                    + "B  armor=" + armLen + "B  enderchest=" + ecLen + "B"), false);
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§cQuery failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        });
     }
 
     private static int runDump(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx)
@@ -256,34 +299,37 @@ public class CommandInit {
             return 0;
         }
         UUID uuid = profiles.iterator().next().getId();
-        PlayerSync.LOGGER.info("[admin-dump] dumping full row for {} (triggered by {})", uuid, ctx.getSource().getTextName());
-        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT * FROM " + Tables.playerData() + " WHERE uuid=?", uuid.toString())) {
-            ResultSet rs = qr.resultSet();
-            if (!rs.next()) {
-                ctx.getSource().sendFailure(Component.literal("§cNo row found"));
-                return 0;
+        CommandSourceStack src = ctx.getSource();
+        final String triggeredBy = src.getTextName();
+        PlayerSync.LOGGER.info("[admin-dump] dumping full row for {} (triggered by {})", uuid, triggeredBy);
+
+        return runAsyncDb(src, "dump", () -> {
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT * FROM " + Tables.playerData() + " WHERE uuid=?", uuid.toString())) {
+                ResultSet rs = qr.resultSet();
+                if (!rs.next()) {
+                    replyFailure(src, "§cNo row found");
+                    return;
+                }
+                int cols = rs.getMetaData().getColumnCount();
+                StringBuilder sb = new StringBuilder("[admin-dump] ").append(uuid).append(" {");
+                for (int i = 1; i <= cols; i++) {
+                    String col = rs.getMetaData().getColumnName(i);
+                    Object v = rs.getObject(i);
+                    String val = v == null ? "null" : (v instanceof byte[] ? "<" + ((byte[]) v).length + " bytes>"
+                            : v instanceof String ? "<" + ((String) v).length() + " chars>"
+                            : v.toString());
+                    sb.append(col).append("=").append(val);
+                    if (i < cols) sb.append(", ");
+                }
+                sb.append("}");
+                PlayerSync.LOGGER.info(sb.toString());
+                SyncLogger.playerEvent(uuid.toString(), "ADMIN_DUMP", "Dumped by " + triggeredBy);
+                replySuccess(src, "§aDumped to server log — search §f[admin-dump]", false);
+            } catch (Exception e) {
+                replyFailure(src, "§cDump failed: " + e.getMessage());
             }
-            int cols = rs.getMetaData().getColumnCount();
-            StringBuilder sb = new StringBuilder("[admin-dump] ").append(uuid).append(" {");
-            for (int i = 1; i <= cols; i++) {
-                String col = rs.getMetaData().getColumnName(i);
-                Object v = rs.getObject(i);
-                String val = v == null ? "null" : (v instanceof byte[] ? "<" + ((byte[]) v).length + " bytes>"
-                        : v instanceof String ? "<" + ((String) v).length() + " chars>"
-                        : v.toString());
-                sb.append(col).append("=").append(val);
-                if (i < cols) sb.append(", ");
-            }
-            sb.append("}");
-            PlayerSync.LOGGER.info(sb.toString());
-            SyncLogger.playerEvent(uuid.toString(), "ADMIN_DUMP", "Dumped by " + ctx.getSource().getTextName());
-            ctx.getSource().sendSuccess(() -> Component.literal("§aDumped to server log — search §f[admin-dump]"), false);
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§cDump failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        });
     }
 
     private static int runResync(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx)
@@ -306,56 +352,56 @@ public class CommandInit {
             return 0;
         }
         UUID uuid = profiles.iterator().next().getId();
-        try {
-            int d1 = JDBCsetUp.executePreparedUpdateRet("DELETE FROM " + Tables.playerData() + " WHERE uuid=?", uuid.toString());
-            int d2 = JDBCsetUp.executePreparedUpdateRet("DELETE FROM " + Tables.curios() + " WHERE uuid=?", uuid.toString());
-            int d3 = JDBCsetUp.executePreparedUpdateRet("DELETE FROM " + Tables.modPlayerData() + " WHERE uuid=?", uuid.toString());
-            final int total = d1 + d2 + d3;
-            ctx.getSource().sendSuccess(() -> Component.literal("§cWiped §f" + total
-                    + " §crow(s) for player §f" + uuid + " §8(player_data=" + d1 + ", curios=" + d2 + ", mod=" + d3 + ")"), true);
-            SyncLogger.playerEvent(uuid.toString(), "ADMIN_WIPE",
-                    "Wiped " + total + " rows by " + ctx.getSource().getTextName());
-            PlayerSync.LOGGER.warn("[admin-wipe] {} wiped by {} ({} rows)", uuid, ctx.getSource().getTextName(), total);
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§cWipe failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        CommandSourceStack src = ctx.getSource();
+        final String triggeredBy = src.getTextName();
+
+        return runAsyncDb(src, "wipe", () -> {
+            try {
+                int d1 = JDBCsetUp.executePreparedUpdateRet("DELETE FROM " + Tables.playerData() + " WHERE uuid=?", uuid.toString());
+                int d2 = JDBCsetUp.executePreparedUpdateRet("DELETE FROM " + Tables.curios() + " WHERE uuid=?", uuid.toString());
+                int d3 = JDBCsetUp.executePreparedUpdateRet("DELETE FROM " + Tables.modPlayerData() + " WHERE uuid=?", uuid.toString());
+                final int total = d1 + d2 + d3;
+                replySuccess(src, "§cWiped §f" + total
+                        + " §crow(s) for player §f" + uuid + " §8(player_data=" + d1 + ", curios=" + d2 + ", mod=" + d3 + ")", true);
+                SyncLogger.playerEvent(uuid.toString(), "ADMIN_WIPE",
+                        "Wiped " + total + " rows by " + triggeredBy);
+                PlayerSync.LOGGER.warn("[admin-wipe] {} wiped by {} ({} rows)", uuid, triggeredBy, total);
+            } catch (Exception e) {
+                replyFailure(src, "§cWipe failed: " + e.getMessage());
+            }
+        });
     }
 
     private static int runOrphans(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
         CommandSourceStack src = ctx.getSource();
         long staleMs = JdbcConfig.PEER_STALE_THRESHOLD_SECONDS.get() * 1000L;
-        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT p.uuid, p.last_server, s.last_update FROM " + Tables.playerData() + " p"
-                        + " LEFT JOIN " + Tables.serverInfo() + " s ON s.id = p.last_server"
-                        + " WHERE p.online=1")) {
-            ResultSet rs = qr.resultSet();
-            int count = 0;
-            long now = System.currentTimeMillis();
-            int selfId = JdbcConfig.SERVER_ID.get();
-            while (rs.next()) {
-                String uuid = rs.getString("uuid");
-                int ls = rs.getInt("last_server");
-                long lu = rs.getLong("last_update");
-                long age = now - lu;
-                boolean stale = lu == 0 || age > staleMs || ls == 0;
-                if (stale && ls != selfId) {
-                    count++;
-                    final String u = uuid;
-                    final int l = ls;
-                    final long a = age;
-                    src.sendSuccess(() -> Component.literal("§7- §f" + u + " §7last_server=§f" + l
-                            + " §7heartbeat_age=§f" + (lu == 0 ? "none" : (a / 1000) + "s")), false);
+
+        return runAsyncDb(src, "orphans", () -> {
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT p.uuid, p.last_server, s.last_update FROM " + Tables.playerData() + " p"
+                            + " LEFT JOIN " + Tables.serverInfo() + " s ON s.id = p.last_server"
+                            + " WHERE p.online=1")) {
+                ResultSet rs = qr.resultSet();
+                int count = 0;
+                long now = System.currentTimeMillis();
+                int selfId = JdbcConfig.SERVER_ID.get();
+                while (rs.next()) {
+                    String uuid = rs.getString("uuid");
+                    int ls = rs.getInt("last_server");
+                    long lu = rs.getLong("last_update");
+                    long age = now - lu;
+                    boolean stale = lu == 0 || age > staleMs || ls == 0;
+                    if (stale && ls != selfId) {
+                        count++;
+                        replySuccess(src, "§7- §f" + uuid + " §7last_server=§f" + ls
+                                + " §7heartbeat_age=§f" + (lu == 0 ? "none" : (age / 1000) + "s"), false);
+                    }
                 }
+                replySuccess(src, "§a" + count + " §aorphan row(s) found (online=1 on dead peer)", false);
+            } catch (Exception e) {
+                replyFailure(src, "§cOrphans query failed: " + e.getMessage());
             }
-            final int c = count;
-            src.sendSuccess(() -> Component.literal("§a" + c + " §aorphan row(s) found (online=1 on dead peer)"), false);
-        } catch (Exception e) {
-            src.sendFailure(Component.literal("§cOrphans query failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        });
     }
 
     private static int runClearOrphansAll(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
@@ -363,71 +409,76 @@ public class CommandInit {
         long staleMs = JdbcConfig.PEER_STALE_THRESHOLD_SECONDS.get() * 1000L;
         long threshold = System.currentTimeMillis() - staleMs;
         int selfId = JdbcConfig.SERVER_ID.get();
-        try {
-            int n = JDBCsetUp.executePreparedUpdateRet(
-                    "UPDATE " + Tables.playerData() + " p SET p.online=0"
-                            + " WHERE p.online=1 AND p.last_server <> ?"
-                            + " AND (p.last_server = 0 OR NOT EXISTS ("
-                            + " SELECT 1 FROM " + Tables.serverInfo() + " s WHERE s.id = p.last_server AND s.last_update >= ?))",
-                    selfId, threshold);
-            ctx.getSource().sendSuccess(() -> Component.literal("§aCleared §f" + n + " §aorphan row(s)"), true);
-            SyncLogger.playerEvent("SYSTEM", "ADMIN_CLEAR_ORPHANS",
-                    "Cleared " + n + " rows by " + ctx.getSource().getTextName());
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§cClear failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        CommandSourceStack src = ctx.getSource();
+        final String triggeredBy = src.getTextName();
+
+        return runAsyncDb(src, "clearorphans", () -> {
+            try {
+                int n = JDBCsetUp.executePreparedUpdateRet(
+                        "UPDATE " + Tables.playerData() + " p SET p.online=0"
+                                + " WHERE p.online=1 AND p.last_server <> ?"
+                                + " AND (p.last_server = 0 OR NOT EXISTS ("
+                                + " SELECT 1 FROM " + Tables.serverInfo() + " s WHERE s.id = p.last_server AND s.last_update >= ?))",
+                        selfId, threshold);
+                replySuccess(src, "§aCleared §f" + n + " §aorphan row(s)", true);
+                SyncLogger.playerEvent("SYSTEM", "ADMIN_CLEAR_ORPHANS",
+                        "Cleared " + n + " rows by " + triggeredBy);
+            } catch (Exception e) {
+                replyFailure(src, "§cClear failed: " + e.getMessage());
+            }
+        });
     }
 
     private static int runClearOrphansId(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
         int id = IntegerArgumentType.getInteger(ctx, "server_id");
-        try {
-            int n = JDBCsetUp.executePreparedUpdateRet(
-                    "UPDATE " + Tables.playerData() + " SET online=0 WHERE last_server=? AND online=1", id);
-            ctx.getSource().sendSuccess(() -> Component.literal("§aCleared §f" + n
-                    + " §aorphan row(s) with last_server=§f" + id), true);
-            SyncLogger.playerEvent("SYSTEM", "ADMIN_CLEAR_ORPHANS_ID",
-                    "Cleared " + n + " rows for server_id=" + id + " by " + ctx.getSource().getTextName());
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§cClear failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        CommandSourceStack src = ctx.getSource();
+        final String triggeredBy = src.getTextName();
+
+        return runAsyncDb(src, "clearorphans", () -> {
+            try {
+                int n = JDBCsetUp.executePreparedUpdateRet(
+                        "UPDATE " + Tables.playerData() + " SET online=0 WHERE last_server=? AND online=1", id);
+                replySuccess(src, "§aCleared §f" + n
+                        + " §aorphan row(s) with last_server=§f" + id, true);
+                SyncLogger.playerEvent("SYSTEM", "ADMIN_CLEAR_ORPHANS_ID",
+                        "Cleared " + n + " rows for server_id=" + id + " by " + triggeredBy);
+            } catch (Exception e) {
+                replyFailure(src, "§cClear failed: " + e.getMessage());
+            }
+        });
     }
 
     private static int runPeers(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
         CommandSourceStack src = ctx.getSource();
         long staleMs = JdbcConfig.PEER_STALE_THRESHOLD_SECONDS.get() * 1000L;
-        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT id, enable, last_update FROM " + Tables.serverInfo() + " ORDER BY id")) {
-            ResultSet rs = qr.resultSet();
-            int self = JdbcConfig.SERVER_ID.get();
-            long now = System.currentTimeMillis();
-            src.sendSuccess(() -> Component.literal("§a=== Peer servers ==="), false);
-            int shown = 0;
-            while (rs.next()) {
-                int id = rs.getInt("id");
-                int enabled = rs.getInt("enable");
-                long lu = rs.getLong("last_update");
-                long age = now - lu;
-                boolean stale = enabled == 1 && age > staleMs;
-                String tag = id == self ? "§a[SELF]§r "
-                        : stale ? "§c[STALE]§r "
-                        : enabled == 0 ? "§8[STOPPED]§r "
-                        : "§a[ALIVE]§r ";
-                final String line = "§7id=§f" + id + " §7enable=§f" + enabled
-                        + " §7age=§f" + (lu == 0 ? "never" : (age / 1000) + "s") + "  " + tag;
-                src.sendSuccess(() -> Component.literal(line), false);
-                shown++;
+
+        return runAsyncDb(src, "peers", () -> {
+            try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                    "SELECT id, enable, last_update FROM " + Tables.serverInfo() + " ORDER BY id")) {
+                ResultSet rs = qr.resultSet();
+                int self = JdbcConfig.SERVER_ID.get();
+                long now = System.currentTimeMillis();
+                replySuccess(src, "§a=== Peer servers ===", false);
+                int shown = 0;
+                while (rs.next()) {
+                    int id = rs.getInt("id");
+                    int enabled = rs.getInt("enable");
+                    long lu = rs.getLong("last_update");
+                    long age = now - lu;
+                    boolean stale = enabled == 1 && age > staleMs;
+                    String tag = id == self ? "§a[SELF]§r "
+                            : stale ? "§c[STALE]§r "
+                            : enabled == 0 ? "§8[STOPPED]§r "
+                            : "§a[ALIVE]§r ";
+                    replySuccess(src, "§7id=§f" + id + " §7enable=§f" + enabled
+                            + " §7age=§f" + (lu == 0 ? "never" : (age / 1000) + "s") + "  " + tag, false);
+                    shown++;
+                }
+                replySuccess(src, "§7Total peers: §f" + shown, false);
+            } catch (Exception e) {
+                replyFailure(src, "§cPeers query failed: " + e.getMessage());
             }
-            final int s = shown;
-            src.sendSuccess(() -> Component.literal("§7Total peers: §f" + s), false);
-        } catch (Exception e) {
-            src.sendFailure(Component.literal("§cPeers query failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        });
     }
 
     private static int runPeerKill(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
@@ -436,37 +487,57 @@ public class CommandInit {
             ctx.getSource().sendFailure(Component.literal("§cCannot peer-kill self"));
             return 0;
         }
-        try {
-            int n = JDBCsetUp.executePreparedUpdateRet(
-                    "UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE id=?", id);
-            ctx.getSource().sendSuccess(() -> Component.literal(
-                    n > 0 ? "§aMarked peer §f" + id + " §aas stopped (enable=0)"
-                          : "§cNo peer found with id=" + id), true);
-            SyncLogger.playerEvent("SYSTEM", "ADMIN_PEER_KILL",
-                    "Peer " + id + " marked stopped by " + ctx.getSource().getTextName());
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§cPeerkill failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        CommandSourceStack src = ctx.getSource();
+        final String triggeredBy = src.getTextName();
+
+        return runAsyncDb(src, "peerkill", () -> {
+            try {
+                int n = JDBCsetUp.executePreparedUpdateRet(
+                        "UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE id=?", id);
+                replySuccess(src, n > 0 ? "§aMarked peer §f" + id + " §aas stopped (enable=0)"
+                        : "§cNo peer found with id=" + id, true);
+                SyncLogger.playerEvent("SYSTEM", "ADMIN_PEER_KILL",
+                        "Peer " + id + " marked stopped by " + triggeredBy);
+            } catch (Exception e) {
+                replyFailure(src, "§cPeerkill failed: " + e.getMessage());
+            }
+        });
     }
 
     private static int runCleanup(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
-        runClearOrphansAll(ctx);
+        // Both stages (orphan rows + stale peers) folded into ONE async task so their
+        // ordering is preserved without chaining two executor hops.
         long staleMs = JdbcConfig.PEER_STALE_THRESHOLD_SECONDS.get() * 1000L;
         long threshold = System.currentTimeMillis() - staleMs;
-        try {
-            int n = JDBCsetUp.executePreparedUpdateRet(
-                    "UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE enable=1 AND id <> ? AND last_update < ?",
-                    JdbcConfig.SERVER_ID.get(), threshold);
-            ctx.getSource().sendSuccess(() -> Component.literal("§aDisabled §f" + n + " §astale peer server(s)"), true);
-            SyncLogger.playerEvent("SYSTEM", "ADMIN_CLEANUP",
-                    "Cleanup by " + ctx.getSource().getTextName() + " disabled " + n + " stale peers");
-        } catch (Exception e) {
-            ctx.getSource().sendFailure(Component.literal("§cCleanup stage 2 failed: " + e.getMessage()));
-            return 0;
-        }
-        return 1;
+        int selfId = JdbcConfig.SERVER_ID.get();
+        CommandSourceStack src = ctx.getSource();
+        final String triggeredBy = src.getTextName();
+
+        return runAsyncDb(src, "cleanup", () -> {
+            try {
+                int n1 = JDBCsetUp.executePreparedUpdateRet(
+                        "UPDATE " + Tables.playerData() + " p SET p.online=0"
+                                + " WHERE p.online=1 AND p.last_server <> ?"
+                                + " AND (p.last_server = 0 OR NOT EXISTS ("
+                                + " SELECT 1 FROM " + Tables.serverInfo() + " s WHERE s.id = p.last_server AND s.last_update >= ?))",
+                        selfId, threshold);
+                replySuccess(src, "§aCleared §f" + n1 + " §aorphan row(s)", true);
+                SyncLogger.playerEvent("SYSTEM", "ADMIN_CLEAR_ORPHANS",
+                        "Cleared " + n1 + " rows by " + triggeredBy);
+            } catch (Exception e) {
+                replyFailure(src, "§cClear failed: " + e.getMessage());
+            }
+            try {
+                int n = JDBCsetUp.executePreparedUpdateRet(
+                        "UPDATE " + Tables.serverInfo() + " SET enable=0 WHERE enable=1 AND id <> ? AND last_update < ?",
+                        selfId, threshold);
+                replySuccess(src, "§aDisabled §f" + n + " §astale peer server(s)", true);
+                SyncLogger.playerEvent("SYSTEM", "ADMIN_CLEANUP",
+                        "Cleanup by " + triggeredBy + " disabled " + n + " stale peers");
+            } catch (Exception e) {
+                replyFailure(src, "§cCleanup stage 2 failed: " + e.getMessage());
+            }
+        });
     }
 
     private static int runReload(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
@@ -500,51 +571,62 @@ public class CommandInit {
 
         CommandSourceStack src = ctx.getSource();
 
-        String inventoryRaw = null, armorRaw = null, enderRaw = null;
-        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                "SELECT inventory, armor, enderchest FROM " + Tables.playerData() + " WHERE uuid=?",
-                uuid.toString())) {
-            ResultSet rs = qr.resultSet();
-            if (!rs.next()) {
-                src.sendFailure(Component.literal("§cNo DB row for " + name + " (" + uuid + ")"));
-                return 0;
-            }
-            inventoryRaw = rs.getString("inventory");
-            armorRaw = rs.getString("armor");
-            enderRaw = rs.getString("enderchest");
-        } catch (Exception e) {
-            src.sendFailure(Component.literal("§cDB query failed: " + e.getMessage()));
-            return 0;
-        }
-
-        String curiosRaw = null;
-        if ("all".equals(section) || "curios".equals(section)) {
+        return runAsyncDb(src, "inventory", () -> {
+            // EXECUTOR: raw column reads only — item deserialization touches the
+            // registries, so the formatting hops back to the main thread below.
+            String inventoryRawTmp = null, armorRawTmp = null, enderRawTmp = null;
             try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
-                    "SELECT curios_item FROM " + Tables.curios() + " WHERE uuid=?", uuid.toString())) {
+                    "SELECT inventory, armor, enderchest FROM " + Tables.playerData() + " WHERE uuid=?",
+                    uuid.toString())) {
                 ResultSet rs = qr.resultSet();
-                if (rs.next()) curiosRaw = rs.getString("curios_item");
-            } catch (Exception ignored) {}
-        }
+                if (!rs.next()) {
+                    replyFailure(src, "§cNo DB row for " + name + " (" + uuid + ")");
+                    return;
+                }
+                inventoryRawTmp = rs.getString("inventory");
+                armorRawTmp = rs.getString("armor");
+                enderRawTmp = rs.getString("enderchest");
+            } catch (Exception e) {
+                replyFailure(src, "§cDB query failed: " + e.getMessage());
+                return;
+            }
 
-        src.sendSuccess(() -> Component.literal("§a=== Inventory of §f" + name + " §7(" + uuid + ")"), false);
+            String curiosRawTmp = null;
+            if ("all".equals(section) || "curios".equals(section)) {
+                try (JDBCsetUp.QueryResult qr = JDBCsetUp.executePreparedQuery(
+                        "SELECT curios_item FROM " + Tables.curios() + " WHERE uuid=?", uuid.toString())) {
+                    ResultSet rs = qr.resultSet();
+                    if (rs.next()) curiosRawTmp = rs.getString("curios_item");
+                } catch (Exception ignored) {}
+            }
 
-        int totalShown = 0;
-        if ("all".equals(section) || "main".equals(section)) {
-            totalShown += printSection(src, "§6Main inventory", inventoryRaw, 36);
-        }
-        if ("all".equals(section) || "armor".equals(section)) {
-            totalShown += printSection(src, "§6Armor §8(0=boots,1=legs,2=chest,3=helm)", armorRaw, 4);
-        }
-        if ("all".equals(section) || "ender".equals(section)) {
-            totalShown += printSection(src, "§6Ender chest", enderRaw, 27);
-        }
-        if ("all".equals(section) || "curios".equals(section)) {
-            totalShown += printCurios(src, curiosRaw);
-        }
+            final String inventoryRaw = inventoryRawTmp;
+            final String armorRaw = armorRawTmp;
+            final String enderRaw = enderRawTmp;
+            final String curiosRaw = curiosRawTmp;
 
-        final int shown = totalShown;
-        src.sendSuccess(() -> Component.literal("§7— §f" + shown + " §7non-empty slot(s) shown"), false);
-        return 1;
+            // MAIN THREAD: deserialize + pretty-print.
+            src.getServer().execute(() -> {
+                src.sendSuccess(() -> Component.literal("§a=== Inventory of §f" + name + " §7(" + uuid + ")"), false);
+
+                int totalShown = 0;
+                if ("all".equals(section) || "main".equals(section)) {
+                    totalShown += printSection(src, "§6Main inventory", inventoryRaw, 36);
+                }
+                if ("all".equals(section) || "armor".equals(section)) {
+                    totalShown += printSection(src, "§6Armor §8(0=boots,1=legs,2=chest,3=helm)", armorRaw, 4);
+                }
+                if ("all".equals(section) || "ender".equals(section)) {
+                    totalShown += printSection(src, "§6Ender chest", enderRaw, 27);
+                }
+                if ("all".equals(section) || "curios".equals(section)) {
+                    totalShown += printCurios(src, curiosRaw);
+                }
+
+                final int shown = totalShown;
+                src.sendSuccess(() -> Component.literal("§7— §f" + shown + " §7non-empty slot(s) shown"), false);
+            });
+        });
     }
 
     /** Prints a vanilla-style slot section (Map<Integer,String>). Returns non-empty count. */

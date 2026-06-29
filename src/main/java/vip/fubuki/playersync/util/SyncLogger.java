@@ -235,8 +235,18 @@ public class SyncLogger {
         return sb.toString();
     }
 
+    // AUDIT FIX (disk DoS): rotation used to run ONLY in init() — a long-running
+    // session grew sync.log without bound. The flush thread now re-checks every
+    // 20th flush (~every 10s at the 500ms cadence; Files.size() is a cheap stat and
+    // the writer is reopened per flush, so rotation never races an open handle).
+    private static int flushesSinceRotateCheck = 0;
+
     private static void flushQueue() {
         if (logPath == null) return;
+        if (++flushesSinceRotateCheck >= 20) {
+            flushesSinceRotateCheck = 0;
+            rotateIfNeeded();
+        }
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(logPath.toFile(), true))) {
             String line;
             int count = 0;
@@ -254,14 +264,26 @@ public class SyncLogger {
 
     private static void rotateIfNeeded() {
         if (logPath == null) return;
+        // AUDIT FIX: log_rotation_size_mb / log_rotation_max_files were documented
+        // config keys but never read — the hardcoded constants now serve only as
+        // fallbacks when the config is not loaded yet.
+        long maxSize;
+        int maxFiles;
         try {
-            if (Files.exists(logPath) && Files.size(logPath) > MAX_FILE_SIZE) {
+            maxSize = JdbcConfig.LOG_ROTATION_SIZE_MB.get() * 1024L * 1024L;
+            maxFiles = JdbcConfig.LOG_ROTATION_MAX_FILES.get();
+        } catch (Exception e) {
+            maxSize = MAX_FILE_SIZE;
+            maxFiles = MAX_FILES;
+        }
+        try {
+            if (Files.exists(logPath) && Files.size(logPath) > maxSize) {
                 // Rotate: sync.log → sync.1.log → sync.2.log → ... → delete oldest
-                for (int i = MAX_FILES - 1; i >= 1; i--) {
+                for (int i = maxFiles - 1; i >= 1; i--) {
                     Path src = Paths.get(LOG_DIR, "sync." + i + ".log");
                     Path dst = Paths.get(LOG_DIR, "sync." + (i + 1) + ".log");
                     if (Files.exists(src)) {
-                        if (i == MAX_FILES - 1) {
+                        if (i == maxFiles - 1) {
                             Files.delete(src);
                         } else {
                             Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);

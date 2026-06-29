@@ -153,6 +153,23 @@ public class PlayerSync {
             }
         }
 
+        // AUDIT FIX (missing index): player_data is keyed only by uuid, so the
+        // crash-recovery / clearorphans / peerkill queries filtering on online +
+        // last_server full-scanned the table (and took gap locks across scanned rows
+        // under InnoDB default isolation). Leading on `online` (equality, highly
+        // selective — only currently-online players) serves every cleanup query
+        // shape. CREATE INDEX is in-place online DDL in MySQL 5.6+/MariaDB.
+        try (JDBCsetUp.QueryResult idxCheck = JDBCsetUp.executePreparedQuery(
+                "SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND INDEX_NAME='idx_online_server'",
+                dbName, Tables.playerData())) {
+            ResultSet rs = idxCheck.resultSet();
+            if (rs.next() && rs.getInt("c") == 0) {
+                JDBCsetUp.executeUpdate(
+                        "CREATE INDEX idx_online_server ON `" + dbName + "`.`" + Tables.playerData() + "` (`online`, `last_server`)");
+                LOGGER.info("[migration] added player_data idx_online_server index (startup/admin cleanup queries)");
+            }
+        }
+
         // Create server_info table
         JDBCsetUp.executeUpdate(
                 "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`" + Tables.serverInfo() + "` (" +

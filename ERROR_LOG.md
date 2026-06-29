@@ -4,6 +4,226 @@ Journal des erreurs rencontrées et corrigées. Chaque entrée documente un bug,
 
 ---
 
+## [2026-06-09] — Corruption UTF-8 d'un fichier source via PowerShell 5.1 Get-Content/Set-Content
+
+**Context** : Suppression d'un bloc de lignes (méthode morte `store()`) dans `VanillaSync.java` via un one-liner PowerShell `Get-Content` + slicing + `Set-Content -Encoding utf8`.
+
+**Error** : 171 occurrences de mojibake (`→` devenu `â†'`, `§` devenu `Â§`, accents cassés) + BOM UTF-8 ajouté en tête de fichier (javac refuse le BOM : `illegal character: '﻿'`).
+
+**Root cause** : Sous Windows PowerShell 5.1, `Get-Content` sans `-Encoding` lit avec la codepage ANSI système (Windows-1252) — les octets UTF-8 multi-octets sont décodés en caractères CP1252 puis `Set-Content -Encoding utf8` les réencode en UTF-8 → mojibake. De plus `-Encoding utf8` en PS 5.1 écrit TOUJOURS un BOM.
+
+**Fix** : Inversion déterministe via .NET : `ReadAllText(path, UTF8)` (consomme le BOM) → `GetEncoding(1252).GetBytes(text)` → `UTF8.GetString(bytes)` → `WriteAllText(path, fixed, new UTF8Encoding(false))`. Réversible sans perte car le codec .NET windows-1252 fait un round-trip best-fit des octets de contrôle.
+
+**Prevention** :
+- **NE JAMAIS éditer un fichier source UTF-8 avec Get-Content/Set-Content en PowerShell 5.1.** Utiliser les outils d'édition dédiés, ou `[System.IO.File]::ReadAllText/WriteAllText` avec `System.Text.UTF8Encoding($false)` explicite.
+- **Après toute manipulation de fichier par script, vérifier** : (a) absence de BOM (`ReadAllBytes`[0..2] ≠ 239,187,191), (b) absence de mojibake (`grep 'â€|â†|Ã©|Â§'`), (c) taille du `git diff --stat` cohérente avec l'édit attendu.
+
+---
+
+## [2026-05-21 — r6 incomplete: ReviveMe dieOnDisconnect force-deaths the player at logout
+
+**Context** : Après r6, le user rapporte que la dup revient. Scénario : joueur tombe → fallen → déco → reco → cadavre au sol + stuff dans l'inventaire = dup.
+
+**Error** : r6 (skip apply au join si fallen) ne se déclenchait pas — au reconnect le joueur n'était PAS fallen.
+
+**Root cause** (décompilation `revive_me-1.21.1-5.7.14.jar` `CapabilityEvents` + `corpse-neoforge-1.21.1-1.1.13.jar` `DeathEvents`) :
+- `CapabilityEvents.onLogout(PlayerLoggedOutEvent)` de ReviveMe : si le joueur est fallen → `pauseTimerOnLogout()` + `removeAllEffects()` + **si `ReviveMeConfig.dieOnDisconnect` == true → `FallenData.forceDeath()`**.
+- `forceDeath()` applique des dégâts létaux → `LivingDeathEvent` → `LivingDropsEvent`.
+- Mod Corpse : `DeathEvents.playerDeath(LivingDropsEvent)` → crée le cadavre via `DeathManager.addDeath()`. (Le hook `LivingDeathEvent` ne fait que `Death.fromPlayer` — le cadavre est créé sur `LivingDropsEvent`.) Les compats `corpsecurioscompat` + `cosmeticcorpsecompat` y mettent curios + cosmétiques.
+- Donc avec `dieOnDisconnect=true`, le joueur est FORCE-TUÉ à la déconnexion. Au reconnect il n'est plus fallen → le skip-apply r6 ne fire pas → `doPlayerJoin` restaure l'inventaire DB → dup avec le cadavre.
+- `onLogout` de ReviveMe et `onPlayerLogout` de PlayerSync sont tous deux en priorité NORMAL → ordre indéfini. Si PlayerSync passe en premier, il sauve l'inventaire pré-mort complet en DB avant le `forceDeath`.
+
+**Fix (r7)** :
+- `onPlayerLogout` : nouvelle branche AVANT le save normal — si `isReviveMeFallen(player) || player.isDeadOrDying()` (détection exacte via `FallenData`) ET `keepInventory` OFF → `handleFallenLogout`.
+- `handleFallenLogout` + `writeReviveLogoutClearItemsToDB` : vide TOUTES les colonnes d'items en DB (inventory/armor/left_hand/cursors + curios + accessories + cosmeticarmor), sauve la progression non-item, online=0. Marche quel que soit l'ordre des handlers : si PlayerSync passe avant ReviveMe → joueur fallen détecté → clear ; si après → joueur dead détecté → clear.
+- Garde `keepInventory` : si la game rule est ON, la mort ne drop rien et ne forme pas de cadavre → on NE clear PAS (ça détruirait les items) → save normal.
+- Le skip-apply côté-join de r6 est conservé pour le cas `dieOnDisconnect=false` (joueur se reco encore fallen → garde son `.dat`).
+
+**Prevention** :
+- **Décompiler le handler logout/login du mod, pas seulement son state**. r6 avait la bonne détection (`isFallen()`) mais ratait que ReviveMe FORCE la mort au logout — il fallait lire `CapabilityEvents.onLogout` en entier.
+- **Quand deux mods hookent le même event à priorité égale (NORMAL), l'ordre est indéfini**. Une correction qui dépend de "qui passe en premier" est cassée. La solution doit être correcte dans les DEUX ordres → ici, détecter `fallen OR dead` couvre PlayerSync-avant (fallen) ET PlayerSync-après (dead).
+- **Toujours garder la game rule `keepInventory` en tête** pour toute logique qui vide des items en DB.
+
+---
+
+## [2026-05-20 22:30] — r2-r5 wrong approach: revive dup needs JOIN-side fix + exact ReviveMe state, not logout heuristics
+
+**Context** : Après r5, le user clarifie le scénario exact : un joueur tombe de haut, ReviveMe le met en état "fallen" (mort-mais-encore-en-vie). Il se déconnecte PENDANT cette phase. Au reconnect → cadavre au sol avec son stuff + stuff dans son inventaire = duplication.
+
+**Error** : r2-r5 corrigeaient au mauvais endroit (côté logout) avec des heuristiques peu fiables. Soit ça ratait l'état fallen (dup), soit ça false-positivait (perte d'inventaire).
+
+**Root cause** (identifiée en décompilant `revive_me-1.21.1-5.7.14.jar` via `javap`) :
+- ReviveMe maintient un joueur downed dans un état "fallen" via la classe `invoker54.reviveme.common.capability.FallenData`, un AttachmentType NeoForge enregistré `revive_me:fallen_data`.
+- `FallenData` expose `public static FallenData get(LivingEntity)` + `public boolean isFallen()`.
+- ReviveMe `pauseTimerOnLogout()` au logout, `resumeFallTimer()` au reconnect.
+- La VRAIE séquence de dup : joueur fallen se déco → `.dat` sauvé avec inventaire complet + attachment fallen. PlayerSync sauve aussi en DB. Reconnect → ReviveMe reprend le timer → la mort se finalise → corpse mod capture l'inventaire dans un cadavre. MAIS `doPlayerJoin` restaure l'inventaire DB **APRÈS** que le cadavre soit formé (race : doPlayerJoin est async + `server.execute()` différé) → le joueur a l'inventaire restauré + le cadavre a une copie = DUP.
+
+**Fix (r6 — refonte complète de l'approche)** :
+- Nouveau `isReviveMeFallen(Player)` : détection EXACTE par réflexion — `Class.forName("invoker54.reviveme.common.capability.FallenData").getMethod("get", LivingEntity.class).invoke(null, player)` puis `.isFallen()`. Zéro heuristique, zéro false positive. Le joueur est fallen si et seulement si ReviveMe le dit.
+- `doPlayerJoin` : dans le bloc apply (`server.execute`), AVANT le `clearContent()` + restore, si `isReviveMeFallen(player) || player.isDeadOrDying()` → **skip tout l'apply**. Le `.dat` vanilla reste la source unique de vérité pour l'inventaire pendant la phase transitoire. Le `|| isDeadOrDying()` couvre la race où la mort se finalise pendant le délai async du join.
+- Suppression COMPLÈTE de toute la machinerie r2-r5 côté logout : `deathCanceledRecently`, `onPlayerDeathAttempt`, `onPlayerHeal`, `handleReviveCanceledLogout`, `writeReviveLogoutClearItemsToDB`, le clear de tracking dans l'auto-save, le clear dans `onPlayerRespawn`/`removePlayerLock`. `onPlayerLogout` revient à la baseline pré-r2 (save normal).
+- Résultat : revive réussi → joueur garde son `.dat` → prochaine save normale capture l'état. Mort finalisée → cadavre prend l'inventaire `.dat`, joueur respawn vide → `onPlayerRespawn` sauve vide en DB. Pas de dup, pas de perte.
+
+**Prevention** :
+- **Pour un état spécifique à un mod, détecter via l'API/state EXACT de ce mod (réflexion sur sa capability/attachment), JAMAIS via heuristique**. Décompiler le jar du mod (`javap -p -c`) pour trouver le bon hook. 5 itérations d'heuristiques ratées vs 1 détection exacte qui marche.
+- **Corriger au bon endroit dans le pipeline**. La dup venait de `doPlayerJoin` qui restaurait trop tard (après formation du cadavre). Corriger côté logout (r2-r5) ne pouvait jamais marcher proprement — le problème était le RESTORE, pas le SAVE.
+- **Quand un état est transitoire et géré par un autre mod (downed/fallen), s'écarter complètement** : laisser le `.dat` vanilla gérer, ne pas imposer la DB. PlayerSync reprend la main quand l'état transitoire est résolu.
+- **Décompiler tôt**. J'aurais dû décompiler ReviveMe dès r1 au lieu de supposer "ReviveMe annule LivingDeathEvent". Le jar était disponible sur le système (`Desktop/serverpack/mods/`).
+
+---
+
+## [2026-05-20 21:15] — r4 fix caused false positive: inventory disappears 10 min after death + reco
+
+**Context** : User signale qu'un joueur, après être mort puis revived, et avoir joué 10 minutes, a perdu son inventaire à une déco/reco normale. Le dup principal (r4) est bien corrigé mais introduction d'un false-positive sur les déconnexions légitimes post-revive.
+
+**Error** : `handleReviveCanceledLogout` se déclenche pour un joueur qui n'est PAS en état revive-pending au moment du logout, clearant son inventaire DB → à la reconnexion l'inventaire est vide.
+
+**Root cause** : Deux chemins de false-positive dans r4 :
+
+1. **L'heuristique `infiniteEffects + HP < 50%`** était trop large. Beaucoup de mods modernes appliquent des effets infinite-duration sur le joueur en jeu normal :
+   - The Aether : effets racial / vol persistants
+   - Apotheosis : affixes qui grantent des effets permanents
+   - Iron's Spellbooks : marqueurs de spell appris / mana auras
+   - Ars Nouveau : auras de mana
+   Combiné à un HP < 50% (combat normal, faim, fall damage léger), l'heuristique fire à tort.
+
+2. **TTL trop court (2 min)**. Si `onPlayerHeal` ne fire pas (revive mod utilise `setHealth()` direct au lieu de `heal()`), le tracking reste actif. Mais après 2 min, le TTL le rend inerte → `trackedCancel` retourne false au logout. Hmm wait, ça ne cause pas le bug r4 ici... mais peut-être que le joueur est resté en revive interface pendant 10 min, et le TTL expirait, MAIS l'heuristique firait quand même → fix path déclenché → DB cleared → à la reconnexion inventaire vide.
+
+**Fix** :
+- **Suppression complète de l'heuristique**. La détection se fait UNIQUEMENT via le tracking de `LivingDeathEvent` à priorité HIGHEST (qui capture déjà tous les événements de mort).
+- **Check HP au logout durci** à `HP ≤ 1.0 absolu OU isDeadOrDying()`. Plus de seuil ratio. Les mods de revive clamp typiquement le joueur downed à exactement 1 HP (demi-cœur) — ce check le détecte. Un joueur revived avec HP > 1 (même 1.5 ou 2) n'est plus considéré downed.
+- **Seuil `onPlayerHeal` baissé** à `HP > 1.0` (au lieu de `≥80% maxHealth`). N'importe quel heal qui amène le HP au-dessus de 1 HP clear le tracking. Couvre les mods de revive qui partiel-heal à 5 HP, 10 HP, etc.
+- **Clear explicite dans la boucle auto-save** : toutes les 5 minutes, pour chaque joueur eligible (alive + synced + HP > 1.0), on clear `deathCanceledRecently`. Couvre le cas où `LivingHealEvent` ne fire pas (revive mod utilise `setHealth()` direct).
+- **TTL étendu à 1 heure** (au lieu de 2 min) en filet de sécurité pour les rares cas où aucun clear explicite ne fire (joueur reste en revive interface > 5 min sans heal event).
+
+Multi-layered defense : (a) HIGHEST hook capture tous les événements de mort, (b) onPlayerHeal clear sur heal, (c) onPlayerRespawn clear sur respawn, (d) auto-save clear sur eligibility + HP haut, (e) removePlayerLock clear sur fin de session, (f) TTL 1h en backup, (g) check HP strict au logout.
+
+**Prevention** :
+- **Ne JAMAIS faire confiance à une heuristique "comportementale" en code de sync de données**. Les signaux comme `infiniteEffects` ou `low HP` ont trop de mods qui peuvent les produire en gameplay normal. N'utiliser que des signaux EXPLICITES (events spécifiques) pour déclencher une action destructive comme clearer une row DB.
+- **Pour une détection d'état transitoire avec TTL, multi-coucher les chemins de cleanup**. Au minimum : event-based (heal, respawn), state-based (alive + healthy), session-based (logout/lock-remove), et TTL-based. Si une seule couche échoue (revive mod utilise setHealth → pas de heal event), les autres compensent.
+- **Pour les seuils HP**, préférer les valeurs ABSOLUES aux ratios. Les ratios de maxHealth donnent des seuils trop variables (4 HP / 20 max ≠ 4 HP / 40 max si maxHealth changée par mod). Un seuil absolu (HP > 1.0) est plus prévisible et matche les conventions de mods de revive (clamp à exactement 1 HP).
+
+---
+
+## [2026-05-20 20:30] — r3 fixed main inv but mod slots (curios / accessories / cosmetic armor) still dup
+
+**Context** : User a testé r3 (commit `b34cd3a`). Inventaire principal / armure / main secondaire / curseur ne dupliquent plus. Mais les slots Curios, slots Accessories (utilisés par The Aether), et Cosmetic Armor Reworked dupliquent encore.
+
+**Error** : Duplication partielle — seulement sur les slots de mods, pas les slots vanilla.
+
+**Root cause** : `writeReviveLogoutClearItemsToDB` ne mettait à jour QUE la row `player_data`. Les items de mods sont dans des tables séparées :
+- Curios → table `curios` (colonne `curios_item`), keyed par player UUID
+- Accessories → table `mod_player_data` avec `mod_id='accessories'`
+- Cosmetic Armor → table `mod_player_data` avec `mod_id='cosmeticarmor'`
+
+Au moment où le corpse mod capture les items dropped post-finalize, il capture aussi les curios/accessories/cosmétiques via leur compat respectif. La DB gardait l'ancienne copie de ces items → au rejoin, restored + corpse contient = dup.
+
+**Fix** : Extension de `writeReviveLogoutClearItemsToDB` pour clear aussi :
+- `UPDATE curios SET curios_item='{}' WHERE uuid=?`
+- `UPDATE mod_player_data SET data_value='{}' WHERE uuid=? AND mod_id='accessories'`
+- `UPDATE mod_player_data SET data_value='{}' WHERE uuid=? AND mod_id='cosmeticarmor'`
+
+Les fonctions `applyCuriosFromData` / `applyAccessoriesFromData` / `applyCosmeticArmorFromData` détectent toutes `data == null || data.length() <= 2` et skip la restauration (les slots restent vides après le clear initial). `{}` (length 2) déclenche ce skip-path.
+
+Tous les clears sont dans le même `executeBatchTransaction` que l'UPDATE core, donc atomiquement guardés par `last_server` pour la safety cross-server.
+
+**MUST PRESERVE** :
+- `mod_player_data` avec `mod_id='neoforge_attachments'` — contient la progression par joueur (Aether AETHER_PLAYER : portails / dards / timer de vol / life shards ; Apotheosis WORLD_TIER ; Apothic Attributes AUX_DMG_TRACKER ; Ars Nouveau mana ; Iron's Spellbooks mana ; etc.). Ce ne sont PAS des items et ils ne droppent PAS sur la mort. Clear → destruction de progression.
+- `backpack_data`, `sophisticatedstorage_data`, RS2 data — keyed par ITEM UUID, pas par player UUID. Le backpack/shulker drop dans le corpse avec son UUID propre, et la data suit l'item au retrieval. Pas de dup.
+- `enderchest` — ne drop pas en vanilla, ne forme pas de cadavre.
+
+**Prevention** :
+- **Pour tout fix de duplication d'items, TOUJOURS auditer TOUTES les tables qui stockent des items**, pas juste celle qu'on suspecte. PlayerSync utilise au moins 5 tables différentes pour des items (player_data, curios, mod_player_data, backpack_data, et SS/RS2 sont dans modPlayerData ou backpack_data selon le mod).
+- **Distinguer items-keyed-par-player vs items-keyed-par-UUID-d'item** : seuls les premiers ont besoin d'être cleared (les seconds suivent leur item physique).
+- **Distinguer items vs progression** dans `mod_player_data` par `mod_id` : clear items, préserver progression.
+
+---
+
+## [2026-05-20 19:45] — r2 fix still leaks: revive mods may prevent death without canceling LivingDeathEvent
+
+**Context** : User a testé le fix r2 (commit `8e945a8`) → bug toujours présent. Duplication reproductible. Le tracking via le listener programmatique LOWEST + receiveCanceled=true ne fire pas, et l'heuristique (infinite effects + HP < 50%) ne fire pas non plus.
+
+**Error** : Ni le tracking ni l'heuristique ne détectaient l'état "revive me interface".
+
+**Root cause** : Deux failles dans r2 :
+1. **Le listener programmatique LOWEST avec receiveCanceled=true ne fire que si LivingDeathEvent est ANNULÉ**. Mais certains mods de revive empêchent la mort SANS annuler `LivingDeathEvent` — ils annulent `LivingDamageEvent` plus tôt dans le pipeline, OU utilisent un Mixin sur `LivingEntity.die()` ou `LivingEntity.actuallyHurt()`. Dans ces cas, `LivingDeathEvent` ne fire JAMAIS, donc notre listener n'a rien à voir, et le tracking reste vide.
+2. **L'heuristique (infinite-duration effects + HP < 50%) est trop restrictive**. Le mod de revive utilisé par le user n'applique peut-être pas d'effet infinite-duration, OU clamp HP à une valeur ≥ 50% du max, OU les deux. L'heuristique ne fire pas → fall-through au save normal → duplication.
+
+**Fix** :
+- **Hook à priorité HIGHEST** : nouveau `@SubscribeEvent(priority = HIGHEST) onPlayerDeathAttempt(LivingDeathEvent)`. À priorité HIGHEST, AUCUN autre handler n'a encore eu la chance d'annuler l'event. `event.isCanceled()` est toujours `false` au moment où on tourne. Le dispatcher délivre TOUJOURS l'event à notre handler. → On capture TOUTE tentative de mort, qu'elle soit ensuite annulée ou non.
+- **Suppression du listener programmatique LOWEST** (devenu redondant).
+- **Suppression de la branche `if (event.isCanceled())` morte dans `onPlayerDeath` LOW** (le dispatcher la skip déjà — code mort).
+- **Nouveau hook `LivingHealEvent`** : si le joueur est soigné à ≥80% de maxHealth, clear le tracking. Couvre le cas "revived avec succès et continue à jouer" pour éviter de clear l'inventaire DB lors d'une déconnexion normale plus tard.
+- **Conservation de l'heuristique en filet de sécurité** pour les mods qui empêchent la mort sans firer `LivingDeathEvent` du tout (cancel `LivingDamageEvent` / Mixin pur).
+
+**Prevention** :
+- **Pour détecter une cancellation d'event, hooker à HIGHEST priority** (avant tout cancel) plutôt qu'à LOWEST + `receiveCanceled=true`. Plus simple, plus robuste, marche pour tous les types de mods (priority-based, Mixin-based, alternative-event-based).
+- **Ne jamais reposer sur un seul signal pour un fix critique de duplication**. Avoir au moins (a) un event-based primary + (b) un state-based fallback (heuristique sur health/effects/etc.).
+- **Le check de `event.isCanceled()` dans un handler `@SubscribeEvent` est presque toujours du code mort** dans NeoForge bus 8.x. Le dispatcher skip les events annulés automatiquement. Soit on n'a pas besoin du check (le handler ne fire jamais sur cancel), soit on doit utiliser `addListener(priority, true, ...)` programmatique pour recevoir les cancels.
+
+---
+
+## [2026-05-20 18:30] — r1 fix non-effective: @SubscribeEvent(receiveCanceled=true) ignored by NeoForge bus 8.x
+
+**Context** : User a testé le fix r1 (commit `39aee07`) → bug toujours présent, duplication identique. Le tracking via `deathCanceledRecently` ne fonctionnait pas.
+
+**Error** : `@SubscribeEvent(priority = LOW, receiveCanceled = true)` ne livrait JAMAIS les événements annulés au handler annoté.
+
+**Root cause** : Lecture du source de `net.neoforged:bus:8.0.1` (jar dans `~/.gradle/caches`) :
+- `SubscribeEventListener.invoke()` (line 47-49) :
+  ```java
+  if (!((ICancellableEvent) event).isCanceled()) {
+      handler.invoke(event);
+  }
+  ```
+  Le dispatcher skip TOUJOURS les événements annulés pour les `ICancellableEvent`, **sans consulter le flag `receiveCanceled` de l'annotation**.
+- Le constructeur `SubscribeEventListener(target, method)` lit `subInfo = method.getAnnotation(SubscribeEvent.class)` mais n'utilise que `subInfo.priority()` — jamais `subInfo.receiveCanceled()`.
+- `ListenerList.canUnwrapListeners = !ICancellableEvent.class.isAssignableFrom(eventClass)` → pour les événements cancellables, on ne peut PAS unwrap le check de cancellation.
+- Seul `EventBus.addListener(priority, receiveCanceled, eventType, consumer)` programmatique respecte le flag via `passNotGenericFilter(receiveCanceled)`.
+
+**Fix** :
+- Le handler annoté `@SubscribeEvent(priority = LOW)` reste pour les morts non-annulées (real death path).
+- Ajout de `VanillaSync.register()` qui enregistre programmatiquement un listener sur `LivingDeathEvent` avec `NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, true, LivingDeathEvent.class, VanillaSync::onCanceledLivingDeath)`. Ce listener REÇOIT les événements annulés et alimente `deathCanceledRecently`.
+- Ajout d'une **heuristique fallback** dans `onPlayerLogout` : si le joueur a au moins un MobEffect `isInfiniteDuration() == true` ET HP < 50% du max → traiter comme downed-state. Couvre les mods de revive qui empêchent la mort via cancel de `LivingDamageEvent` ou Mixin (cas où aucun `LivingDeathEvent` n'est annulé du tout).
+- Logging diagnostique `[revive-track]` au moment du cancel et `[revive-detect]` au logout (montre quel signal a déclenché : `trackedCancel=true/false`, `heuristic=true/false`, HP ratio, keepInventory).
+
+**Prevention** :
+- **NeoForge bus 8.x : `@SubscribeEvent(receiveCanceled = true)` est SILENCIEUSEMENT NON-FONCTIONNEL pour les ICancellableEvent**. Toujours utiliser `EVENT_BUS.addListener(priority, true, eventType, consumer)` programmatique pour les listeners qui doivent recevoir des événements annulés. Documenter dans le code chaque fois qu'un listener doit être programmatique pour cette raison.
+- **Toujours vérifier l'API d'un event bus en allant lire le source du dispatcher** (`SubscribeEventListener`, `EventBus.addListener`, `ListenerList.unwrapListeners`) plutôt que de se fier aux comments existants — ceux du code initial PlayerSync disaient "`priority=LOW + skip canceled events defends against mods like Revive Me`" mais cette logique était fausse car le handler ne fire jamais en premier lieu.
+- **Pour les fixes critiques de duplication, toujours implémenter au moins deux détections indépendantes** (event-based + heuristic). Une seule détection qui échoue silencieusement = bug persistant en production.
+
+---
+
+## [2026-05-20 14:00] — Item duplication on death + disconnect from revive interface + reconnect
+
+**Context** : Un joueur meurt, le mod Revive Me (ou Hardcore Revival / Corail Tombstone) affiche son interface "downed/revive" en annulant `LivingDeathEvent`. Le joueur se déconnecte depuis cette interface. À la reconnexion : il respawn avec son inventaire complet ET un cadavre/gravestone au point de mort contient également l'inventaire complet — duplication intégrale.
+
+**Error** : Duplication reproductible 100% avec ReviveMe + un mod corpse/gravestone.
+
+**Root cause** :
+1. `@SubscribeEvent` de NeoForge a `receiveCanceled = false` par défaut → un handler n'est PAS appelé pour un événement annulé sauf opt-in explicite.
+2. `onPlayerDeath` était `@SubscribeEvent(priority = LOW)` (sans `receiveCanceled = true`) → quand ReviveMe annule `LivingDeathEvent` en NORMAL/HIGH, le handler PlayerSync est SAUTÉ. Le check `if (event.isCanceled()) return;` était donc dead code.
+3. PlayerSync n'avait aucune trace de l'état "downed" du joueur. À la déconnexion, `onPlayerLogout` exécutait son chemin normal de save : snapshot capturait l'inventaire COMPLET (encore sur le joueur, car ReviveMe n'avait pas drop les items), écriture en DB.
+4. Post-déconnexion : le timer revive expirait, la mort se finalisait, les items tombaient au sol, le mod corpse/gravestone créait un corps avec l'inventaire complet.
+5. Reconnexion : `doPlayerJoin` restaurait l'inventaire depuis DB (complet) + le cadavre dans le monde contenait l'inventaire complet → 2× items.
+
+**Fix** :
+- `onPlayerDeath` annoté `@SubscribeEvent(priority = LOW, receiveCanceled = true)` → le handler reçoit maintenant les événements annulés.
+- Branche `if (event.isCanceled())` ajoute le joueur à `deathCanceledRecently` (ConcurrentHashMap uuid → timestamp, TTL 2 min).
+- `onPlayerLogout` consulte `deathCanceledRecently` AVANT le chemin normal de save. Si entrée récente :
+  - Si `keepInventory=ON` : fall-through au chemin normal (pas de drop, pas de corpse, pas de dup risque).
+  - Si `keepInventory=OFF` : appelle `handleReviveCanceledLogout` qui persiste la progression (xp / effects / score / food / health / advancements) MAIS écrit explicitement des valeurs vides (`{}` / `B64:e30=`) dans `inventory` / `armor` / `left_hand` / `cursors`. `online=0` et `logout_started_at=NULL` set atomiquement dans le même UPDATE.
+- Nouvelle méthode `writeReviveLogoutClearItemsToDB` bypasse le guard `refuse_empty_inventory_write` (l'écriture vide est INTENTIONNELLE ici).
+- Tracking auto-nettoyé : `PlayerRespawnEvent` (joueur ressuscité) + `removePlayerLock` (nettoyage de session) + TTL 2 min.
+- `lastWrittenSnapshotHash.remove(uuid)` dans la BG task pour qu'une auto-save pending ne puisse pas ressusciter l'inventaire effacé via le skip de hash.
+
+**Prevention** :
+- **TOUJOURS spécifier `receiveCanceled = true` sur un handler qui doit fonctionner après cancellation**. Le check `if (event.isCanceled())` ne suffit pas si NeoForge n'appelle même pas le handler.
+- **NE JAMAIS faire confiance à un comment qui dit "we run after cancel and check isCanceled"** sans vérifier les flags d'annotation. La sémantique NeoForge des handlers d'événements annulés est opt-in.
+- **Tout chemin de save qui s'exécute pendant un état transitoire (downed, mort-pas-encore-finalisée, respawn-pas-encore-validé) DOIT vérifier la game rule `keepInventory`** avant de décider quoi écrire en DB — un blanket-clear casse le cas où les items doivent rester sur le joueur.
+
+---
+
 ## [2026-04-22 02:54] — Item duplication on drop + quick disconnect + reconnect
 
 **Context** : Un joueur drop un item au sol, se déconnecte très rapidement, puis se reconnecte → l'item est présent deux fois (en inventory restauré + encore au sol).

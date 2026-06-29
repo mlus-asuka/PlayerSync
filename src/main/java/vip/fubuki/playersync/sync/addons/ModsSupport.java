@@ -223,15 +223,18 @@ public class ModsSupport {
 
         String serialized = VanillaSync.serializeTagToBinaryBase64(nbt);
         try {
-            // FIX INTEGRITY (E): REPLACE INTO silently overwrote backpack rows even when
+            // FIX INTEGRITY (E): this upsert silently overwrote backpack rows even when
             // another server had already claimed the owning player. We cannot easily
             // add a last_server guard to backpack_data directly (it is keyed by
             // storage UUID, not player UUID — no link to player_data). So we keep the
-            // REPLACE here but expect upper layers (`saveBackpackSnapshots`) to be called
+            // upsert here but expect upper layers (`saveBackpackSnapshots`) to be called
             // only after the player_data transaction commit has run under the last_server
             // guard, which is the case in writeSnapshotToDB's caller chain.
+            // AUDIT FIX: INSERT...ON DUPLICATE KEY UPDATE instead of REPLACE — REPLACE
+            // is an InnoDB delete+insert (two row operations + index churn).
             JDBCsetUp.executePreparedUpdate(
-                    "REPLACE INTO " + Tables.backpackData() + " (uuid, backpack_nbt) VALUES (?, ?)",
+                    "INSERT INTO " + Tables.backpackData() + " (uuid, backpack_nbt) VALUES (?, ?)"
+                            + " ON DUPLICATE KEY UPDATE backpack_nbt=VALUES(backpack_nbt)",
                     contentsUuid.toString(), serialized);
         } catch (SQLException e) {
             PlayerSync.LOGGER.error("Error saving storage data for UUID {}", contentsUuid, e);
@@ -614,16 +617,43 @@ public class ModsSupport {
     }
 
     /**
+     * AUDIT FIX (write amplification): per-storage-UUID hash of the last successfully
+     * written serialized blob. The core snapshot hash in VanillaSync does NOT cover
+     * backpack/SS data, so before this fix every effective auto-save rewrote every
+     * MEDIUMBLOB unconditionally — the dominant write volume on backpack-heavy
+     * servers. Entries are written in BOTH modes (a logout write primes the next
+     * session's skip) but only consulted when {@code skipUnchanged} is true, so
+     * logout/shutdown/emergency paths keep their always-write semantics.
+     * Cross-server safe: when another server changes a blob, the join-side restore
+     * replaces the local SavedData, whose new serialized hash forces the next write.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<UUID, Integer> lastWrittenStorageHash =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
      * Saves pre-snapshotted backpack data to DB.
      * Can be called from a background thread (no entity access — data already captured).
      */
     public static void saveBackpackSnapshots(Map<UUID, CompoundTag> snapshots) {
-        // PHASE 7 PERF: batch every REPLACE INTO into ONE transaction instead of
+        saveBackpackSnapshots(snapshots, false);
+    }
+
+    /**
+     * @param skipUnchanged when true (auto-save paths only), storage blobs whose
+     *                      serialized form hashes identical to the last written one
+     *                      are skipped. Final-state paths (logout / shutdown /
+     *                      emergency flush) MUST pass false.
+     */
+    public static void saveBackpackSnapshots(Map<UUID, CompoundTag> snapshots, boolean skipUnchanged) {
+        // PHASE 7 PERF: batch every upsert into ONE transaction instead of
         // N separate round-trips. With 3 backpacks + 2 shulkers + 4 disks a single
         // logout save used to do 9 sequential commits — now 1.
         if (snapshots == null || snapshots.isEmpty()) return;
         List<Object[]> batch = new ArrayList<>(snapshots.size());
+        List<UUID> batchUuids = new ArrayList<>(snapshots.size());
+        List<Integer> batchHashes = new ArrayList<>(snapshots.size());
         List<UUID> emptySkips = new ArrayList<>();
+        int unchangedSkips = 0;
         for (Map.Entry<UUID, CompoundTag> entry : snapshots.entrySet()) {
             UUID uuid = entry.getKey();
             CompoundTag nbt = entry.getValue();
@@ -641,9 +671,23 @@ public class ModsSupport {
             }
             try {
                 String serialized = VanillaSync.serializeTagToBinaryBase64(nbt);
+                int h = serialized.hashCode();
+                if (skipUnchanged) {
+                    Integer prev = lastWrittenStorageHash.get(uuid);
+                    if (prev != null && prev == h) {
+                        unchangedSkips++;
+                        continue;
+                    }
+                }
+                // AUDIT FIX: INSERT...ON DUPLICATE KEY UPDATE instead of REPLACE (InnoDB
+                // delete+insert) — also lets rewriteBatchedStatements produce a true
+                // multi-row rewrite now that executeBatchTransaction groups identical SQL.
                 batch.add(new Object[]{
-                        "REPLACE INTO " + Tables.backpackData() + " (uuid, backpack_nbt) VALUES (?, ?)",
+                        "INSERT INTO " + Tables.backpackData() + " (uuid, backpack_nbt) VALUES (?, ?)"
+                                + " ON DUPLICATE KEY UPDATE backpack_nbt=VALUES(backpack_nbt)",
                         uuid.toString(), serialized});
+                batchUuids.add(uuid);
+                batchHashes.add(h);
             } catch (Exception e) {
                 PlayerSync.LOGGER.error("Error preparing backpack save for UUID {}", uuid, e);
             }
@@ -651,15 +695,23 @@ public class ModsSupport {
         if (!emptySkips.isEmpty()) {
             PlayerSync.LOGGER.debug("[save-backpacks] skipped {} empty NBT entries (DB has real data)", emptySkips.size());
         }
+        if (unchangedSkips > 0) {
+            PlayerSync.LOGGER.debug("[save-backpacks] skipped {} unchanged blobs (per-UUID hash)", unchangedSkips);
+        }
         if (batch.isEmpty()) return;
         try {
             JDBCsetUp.executeBatchTransaction(batch.toArray(new Object[0][]));
+            for (int i = 0; i < batchUuids.size(); i++) {
+                lastWrittenStorageHash.put(batchUuids.get(i), batchHashes.get(i));
+            }
         } catch (Exception e) {
             PlayerSync.LOGGER.error("[save-backpacks] batch transaction failed ({} entries)", batch.size(), e);
             // Fall back to per-entry writes so at least some survive
-            for (Object[] stmt : batch) {
+            for (int i = 0; i < batch.size(); i++) {
+                Object[] stmt = batch.get(i);
                 try {
                     JDBCsetUp.executePreparedUpdate((String) stmt[0], stmt[1], stmt[2]);
+                    lastWrittenStorageHash.put(batchUuids.get(i), batchHashes.get(i));
                 } catch (Exception e2) {
                     PlayerSync.LOGGER.error("[save-backpacks] fallback write failed for {}", stmt[1], e2);
                 }
@@ -876,26 +928,49 @@ public class ModsSupport {
     /**
      * Clears a Sophisticated Storage entry (by UUID) from the ItemContentsStorage
      * SavedData. Tries public {@code removeStorageContents} first, then reflection.
+     *
+     * <p>PERF (A4): the reflection result is cached the first time we encounter a
+     * given concrete SS storage class. Without the cache, every restored SS item
+     * re-walked {@code getDeclaredFields()} and re-resolved {@code removeStorageContents}
+     * — visible on main thread during mass joins.
      */
+    private static volatile Class<?> ssCachedClass;
+    private static volatile java.lang.reflect.Method ssRemoveMethod;
+    private static volatile java.lang.reflect.Field[] ssMapFields;
+
     private static void clearSSStorageContents(
             net.p3pp3rf1y.sophisticatedstorage.block.ItemContentsStorage store, UUID uuid) {
         try {
-            // Attempt public API removal (exists in some SS versions)
-            try {
-                java.lang.reflect.Method m = store.getClass().getMethod("removeStorageContents", UUID.class);
-                m.invoke(store, uuid);
-                return;
-            } catch (NoSuchMethodException nsm) {
-                // Fall through to reflection map-clear
-            }
-            for (java.lang.reflect.Field f : store.getClass().getDeclaredFields()) {
-                if (java.util.Map.class.isAssignableFrom(f.getType())) {
-                    f.setAccessible(true);
-                    Object map = f.get(store);
-                    if (map instanceof java.util.Map<?, ?> m) {
-                        ((java.util.Map<Object, Object>) m).remove(uuid);
-                        ((java.util.Map<Object, Object>) m).remove(uuid.toString());
+            Class<?> klass = store.getClass();
+            if (ssCachedClass != klass) {
+                synchronized (ModsSupport.class) {
+                    if (ssCachedClass != klass) {
+                        java.lang.reflect.Method m = null;
+                        try {
+                            m = klass.getMethod("removeStorageContents", UUID.class);
+                        } catch (NoSuchMethodException ignored) {}
+                        java.util.List<java.lang.reflect.Field> maps = new java.util.ArrayList<>();
+                        for (java.lang.reflect.Field f : klass.getDeclaredFields()) {
+                            if (java.util.Map.class.isAssignableFrom(f.getType())) {
+                                f.setAccessible(true);
+                                maps.add(f);
+                            }
+                        }
+                        ssRemoveMethod = m;
+                        ssMapFields = maps.toArray(new java.lang.reflect.Field[0]);
+                        ssCachedClass = klass;
                     }
+                }
+            }
+            if (ssRemoveMethod != null) {
+                ssRemoveMethod.invoke(store, uuid);
+                return;
+            }
+            for (java.lang.reflect.Field f : ssMapFields) {
+                Object map = f.get(store);
+                if (map instanceof java.util.Map<?, ?> m) {
+                    ((java.util.Map<Object, Object>) m).remove(uuid);
+                    ((java.util.Map<Object, Object>) m).remove(uuid.toString());
                 }
             }
             store.setDirty();
