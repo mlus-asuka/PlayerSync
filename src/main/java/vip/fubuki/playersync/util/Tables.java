@@ -53,4 +53,5 @@ public final class Tables {
     public static String curios()         { return prefix() + "curios"; }
     public static String backpackData()   { return prefix() + "backpack_data"; }
     public static String modPlayerData()  { return prefix() + "mod_player_data"; }
+    public static String cobblemon()      { return prefix() + "cobblemon"; }
 }

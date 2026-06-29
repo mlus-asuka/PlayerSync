@@ -134,6 +134,9 @@ dependencies {
     compileOnly "curse.maven:refined-storage-243076:7610477"
     compileOnly "curse.maven:extra-disks-351491:7032487"
 
+    compileOnly "thedarkcolour:kotlinforforge:5.10.0"
+    compileOnly "curse.maven:cobblemon-687131:7273151"
+
     runtimeOnly "curse.maven:curios-309927:6529130"
     runtimeOnly "curse.maven:sophisticated-backpacks-422301:7169832"
     runtimeOnly "curse.maven:sophisticated-core-618298:7168230"

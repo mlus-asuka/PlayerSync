@@ -199,9 +199,15 @@ public class PlayerSync {
             );
         }
 
-        // Cobblemon support removed in this build (sync was main-thread blocking + SQL
-        // injection in the mixins). Existing `cobblemon` tables in the DB are kept intact
-        // for backward compat — they are simply no longer read or written.
+        // Create cobblemon table if the Cobblemon mod is loaded. The mixins that
+        // read/write this table now use parameterized queries and Tables.cobblemon().
+        if (ModList.get().isLoaded("cobblemon")) {
+            JDBCsetUp.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS `" + dbName + "`.`" + Tables.cobblemon() + "` (" +
+                            "uuid CHAR(36) NOT NULL, pc MEDIUMBLOB, inv MEDIUMBLOB, pokedex MEDIUMBLOB , general MEDIUMBLOB, PRIMARY KEY (uuid)" +
+                            ")"
+            );
+        }
 
         // Create backpack_data table
         if (ModList.get().isLoaded("sophisticatedbackpacks")) {

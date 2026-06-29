@@ -3,7 +3,14 @@
   "package": "vip.fubuki.playersync.mixin",
   "compatibilityLevel": "JAVA_21",
   "refmap": "thirst.refmap.json",
-  "mixins": [],
+  "mixins": [
+    "cobblemon.MixinFileBackedPokemonStoreFactory",
+    "cobblemon.MixinNbtBackedPlayerData",
+    "cobblemon.MixinPartyStore",
+    "cobblemon.MixinPCStore",
+    "cobblemon.accessor.FileBasedPlayerDataStoreBackendAccessor",
+    "cobblemon.accessor.NbtBackedPlayerDataAccessor"
+  ],
   "client": [],
   "injectors": {
     "defaultRequire": 1

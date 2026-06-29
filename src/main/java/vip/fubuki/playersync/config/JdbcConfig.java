@@ -22,12 +22,16 @@ public class JdbcConfig {
     // ----- Core sync behaviour (kept under [general]) -----
     public static ModConfigSpec.ConfigValue<List<String>> SYNC_WORLD;
     public static ModConfigSpec.BooleanValue SYNC_ADVANCEMENTS;
+    public static ModConfigSpec.BooleanValue SYNC_CHAT;
+    public static ModConfigSpec.BooleanValue IS_CHAT_SERVER;
     public static ModConfigSpec.BooleanValue KICK_WHEN_ALREADY_ONLINE;
     public static ModConfigSpec.ConfigValue<String> KICK_MESSAGE;
     public static ModConfigSpec.IntValue KICK_GRACE_PERIOD_MS;
     public static ModConfigSpec.BooleanValue USE_LEGACY_SERIALIZATION;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_TITLE_OVERRIDE;
     public static final ModConfigSpec.ConfigValue<String> ITEM_PLACEHOLDER_DESCRIPTION_OVERRIDE;
+    public static ModConfigSpec.ConfigValue<String> CHAT_SERVER_IP;
+    public static ModConfigSpec.IntValue CHAT_SERVER_PORT;
 
     public static ModConfigSpec.ConfigValue<Integer> SERVER_ID;
 
@@ -101,6 +105,8 @@ public class JdbcConfig {
                 .define("sync_world", new ArrayList<>());
         SYNC_ADVANCEMENTS = B.comment("Whether to sync advancements between servers")
                 .define("sync_advancements", true);
+        SYNC_CHAT = B.comment("Whether synchronize chat").define("sync_chat", false);
+        IS_CHAT_SERVER = B.comment("Whether recieve messages from other servers as host").define("IsChatServer",false);
         KICK_WHEN_ALREADY_ONLINE = B.comment("Whether to kick player when already online on another server")
                 .define("kick_when_already_online", true);
         // NEW in 2.1.5 — safe to add to [general], unknown keys on old rollbacks just get ignored.
@@ -111,6 +117,8 @@ public class JdbcConfig {
                 "Milliseconds to wait before kicking a duplicate-login player. Short grace period lets",
                 "the legitimate session re-establish on this server. Range 0-10000.")
                 .defineInRange("kick_grace_period_ms", 500, 0, 10000);
+        CHAT_SERVER_IP = B.define("ChatServerIP","127.0.0.1");
+        CHAT_SERVER_PORT = B.defineInRange("ChatServerPort",7900,0,65535);
         USE_LEGACY_SERIALIZATION = B.comment(
                 "Use the old (pre-Base64) serialization format for writing data to the database.",
                 "Set to true ONLY if you have older mod versions reading the same database.",
