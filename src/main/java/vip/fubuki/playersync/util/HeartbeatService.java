@@ -41,6 +41,11 @@ public final class HeartbeatService {
 
     public static void start() {
         if (!RUNNING.compareAndSet(false, true)) return;
+        if (!JDBCsetUp.isPoolReady()) {
+            RUNNING.set(false);
+            PlayerSync.LOGGER.warn("[heartbeat] not started: database pool is not ready");
+            return;
+        }
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "PlayerSync-heartbeat");
             t.setDaemon(true);
@@ -62,6 +67,7 @@ public final class HeartbeatService {
     }
 
     private static void tick() {
+        if (!JDBCsetUp.isPoolReady()) return;
         try {
             int serverId = JdbcConfig.SERVER_ID.get();
             JDBCsetUp.executePreparedUpdate(

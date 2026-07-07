@@ -174,6 +174,23 @@ public class VanillaSync {
         return (ThreadPoolExecutor) executorService;
     }
 
+    private static void queueServerHeartbeat(String label) {
+        if (!JDBCsetUp.isPoolReady()) return;
+        executorService.submit(() -> {
+            if (!JDBCsetUp.isPoolReady()) return;
+            try {
+                JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET last_update=? WHERE id=?",
+                        System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
+            } catch (SQLException e) {
+                if (label == null) {
+                    PlayerSync.LOGGER.error("Error updating server heartbeat", e);
+                } else {
+                    PlayerSync.LOGGER.error("Error updating server heartbeat on {}", label, e);
+                }
+            }
+        });
+    }
+
     public static void removePlayerLock(String uuid) {
         playerLocks.remove(uuid);
         lastWrittenSnapshotHash.remove(uuid);
@@ -1468,14 +1485,7 @@ public class VanillaSync {
      */
     public static void snapshotAndQueueSave(Player player, String label) {
         // Heartbeat piggyback — cheap, keeps server_info fresh even if no SaveToFile ticks.
-        executorService.submit(() -> {
-            try {
-                JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET last_update=? WHERE id=?",
-                        System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
-            } catch (SQLException e) {
-                PlayerSync.LOGGER.error("Error updating server heartbeat on {}", label, e);
-            }
-        });
+        queueServerHeartbeat(label);
 
         String puuid = player.getUUID().toString();
 
@@ -2693,14 +2703,7 @@ public class VanillaSync {
         // Heartbeat: update server_info to prove this server is alive
         if (heartbeatTickCounter >= HEARTBEAT_INTERVAL_TICKS) {
             heartbeatTickCounter = 0;
-            executorService.submit(() -> {
-                try {
-                    JDBCsetUp.executePreparedUpdate("UPDATE " + Tables.serverInfo() + " SET last_update=? WHERE id=?",
-                            System.currentTimeMillis(), JdbcConfig.SERVER_ID.get());
-                } catch (SQLException e) {
-                    PlayerSync.LOGGER.error("Error updating server heartbeat", e);
-                }
-            });
+            queueServerHeartbeat(null);
         }
 
         // Auto-save: snapshot ALL entity data on MAIN THREAD (fast, no I/O), then write
