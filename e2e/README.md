@@ -22,9 +22,11 @@ Or drive the two steps yourself:
 ./e2e/run-e2e.sh         # ~2 min on warm caches, longer on first run (builds the server image)
 ```
 
-Node (>= 18, the baseline the bot's mineflayer toolchain needs) must be on `PATH`.
-Dependencies install from the committed `bot/package-lock.json` (`npm ci`). Keep the
-environment up after a failure for debugging with `KEEP=1 ./e2e/run-e2e.sh`; tear down
+Runs in CI as the `e2e` job of `.github/workflows/build.yml` on pull requests and pushes
+to `1.**`; it runs after the `build` job and reuses that job's jar artifact instead of
+rebuilding. Node (>= 18, the baseline the bot's mineflayer toolchain needs) must be on
+`PATH`. Dependencies install from the committed `bot/package-lock.json` (`npm ci`). Keep
+the environment up after a failure for debugging with `KEEP=1 ./e2e/run-e2e.sh`; tear down
 manually with `docker compose -f e2e/docker-compose.yml down -v`.
 
 ## Scenarios
