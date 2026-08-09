@@ -19,7 +19,7 @@ Or drive the two steps yourself:
 
 ```sh
 ./gradlew build          # produce build/libs/playersync-*.jar
-./e2e/run-e2e.sh         # ~2 min on warm caches, longer on first run (Forge download)
+./e2e/run-e2e.sh         # ~2 min on warm caches, longer on first run (builds the server image)
 ```
 
 Node (>= 18, the baseline the bot's mineflayer toolchain needs) must be on `PATH`.
@@ -52,6 +52,10 @@ refusal with any other stated reason fails the test.
   (`itzg/minecraft-server`); the mod jar path is injected via `PLAYERSYNC_JAR` by the
   runner script. The servers reach MariaDB through toxiproxy (`host = "toxiproxy"`);
   its HTTP API is on `127.0.0.1:8474` for fault injection.
+- `Dockerfile` — builds `playersync-e2e-forge:1.20.1-47.4.0` on top of the pinned
+  `itzg/minecraft-server` base, baking the Forge install into a layer. Both servers run
+  that one image, so Forge is downloaded once at image build instead of by each server on
+  first boot.
 - `config/server-{a,b}/playersync-common.toml` — identical DB settings, distinct
   `Server_id` (1 and 2). The id **must** be pinned: the mod defaults to a random id
   per load when the key is missing.

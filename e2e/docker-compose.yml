@@ -51,9 +51,17 @@ services:
       retries: 20
 
   server-a: &mc-server
-    # Pinned by digest so a repush of the moving `java17` tag (newer JRE/base) can't drift
-    # the test under us. Re-resolve with `docker buildx imagetools inspect itzg/minecraft-server:java17`.
-    image: itzg/minecraft-server:java17@sha256:c3af905ce625d8626f389e67dd35c16d49d44f78154dd27c18f3213aa33df8b8
+    # Both servers run one locally built image (see Dockerfile) that bakes the Forge install
+    # into a shared layer, so the Forge and Minecraft libraries download once at image build
+    # rather than in each server on first boot. The base image is digest-pinned in the
+    # Dockerfile.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "1.20.1"
+        FORGE_VERSION: "47.4.0"
+    image: playersync-e2e-forge:1.20.1-47.4.0
     depends_on:
       db:
         condition: service_healthy
@@ -80,7 +88,7 @@ services:
     ports:
       - "127.0.0.1:25565:25565"
       - "127.0.0.1:25575:25575"
-    # First boot downloads Forge and generates the world, which takes minutes. Be
+    # First boot generates the world, which can take minutes on a loaded machine. Be
     # generous before declaring the container unhealthy so `up --wait` does not give
     # up early.
     healthcheck:

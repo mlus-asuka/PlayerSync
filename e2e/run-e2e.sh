@@ -57,12 +57,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Starting database and both Forge servers (first run downloads Forge — takes a few minutes)..."
-# Recreate from a clean slate every run. --force-recreate reloads a rebuilt jar even when
-# its filename is unchanged, which a stack kept alive by KEEP would otherwise keep serving
-# from the old container. --renew-anon-volumes discards world and player state from
-# earlier runs.
-docker compose up -d --wait --force-recreate --renew-anon-volumes db toxiproxy server-a server-b
+echo "Starting database and both Forge servers (first run builds the image and downloads Forge — takes a few minutes)..."
+# Recreate from a clean slate every run. --build picks up Dockerfile changes and is a cheap
+# no-op when the image is cached. --force-recreate reloads a rebuilt jar even when its
+# filename is unchanged, which a stack kept alive by KEEP would otherwise keep serving from
+# the old container. --renew-anon-volumes discards world and player state from earlier runs.
+docker compose up -d --wait --build --force-recreate --renew-anon-volumes db toxiproxy server-a server-b
 
 echo "Servers healthy, running bot test..."
 run_node
