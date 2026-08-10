@@ -1,0 +1,113 @@
+# End-to-end test environment: one shared MariaDB + two independent Forge servers
+# with the PlayerSync mod installed. A vanilla-protocol bot (e2e/bot) joins server A,
+# receives items/XP, hops to server B and asserts the state arrived there.
+#
+# This works with a vanilla client/bot because PlayerSync is a server-side-only mod
+# (displayTest=IGNORE_SERVER_VERSION, no network channels).
+#
+# Driven by run-e2e.sh. It is not intended for production use.
+
+services:
+  db:
+    image: mariadb:11
+    environment:
+      MARIADB_DATABASE: playersync
+      MARIADB_USER: playersync
+      MARIADB_PASSWORD: pleaseChangeThisPassword
+      MARIADB_RANDOM_ROOT_PASSWORD: "true"
+    # This port serves the bot's assertions only. It is bound to loopback on a non-default
+    # host port to avoid clashing with a local MySQL. The game servers reach the DB through
+    # toxiproxy instead, so assertions read state unperturbed by injected faults.
+    ports:
+      - "127.0.0.1:13306:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # TCP proxy between the game servers and MariaDB that serves as the harness's
+  # fault-injection layer. Scenarios may inject faults through the toxiproxy HTTP API on
+  # host port 8474. The scenarios in this directory drive no toxics and use the proxy as a
+  # transparent passthrough. Do NOT pause or freeze the db container to simulate faults:
+  # the mod runs some queries synchronously on the server thread, so a frozen DB deadlocks
+  # the whole server and logins die on the 30s network read timeout.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/toxiproxy.json"]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./toxiproxy.json:/toxiproxy.json:ro
+    ports:
+      - "127.0.0.1:8474:8474"
+    # `list` exits 0 only once the API is up and the proxy config is loaded, so a
+    # scenario can't POST a toxic before toxiproxy is ready to accept it.
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  server-a: &mc-server
+    # Both servers run one locally built image (see Dockerfile) that bakes the Forge install
+    # into a shared layer, so the Forge and Minecraft libraries download once at image build
+    # rather than in each server on first boot. The base image is digest-pinned in the
+    # Dockerfile.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "1.20.1"
+        FORGE_VERSION: "47.4.0"
+    image: playersync-e2e-forge:1.20.1-47.4.0
+    depends_on:
+      db:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_healthy
+    environment: &mc-env
+      EULA: "true"
+      TYPE: FORGE
+      VERSION: "1.20.1"
+      FORGE_VERSION: "47.4.0"
+      ONLINE_MODE: "false"
+      MEMORY: 2G
+      VIEW_DISTANCE: "4"
+      LEVEL_TYPE: "minecraft:flat"
+      MAX_TICK_TIME: "-1"
+      RCON_PASSWORD: e2e-rcon
+      COPY_CONFIG_DEST: /data/config
+    volumes:
+      # PLAYERSYNC_JAR is injected by run-e2e.sh. The default is a deliberately missing
+      # path, so a stray `docker compose up` fails clearly while `down` and `config` still
+      # parse without it.
+      - ${PLAYERSYNC_JAR:-./PLAYERSYNC_JAR-not-set-run-e2e.sh-first}:/mods/playersync.jar:ro
+      - ./config/server-a:/config:ro
+    ports:
+      - "127.0.0.1:25565:25565"
+      - "127.0.0.1:25575:25575"
+    # First boot generates the world, which can take minutes on a loaded machine. Be
+    # generous before declaring the container unhealthy so `up --wait` does not give
+    # up early.
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      start_period: 300s
+
+  server-b:
+    <<: *mc-server
+    environment:
+      <<: *mc-env
+    volumes:
+      # PLAYERSYNC_JAR is injected by run-e2e.sh. The default is a deliberately missing
+      # path, so a stray `docker compose up` fails clearly while `down` and `config` still
+      # parse without it.
+      - ${PLAYERSYNC_JAR:-./PLAYERSYNC_JAR-not-set-run-e2e.sh-first}:/mods/playersync.jar:ro
+      - ./config/server-b:/config:ro
+    ports:
+      - "127.0.0.1:25566:25565"
+      - "127.0.0.1:25576:25575"

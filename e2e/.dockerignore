@@ -1,0 +1,2 @@
+# The Dockerfile copies nothing from the build context. Ignoring everything keeps builds fast.
+*

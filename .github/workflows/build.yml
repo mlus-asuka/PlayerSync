@@ -8,6 +8,14 @@ on:
     tags:
       - '**'
 
+# Supersede an in-flight run when a newer commit arrives, and collapse the push + pull_request
+# pair that a 1.** branch with an open PR fires. Qualify the branch with its head repo so
+# identically-named branches from different forks (e.g. two `patch-1` PRs) don't share a group
+# and cancel each other's checks. Tags key on their unique name, so releases never cancel.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     permissions:
@@ -51,3 +59,46 @@ jobs:
           curseforge-token: ${{ secrets.CURSEFORGE_TOKEN }}
 
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  e2e:
+    needs: build
+    # Gates PRs and branch pushes; skip the heavy suite on release tags.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    # Building the server image (one Forge download) plus booting two servers takes a few
+    # minutes, and the worst case on a degraded runner approaches thirty. The generous cap
+    # keeps a slow run alive while still preventing a hung run from burning the default 6h.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      # Reuse the jar the build job already produced instead of compiling it a second time.
+      - name: Download mod jar
+        uses: actions/download-artifact@v7
+        with:
+          name: Player_Sync
+          path: build/libs
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: e2e/bot/package-lock.json
+
+      # KEEP=1 leaves the stack up on failure so the next step can dump container logs.
+      # On success the suite tears itself down.
+      - name: Run end-to-end suite
+        run: KEEP=1 ./e2e/run-e2e.sh
+
+      - name: Dump container logs on failure
+        if: failure()
+        working-directory: e2e
+        run: docker compose logs --no-color --timestamps | tail -n 3000
+
+      - name: Tear down
+        if: always()
+        working-directory: e2e
+        run: docker compose down -v --remove-orphans

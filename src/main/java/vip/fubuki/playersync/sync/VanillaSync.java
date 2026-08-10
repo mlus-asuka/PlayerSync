@@ -5,6 +5,7 @@ import com.mojang.serialization.Dynamic;
 import net.minecraft.ChatFormatting;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.UUIDUtil;
 import net.minecraft.nbt.*;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.Style;
@@ -160,7 +161,15 @@ public class VanillaSync {
 
     public static void doPlayerConnect(PlayerNegotiationEvent event) {
         try {
-            String player_uuid = event.getProfile().getId().toString();
+            UUID profileId = event.getProfile().getId();
+            if (profileId == null) {
+                // On offline-mode servers (including servers behind offline-mode proxies)
+                // the GameProfile carries no id during negotiation; the server assigns the
+                // name-derived offline UUID later in the login flow. Use the same derivation
+                // here, or the already-online check would NPE and kick every player.
+                profileId = UUIDUtil.createOfflinePlayerUUID(event.getProfile().getName());
+            }
+            String player_uuid = profileId.toString();
             PlayerSync.LOGGER.info("Detected connection from player" + player_uuid + ",starting checking");
             boolean online;
             int lastServer;
