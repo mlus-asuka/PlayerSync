@@ -259,106 +259,105 @@ public class VanillaSync {
 
             // First query: check basic player data
             syncNotCompletedPlayer.add(player_uuid);
-            JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'");
-            ResultSet rs1 = qr1.resultSet();
-            ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
+            // try-with-resources so both queries release their connection and statement on
+            // every exit path: anything thrown by the restore below unwinds to the catch, which
+            // only repairs the player's state and would leave the handles open.
+            try (JDBCsetUp.QueryResult qr1 = JDBCsetUp.executeQuery("SELECT online, last_server FROM player_data WHERE uuid='" + player_uuid + "'")) {
+                ResultSet rs1 = qr1.resultSet();
+                ServerPlayer serverPlayer = (ServerPlayer) event.getEntity();
 
-            // Mod support
-            ModsSupport modsSupport = new ModsSupport();
-            modsSupport.doCuriosRestore(serverPlayer);
+                // Mod support
+                ModsSupport modsSupport = new ModsSupport();
+                modsSupport.doCuriosRestore(serverPlayer);
 
-            if (!rs1.next()) {
-                store(event.getEntity(), true);
-                JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-                JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
-                rs1.close();
-                qr1.close();
-                if (revertIfDisconnectedDuringSync(serverPlayer, player_uuid)) {
+                if (!rs1.next()) {
+                    store(event.getEntity(), true);
+                    JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+                    JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+                    if (revertIfDisconnectedDuringSync(serverPlayer, player_uuid)) {
+                        return;
+                    }
+                    PlayerSync.LOGGER.info("New player detected,init completed.");
+                    syncNotCompletedPlayer.remove(player_uuid);
                     return;
                 }
-                PlayerSync.LOGGER.info("New player detected,init completed.");
-                syncNotCompletedPlayer.remove(player_uuid);
-                return;
-            }
 
-            // Second query: retrieve full player data
-            JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='" + player_uuid + "'");
-            ResultSet rs2 = qr2.resultSet();
+                // Second query: retrieve full player data
+                try (JDBCsetUp.QueryResult qr2 = JDBCsetUp.executeQuery("SELECT * FROM player_data WHERE uuid='" + player_uuid + "'")) {
+                    ResultSet rs2 = qr2.resultSet();
 
-            JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+                    JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
+                    JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
 
-            if (rs2.next()) {
-                // Restore basic attributes
-                int health = rs2.getInt("health");
-                if (health <= 0) {
-                    serverPlayer.setHealth(1);
-                } else {
-                    serverPlayer.setHealth(health);
-                }
-                serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
+                    if (rs2.next()) {
+                        // Restore basic attributes
+                        int health = rs2.getInt("health");
+                        if (health <= 0) {
+                            serverPlayer.setHealth(1);
+                        } else {
+                            serverPlayer.setHealth(health);
+                        }
+                        serverPlayer.getFoodData().setFoodLevel(rs2.getInt("food_level"));
 
-                setXpForPlayer(serverPlayer, rs2.getInt("xp"));
-                serverPlayer.setScore(rs2.getInt("score"));
+                        setXpForPlayer(serverPlayer, rs2.getInt("xp"));
+                        serverPlayer.setScore(rs2.getInt("score"));
 
-                // Restore left-hand item
-                String leftHandEncoded = rs2.getString("left_hand");
-                serverPlayer.setItemInHand(InteractionHand.OFF_HAND,
-                        deserializeAndCreatePlaceholderIfNeeded(leftHandEncoded));
+                        // Restore left-hand item
+                        String leftHandEncoded = rs2.getString("left_hand");
+                        serverPlayer.setItemInHand(InteractionHand.OFF_HAND,
+                                deserializeAndCreatePlaceholderIfNeeded(leftHandEncoded));
 
-                // Restore cursor item
-                String cursorsEncoded = rs2.getString("cursors");
-                serverPlayer.containerMenu.setCarried(
-                        deserializeAndCreatePlaceholderIfNeeded(cursorsEncoded));
+                        // Restore cursor item
+                        String cursorsEncoded = rs2.getString("cursors");
+                        serverPlayer.containerMenu.setCarried(
+                                deserializeAndCreatePlaceholderIfNeeded(cursorsEncoded));
 
-                // Restore armor
-                String armor_data = rs2.getString("armor");
-                if (armor_data.length() > 2) {
-                    Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
-                    for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
-                        serverPlayer.getInventory().armor.set(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
-                    }
-                }
+                        // Restore armor
+                        String armor_data = rs2.getString("armor");
+                        if (armor_data.length() > 2) {
+                            Map<Integer, String> equipment = LocalJsonUtil.StringToEntryMap(armor_data);
+                            for (Map.Entry<Integer, String> entry : equipment.entrySet()) {
+                                serverPlayer.getInventory().armor.set(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+                            }
+                        }
 
-                // Restore inventory
-                Map<Integer, String> inventory = LocalJsonUtil.StringToEntryMap(rs2.getString("inventory"));
-                for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
-                    serverPlayer.getInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
-                }
+                        // Restore inventory
+                        Map<Integer, String> inventory = LocalJsonUtil.StringToEntryMap(rs2.getString("inventory"));
+                        for (Map.Entry<Integer, String> entry : inventory.entrySet()) {
+                            serverPlayer.getInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+                        }
 
-                // Restore Ender Chest
-                Map<Integer, String> ender_chest = LocalJsonUtil.StringToEntryMap(rs2.getString("enderchest"));
-                for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
-                    serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
-                }
+                        // Restore Ender Chest
+                        Map<Integer, String> ender_chest = LocalJsonUtil.StringToEntryMap(rs2.getString("enderchest"));
+                        for (Map.Entry<Integer, String> entry : ender_chest.entrySet()) {
+                            serverPlayer.getEnderChestInventory().setItem(entry.getKey(), deserializeAndCreatePlaceholderIfNeeded(entry.getValue()));
+                        }
 
-                // Restore Effects
-                String effectData = rs2.getString("effects");
-                if (effectData.length() > 2) {
-                    serverPlayer.removeAllEffects();
-                    Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
-                    for (Map.Entry<Integer, String> entry : effects.entrySet()) {
-                        CompoundTag effectTag = NbtUtils.snbtToStructure(deserializeString(entry.getValue()));
-                        MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
-                        if (mobEffectInstance != null) {
-                            serverPlayer.addEffect(mobEffectInstance);
+                        // Restore Effects
+                        String effectData = rs2.getString("effects");
+                        if (effectData.length() > 2) {
+                            serverPlayer.removeAllEffects();
+                            Map<Integer, String> effects = LocalJsonUtil.StringToEntryMap(effectData);
+                            for (Map.Entry<Integer, String> entry : effects.entrySet()) {
+                                CompoundTag effectTag = NbtUtils.snbtToStructure(deserializeString(entry.getValue()));
+                                MobEffectInstance mobEffectInstance = MobEffectInstance.load(effectTag);
+                                if (mobEffectInstance != null) {
+                                    serverPlayer.addEffect(mobEffectInstance);
+                                }
+                            }
                         }
                     }
                 }
-            }
 
-            modsSupport.doBackPackRestore(serverPlayer);
+                modsSupport.doBackPackRestore(serverPlayer);
 
-            rs2.close();
-            qr2.close();
-            rs1.close();
-            qr1.close();
-            if (revertIfDisconnectedDuringSync(serverPlayer, player_uuid)) {
-                return;
+                if (revertIfDisconnectedDuringSync(serverPlayer, player_uuid)) {
+                    return;
+                }
+                serverPlayer.addTag("player_synced");
+                PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
+                syncNotCompletedPlayer.remove(player_uuid);
             }
-            serverPlayer.addTag("player_synced");
-            PlayerSync.LOGGER.info("Sync data for player {} completed.", player_uuid);
-            syncNotCompletedPlayer.remove(player_uuid);
         } catch (Exception e) {
             PlayerSync.LOGGER.error("Internal Exception detected!", e);
             if (joinedPlayer.hasDisconnected()) {
