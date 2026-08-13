@@ -45,6 +45,7 @@ import vip.fubuki.playersync.util.ExperienceMath;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 import vip.fubuki.playersync.util.PSThreadPoolFactory;
+import vip.fubuki.playersync.util.ServerIdentity;
 
 import java.io.File;
 import java.io.IOException;
@@ -196,7 +197,7 @@ public class VanillaSync {
                     if (rs2.next()) {
                         long last_update = rs2.getLong("last_update");
                         boolean enable = rs2.getBoolean("enable");
-                        if (enable && System.currentTimeMillis() < last_update + 300000.0) {
+                        if (enable && System.currentTimeMillis() < last_update + ServerIdentity.LIVENESS_WINDOW_MS) {
                             event.getConnection().disconnect(Component.translatableWithFallback("playersync.already_online","You can't join more than one synchronization server at the same time."));
                             return;
                         }
@@ -809,8 +810,7 @@ public class VanillaSync {
         tick++;
         if (tick == 1800) {
             tick = 0;
-            long current = System.currentTimeMillis();
-            JDBCsetUp.executeUpdate("UPDATE server_info SET last_update =" + current + " WHERE id= " + JdbcConfig.SERVER_ID.get());
+            ServerIdentity.heartbeat();
         }
     }
 
