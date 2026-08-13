@@ -18,10 +18,9 @@
  *
  * Measurement: connections MariaDB holds for the mod's DB user, from the harness's own
  * connection, counting only ones parked (idle) long enough that the mod cannot be using them.
- * A login is allowed to park one of them: onDataPackSyncEvent abandons its advancements query
- * in exactly the same way (a separate finding, deliberately out of scope). doPlayerJoin's pair
- * is two *more* on top of that, and successful joins are measured too, to confirm the login
- * path really stays inside that allowance in this build.
+ * A login is allowed to park none of them, so doPlayerJoin's abandoned pair is the whole of
+ * the signal; successful joins are measured too, to confirm the login path really settles back
+ * to nothing in this build.
  *
  * Non-vacuity: every failed session first gets a fresh XP value written into its row. The
  * restore applies XP before it reaches armor, so the bot ending up with *this* session's XP
@@ -53,13 +52,12 @@ const FAILED_JOINS = 3;  // > 1 so a single unlucky reap cannot hide the leak
 const CONTROL_XP = 4242; // restored by the final, uncorrupted join
 const XP_TOLERANCE = 2;
 
-// Connections a login may leave parked with nothing wrong: onDataPackSyncEvent abandons its
-// advancements query the same way the code under test did — a separate finding, out of scope
-// here — and whether the driver has already reaped it when a measurement is taken is a matter
-// of when the server last collected garbage. Allowing it keeps this test about doPlayerJoin,
-// whose failed restore parks two *more* on top, and keeps the number it is compared against
-// from being a coin flip.
-const LOGIN_PARK_ALLOWANCE = 1;
+// Connections a login may leave parked with nothing wrong: none. Every query the login path
+// runs — doPlayerConnect's checks, doPlayerJoin's pair, onDataPackSyncEvent's advancements
+// read — releases its connection on all exit paths, so a login that goes well settles back to
+// zero and a failed restore's two abandoned handles are measured against a fixed number rather
+// than against whatever the driver's reaper happened to have collected.
+const LOGIN_PARK_ALLOWANCE = 0;
 
 // A map whose key is not a number: StringToEntryMap runs Integer.parseInt("x") over it and
 // throws. Length > 2 so the armor restore block actually runs, and the value is empty NBT

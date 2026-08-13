@@ -90,73 +90,74 @@ public class VanillaSync {
         final String player_uuid = serverPlayer.getUUID().toString();
         PlayerSync.LOGGER.info("Player entity joining level " + player_uuid);
 
-        JDBCsetUp.QueryResult advancementsQuery = JDBCsetUp
-                .executeQuery("SELECT advancements FROM player_data WHERE uuid='" + player_uuid + "'");
-        ResultSet advancementsResultSet = advancementsQuery.resultSet();
+        // try-with-resources so the connection and statement are released on every exit path:
+        // the advancements restore below returns early in four places and writes files, and
+        // closing only the ResultSet leaves the connection behind on all of them.
+        try (JDBCsetUp.QueryResult advancementsQuery = JDBCsetUp
+                .executeQuery("SELECT advancements FROM player_data WHERE uuid='" + player_uuid + "'")) {
+            ResultSet advancementsResultSet = advancementsQuery.resultSet();
 
-        if (!advancementsResultSet.next()) {
-            PlayerSync.LOGGER.debug("No advancements found for player " + player_uuid);
-            advancementsResultSet.close();
-            return;
-        }
-
-        // Restore Advancements
-        File gameDir = Objects.requireNonNull(serverPlayer.getServer()).getServerDirectory();
-
-        final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-        if (server != null && server.isDedicatedServer()) {
-            PlayerSync.LOGGER.debug("Attempting to write dedicated server advancement file");
-            File advancements = new File(gameDir,
-                    getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
-            byte[] bytes = advancementsResultSet.getString("advancements").getBytes();
-            advancementsResultSet.close();
-
-            // only create advancements file if at least "{}" has been stored in the field
-            if (bytes.length < 2) {
-                PlayerSync.LOGGER.debug("Skip writing advancements for player " + player_uuid);
+            if (!advancementsResultSet.next()) {
+                PlayerSync.LOGGER.debug("No advancements found for player " + player_uuid);
                 return;
             }
 
-            File advancementsDir = advancements.getParentFile();
-            if (advancementsDir != null && !advancementsDir.exists()) {
-                PlayerSync.LOGGER.info("Creating advancements directory " + advancementsDir.getPath());
-                boolean createdDir = advancementsDir.mkdirs();
-                if (!createdDir) {
-                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements "
-                            + "directory at " + advancementsDir.getPath());
-                    return;
-                }
-            }
+            // Restore Advancements
+            File gameDir = Objects.requireNonNull(serverPlayer.getServer()).getServerDirectory();
 
-            if (!advancements.exists()) {
-                try {
-                    PlayerSync.LOGGER.info("Creating new advancement file for player " + player_uuid);
-                    advancements.createNewFile();
-                } catch (IOException e) {
-                    PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements file at "
-                            + advancements.getAbsolutePath(), e);
-                    return;
-                }
-            }
-            PlayerSync.LOGGER.debug("Writing advancement file " + advancements.toPath() + " for player " + player_uuid);
-            PlayerSync.LOGGER.trace("Writing advancement file for player " + player_uuid + ": "
-                    + new String(bytes, StandardCharsets.UTF_8));
-            Files.write(advancements.toPath(), bytes);
-
-            // reload the json files on the server after updating them
-            PlayerAdvancements playeradvancements = serverPlayer.getAdvancements();
-            playeradvancements.reload(server.getAdvancements());
-
-        } else {
-            PlayerSync.LOGGER.debug("Writing non-dedicated server advancement files");
-            File[] files = scanAdvancementsFile(player_uuid, gameDir);
-            for (File file : files) {
-                if (file == null)
-                    continue;
+            final MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server != null && server.isDedicatedServer()) {
+                PlayerSync.LOGGER.debug("Attempting to write dedicated server advancement file");
+                File advancements = new File(gameDir,
+                        getSyncWorldForServer() + "/advancements" + "/" + player_uuid + ".json");
                 byte[] bytes = advancementsResultSet.getString("advancements").getBytes();
-                Files.write(file.toPath(), bytes);
+
+                // only create advancements file if at least "{}" has been stored in the field
+                if (bytes.length < 2) {
+                    PlayerSync.LOGGER.debug("Skip writing advancements for player " + player_uuid);
+                    return;
+                }
+
+                File advancementsDir = advancements.getParentFile();
+                if (advancementsDir != null && !advancementsDir.exists()) {
+                    PlayerSync.LOGGER.info("Creating advancements directory " + advancementsDir.getPath());
+                    boolean createdDir = advancementsDir.mkdirs();
+                    if (!createdDir) {
+                        PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements "
+                                + "directory at " + advancementsDir.getPath());
+                        return;
+                    }
+                }
+
+                if (!advancements.exists()) {
+                    try {
+                        PlayerSync.LOGGER.info("Creating new advancement file for player " + player_uuid);
+                        advancements.createNewFile();
+                    } catch (IOException e) {
+                        PlayerSync.LOGGER.error("Aborting advancements sync. Failed to create advancements file at "
+                                + advancements.getAbsolutePath(), e);
+                        return;
+                    }
+                }
+                PlayerSync.LOGGER.debug("Writing advancement file " + advancements.toPath() + " for player " + player_uuid);
+                PlayerSync.LOGGER.trace("Writing advancement file for player " + player_uuid + ": "
+                        + new String(bytes, StandardCharsets.UTF_8));
+                Files.write(advancements.toPath(), bytes);
+
+                // reload the json files on the server after updating them
+                PlayerAdvancements playeradvancements = serverPlayer.getAdvancements();
+                playeradvancements.reload(server.getAdvancements());
+
+            } else {
+                PlayerSync.LOGGER.debug("Writing non-dedicated server advancement files");
+                File[] files = scanAdvancementsFile(player_uuid, gameDir);
+                for (File file : files) {
+                    if (file == null)
+                        continue;
+                    byte[] bytes = advancementsResultSet.getString("advancements").getBytes();
+                    Files.write(file.toPath(), bytes);
+                }
             }
-            advancementsResultSet.close();
         }
     }
 
