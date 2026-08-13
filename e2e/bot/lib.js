@@ -108,6 +108,21 @@ function connectDb() {
   return mysql.createConnection(DB);
 }
 
+// Records how a session ends after join() has settled, for a scenario whose subject is the
+// ending itself. join()'s own handlers ignore post-settle 'end'/'kicked' events, because those
+// are the normal result of quit(). The first reason is kept, as 'kicked' fires before 'end'.
+function trackSessionEnd(bot) {
+  const state = { ended: false, reason: null };
+  const record = (kind) => (reason) => {
+    if (state.ended) return;
+    state.ended = true;
+    state.reason = `${kind}: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`;
+  };
+  bot.on('kicked', record('kicked'));
+  bot.on('end', record('end'));
+  return state;
+}
+
 // The player_data row for a uuid, or null if the mod has not inserted it yet.
 async function queryPlayer(db, uuid) {
   const [rows] = await db.query(
@@ -250,6 +265,9 @@ function createHarness(tag) {
   // spawn nor a pre-spawn failure lands in that window the promise rejects with
   // code JOIN_TIMEOUT and the connection is torn down, so an abandoned login cannot spawn
   // later and linger as a ghost session. Without it the join waits indefinitely.
+  // `opts.keepAliveTimeoutMs` (optional) raises the client's 30s keepalive watchdog. Some of the
+  // mod's queries run on the server thread, so under a latency toxic the server sends no
+  // keepalives for tens of seconds, and only the client has to be told to wait for them.
   function join(server, username, opts = {}) {
     return new Promise((resolve, reject) => {
       log(`Joining ${server.name} (${HOST}:${server.port}) as ${username}`);
@@ -259,6 +277,7 @@ function createHarness(tag) {
         username,
         version: VERSION,
         auth: 'offline',
+        ...(opts.keepAliveTimeoutMs ? { checkTimeoutInterval: opts.keepAliveTimeoutMs } : {}),
       });
       let settled = false;
       let timer = null;
@@ -382,6 +401,7 @@ module.exports = {
   waitFor,
   offlineUUID,
   connectDb,
+  trackSessionEnd,
   queryPlayer,
   waitForPlayer,
   summarizeInventory,
