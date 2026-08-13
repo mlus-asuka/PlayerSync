@@ -31,6 +31,7 @@ SCENARIOS=(
     test-disconnect-during-sync.js
     test-data-loss-on-failed-sync.js
     test-revert-respects-owner.js
+    test-stale-synced-tag-on-rejoin.js
 )
 
 # Toolchain baseline: mineflayer and the harness scripts assume a modern Node.
