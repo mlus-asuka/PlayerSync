@@ -25,7 +25,11 @@ export PLAYERSYNC_JAR
 echo "Using mod jar: ${PLAYERSYNC_JAR}"
 
 # Scenarios run in order. Each is a node script in bot/ that exits 0 on pass.
-SCENARIOS="test-sync-across-servers.js test-already-online.js test-disconnect-during-sync.js"
+SCENARIOS=(
+    test-sync-across-servers.js
+    test-already-online.js
+    test-disconnect-during-sync.js
+)
 
 # Toolchain baseline: mineflayer and the harness scripts assume a modern Node.
 NODE_MAJOR_MIN=18
@@ -39,7 +43,7 @@ if (( node_major < NODE_MAJOR_MIN )); then
     echo "node $(node --version) is too old; the bot needs Node >= ${NODE_MAJOR_MIN}." >&2
     exit 1
 fi
-run_node() { (cd bot && npm ci --no-audit --no-fund && for s in ${SCENARIOS}; do echo "=== scenario: $s ==="; node "$s" || exit 1; done); }
+run_node() { (cd bot && npm ci --no-audit --no-fund && for s in "${SCENARIOS[@]}"; do echo "=== scenario: $s ==="; node "$s" || exit 1; done); }
 
 cleanup() {
     status=$?
