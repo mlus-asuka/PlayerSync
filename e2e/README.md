@@ -39,6 +39,21 @@ manually with `docker compose -f e2e/docker-compose.yml down -v`.
 4. Bot joins server B and must end up with the same inventory and XP (±2 for the
    float rounding inherent in the level/progress XP encoding).
 
+### `bot/test-disconnect-during-sync.js` — ghost-online race
+
+Reproduces the disconnect-during-sync race by widening its normally sub-second window:
+a toxiproxy latency toxic (~2s per DB round-trip) holds the multi-query sync task in
+flight while the bot disconnects mid-sync. The test reads `player_data` directly to make
+the reproduction non-vacuous: it asserts the bot is still `online=0` at the moment it
+disconnects (so the disconnect genuinely precedes the sync's `online=1` write — otherwise
+it fails loudly rather than passing), then watches the sync task set `online=1` after the
+disconnect and the revert set it back to `0`. Finally the bot must join server B with its
+seeded inventory intact.
+
+Do not slow the DB by pausing its container instead — some queries run synchronously
+on the server thread, so a frozen DB deadlocks the server and logins die on the 30s
+network read timeout.
+
 ### `bot/test-already-online.js` — already-online kick
 
 Positive test for `kick_when_already_online`: a bot online on server A, then a second
