@@ -575,7 +575,11 @@ public class VanillaSync {
      */
     public static String serialize(String object) {
         // Check the config option for backwards compatibility during writing
-        if (JdbcConfig.USE_LEGACY_SERIALIZATION.get()) {
+        return serialize(object, JdbcConfig.USE_LEGACY_SERIALIZATION.get());
+    }
+
+    static String serialize(String object, boolean useLegacySerialization) {
+        if (useLegacySerialization) {
             // Use old custom replacement logic
             return object.replace(",", "|")
                     .replace("\"", "^")

@@ -31,6 +31,8 @@ build
 # other
 eclipse
 run
+# Minecraft's log4j2 config is on the unit-test classpath and logs into ./logs
+logs
 
 # Files from Forge MDK
 forge*changelog.txt
