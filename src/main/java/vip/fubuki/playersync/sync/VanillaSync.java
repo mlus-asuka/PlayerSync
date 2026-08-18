@@ -41,6 +41,7 @@ import vip.fubuki.playersync.PlayerSync;
 import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.sync.addons.CuriosCache;
 import vip.fubuki.playersync.sync.addons.ModsSupport;
+import vip.fubuki.playersync.util.ExperienceMath;
 import vip.fubuki.playersync.util.JDBCsetUp;
 import vip.fubuki.playersync.util.LocalJsonUtil;
 import vip.fubuki.playersync.util.PSThreadPoolFactory;
@@ -581,7 +582,11 @@ public class VanillaSync {
      */
     public static String serialize(String object) {
         // Check the config option for backwards compatibility during writing
-        if (JdbcConfig.USE_LEGACY_SERIALIZATION.get()) {
+        return serialize(object, JdbcConfig.USE_LEGACY_SERIALIZATION.get());
+    }
+
+    static String serialize(String object, boolean useLegacySerialization) {
+        if (useLegacySerialization) {
             // Use old custom replacement logic
             return object.replace(",", "|")
                     .replace("\"", "^")
@@ -862,19 +867,16 @@ public class VanillaSync {
         // Don't use giveExperience() as it has several side-effects:
         // triggers an event, sends network packets, increases the score, ...
         serverPlayer.totalExperience = databaseXp;
-        serverPlayer.experienceLevel = 0;
-        serverPlayer.experienceProgress = 0;
 
-        int xpForLevel;
+        // The per-level cost depends on the player's current level, so the level field is
+        // walked along while the pure math distributes the total.
+        ExperienceMath.LevelAndProgress levelAndProgress = ExperienceMath.levelAndProgressFromTotalXp(databaseXp, level -> {
+            serverPlayer.experienceLevel = level;
+            return serverPlayer.getXpNeededForNextLevel();
+        });
 
-        while (databaseXp >= (xpForLevel = serverPlayer.getXpNeededForNextLevel())) {
-            databaseXp -= xpForLevel;
-            serverPlayer.experienceLevel++;
-        }
-
-        serverPlayer.experienceProgress = serverPlayer.experienceLevel > 0
-                ? (float) databaseXp / serverPlayer.getXpNeededForNextLevel()
-                : 0f;
+        serverPlayer.experienceLevel = levelAndProgress.level();
+        serverPlayer.experienceProgress = levelAndProgress.progress();
 
         PlayerSync.LOGGER.debug("Giving player "
                 + serverPlayer.experienceLevel + " levels and "
@@ -883,20 +885,8 @@ public class VanillaSync {
     }
 
     private static int getTotalExperience(final Player player) {
-        int level = player.experienceLevel;
-        int totalXp = 0;
-
-        // Calculate total XP for completed levels
-        if (level > 30) {
-            totalXp = (int) (4.5 * Math.pow(level, 2) - 162.5 * level + 2220);
-        } else if (level > 15) {
-            totalXp = (int) (2.5 * Math.pow(level, 2) - 40.5 * level + 360);
-        } else {
-            totalXp = level * level + 6 * level;
-        }
-
-        // Add partial level progress
-        totalXp += Math.round(player.getXpNeededForNextLevel() * player.experienceProgress);
+        int totalXp = ExperienceMath.totalExperience(
+                player.experienceLevel, player.experienceProgress, player.getXpNeededForNextLevel());
 
         PlayerSync.LOGGER.debug("Experience calcuation for "
                 + player.experienceLevel + " levels and "
