@@ -29,6 +29,7 @@ SCENARIOS=(
     test-sync-across-servers.js
     test-already-online.js
     test-disconnect-during-sync.js
+    test-data-loss-on-failed-sync.js
     test-revert-respects-owner.js
 )
 
