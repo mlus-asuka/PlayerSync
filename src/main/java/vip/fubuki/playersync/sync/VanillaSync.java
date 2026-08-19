@@ -420,6 +420,9 @@ public class VanillaSync {
 
     @SubscribeEvent
     public static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
+        // player_synced is persisted in the player NBT, so a returning player arrives still
+        // carrying it. Clear it so doPlayerSaveToFile cannot store pre-sync state as if synced.
+        event.getEntity().removeTag("player_synced");
         executorService.submit(() -> {
             try {
                 doPlayerJoin(event);
