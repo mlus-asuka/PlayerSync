@@ -28,6 +28,7 @@ echo "Using mod jar: ${PLAYERSYNC_JAR}"
 SCENARIOS=(
     test-sync-across-servers.js
     test-already-online.js
+    test-connection-leak-on-failed-sync.js
     test-disconnect-during-sync.js
     test-data-loss-on-failed-sync.js
     test-revert-respects-owner.js
