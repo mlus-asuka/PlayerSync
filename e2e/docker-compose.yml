@@ -28,8 +28,10 @@ services:
 
   # TCP proxy between the game servers and MariaDB that serves as the harness's
   # fault-injection layer. Scenarios may inject faults through the toxiproxy HTTP API on
-  # host port 8474. The scenarios in this directory drive no toxics and use the proxy as a
-  # transparent passthrough. Do NOT pause or freeze the db container to simulate faults:
+  # host port 8474. One proxy per game server (`mariadb` on 3306 for server-a, `mariadb-b` on
+  # 3307 for server-b, see toxiproxy.json), so a toxic can slow one server's database traffic
+  # while the other keeps running at full speed — which is what the scenarios about one
+  # server's late writes racing the other need. Do NOT pause or freeze the db container:
   # the mod runs some queries synchronously on the server thread, so a frozen DB deadlocks
   # the whole server and logins die on the 30s network read timeout.
   toxiproxy:

@@ -4,5 +4,11 @@
     "listen": "0.0.0.0:3306",
     "upstream": "db:3306",
     "enabled": true
+  },
+  {
+    "name": "mariadb-b",
+    "listen": "0.0.0.0:3307",
+    "upstream": "db:3306",
+    "enabled": true
   }
 ]
