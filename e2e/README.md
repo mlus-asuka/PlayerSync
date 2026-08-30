@@ -68,7 +68,10 @@ refusal with any other stated reason fails the test.
 - `docker-compose.yml` — db + toxiproxy + `server-a`/`server-b`
   (`itzg/minecraft-server`); the mod jar path is injected via `PLAYERSYNC_JAR` by the
   runner script. The servers reach MariaDB through toxiproxy (`host = "toxiproxy"`);
-  its HTTP API is on `127.0.0.1:8474` for fault injection.
+  its HTTP API is on `127.0.0.1:8474` for fault injection. Each server has its own proxy, e.g.
+  `mariadb` (`:3306`) for server-a, `mariadb-b` (`:3307`) for server-b. So a toxic slows only
+  one server's DB traffic. A scenario that injects a fault must name the proxy of
+  the server it means to slow.
 - `Dockerfile` — builds `playersync-e2e-forge:1.20.1-47.4.0` on top of the pinned
   `itzg/minecraft-server` base, baking the Forge install into a layer. Both servers run
   that one image, so Forge is downloaded once at image build instead of by each server on

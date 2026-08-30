@@ -24,11 +24,10 @@ const {
   offlineUUID, connectDb, queryPlayer, waitForPlayer, createHarness,
 } = require('./lib');
 
-const { log, join, rcon, startWatchdog } = createHarness('e2e-race');
+const { log, join, rcon, setDbLatency, startWatchdog } = createHarness('e2e-race');
 
 const BOT_NAME = 'RaceTester';
 const BOT_UUID = offlineUUID(BOT_NAME);
-const TOXIPROXY_URL = process.env.TOXIPROXY_URL || 'http://127.0.0.1:8474';
 
 const SEED_DIAMONDS = 3;
 // ~2s per DB round-trip. The sync task's online=1 write is several round-trips in, so this
@@ -41,37 +40,6 @@ const DISCONNECT_AFTER_MS = 2000;
 // The sync task makes many latency-delayed DB round-trips (advancements included), so its
 // online=1 write lands tens of seconds after the disconnect — poll generously for it.
 const SYNC_OBSERVE_MS = 90_000;
-
-async function removeDbLatency() {
-  const res = await fetch(`${TOXIPROXY_URL}/proxies/mariadb/toxics/db_latency`, { method: 'DELETE' });
-  if (!res.ok && res.status !== 404) {
-    throw new Error(`Failed to remove latency toxic: HTTP ${res.status} ${await res.text()}`);
-  }
-}
-
-async function setDbLatency(latencyMs) {
-  if (latencyMs > 0) {
-    // Clear any toxic left behind by a previous (KEEP=1) run so the POST can't 409.
-    await removeDbLatency();
-    const res = await fetch(`${TOXIPROXY_URL}/proxies/mariadb/toxics`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'db_latency',
-        type: 'latency',
-        stream: 'downstream',
-        attributes: { latency: latencyMs, jitter: 0 },
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to add latency toxic: HTTP ${res.status} ${await res.text()}`);
-    }
-    log(`DB latency toxic enabled: ${latencyMs}ms per round-trip`);
-  } else {
-    await removeDbLatency();
-    log('DB latency toxic removed');
-  }
-}
 
 async function main() {
   const db = await connectDb();
@@ -88,7 +56,7 @@ async function main() {
     log(`Seed complete: ${SEED_DIAMONDS} diamonds persisted, player offline`);
 
     // --- Phase 1: disconnect while the sync task is mid-flight, then watch the race ---
-    await setDbLatency(DB_LATENCY_MS);
+    await setDbLatency(SERVER_A, DB_LATENCY_MS);
     try {
       const raceBot = await join(SERVER_A, BOT_NAME);
       await sleep(DISCONNECT_AFTER_MS);
@@ -117,7 +85,7 @@ async function main() {
       await waitForPlayer(db, BOT_UUID, (p) => p && p.online === 0, SYNC_OBSERVE_MS,
         'online reverted to 0 after disconnect-during-sync (no ghost)');
     } finally {
-      await setDbLatency(0);
+      await setDbLatency(SERVER_A, 0);
     }
 
     // --- Phase 2: end-to-end confirmation that server B accepts the join and restores state.
@@ -141,7 +109,7 @@ startWatchdog(5 * 60_000);
 
 main().catch(async (err) => {
   // Best effort: never leave the latency toxic behind a failure.
-  try { await setDbLatency(0); } catch (ignored) { /* already gone */ }
+  try { await setDbLatency(SERVER_A, 0); } catch (ignored) { /* already gone */ }
   console.error(`[e2e-race] FAIL: ${err.stack || err}`);
   process.exit(1);
 });

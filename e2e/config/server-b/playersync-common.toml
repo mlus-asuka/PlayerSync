@@ -1,6 +1,9 @@
 [general]
 	host = "toxiproxy"
-	db_port = 3306
+	#Server-b talks to the database through its own toxiproxy listener (see e2e/toxiproxy.json).
+	#A toxic on the shared 3306 proxy would otherwise slow both servers at once, and scenarios
+	#about one server's late writes racing the other need to slow exactly one of them.
+	db_port = 3307
 	use_ssl = false
 	user_name = "playersync"
 	password = "pleaseChangeThisPassword"

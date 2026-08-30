@@ -25,12 +25,11 @@ const {
   offlineUUID, connectDb, queryPlayer, waitForPlayer, createHarness,
 } = require('./lib');
 
-const { log, join, startWatchdog } = createHarness('e2e-owner');
+const { log, join, setDbLatency, startWatchdog } = createHarness('e2e-owner');
 
 const BOT_NAME = 'OwnerGuardTester';
 const BOT_UUID = offlineUUID(BOT_NAME);
 const SERVER_B_ID = 2; // server-b's Server_id (see e2e/config/server-b/playersync-common.toml)
-const TOXIPROXY_URL = process.env.TOXIPROXY_URL || 'http://127.0.0.1:8474';
 
 const DB_LATENCY_MS = 2000;
 const DISCONNECT_AFTER_MS = 2000;
@@ -41,32 +40,6 @@ const SYNC_OBSERVE_MS = 90_000;
 // clobbers within this window the guard held. The window is generous so that a slow run
 // cannot pass merely because the revert had not fired yet.
 const CLOBBER_WATCH_MS = 90_000;
-
-async function removeDbLatency() {
-  const res = await fetch(`${TOXIPROXY_URL}/proxies/mariadb/toxics/db_latency`, { method: 'DELETE' });
-  if (!res.ok && res.status !== 404) {
-    throw new Error(`Failed to remove latency toxic: HTTP ${res.status} ${await res.text()}`);
-  }
-}
-
-async function setDbLatency(latencyMs) {
-  if (latencyMs > 0) {
-    await removeDbLatency(); // clear any toxic left by a previous KEEP=1 run so POST can't 409
-    const res = await fetch(`${TOXIPROXY_URL}/proxies/mariadb/toxics`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: 'db_latency', type: 'latency', stream: 'downstream',
-        attributes: { latency: latencyMs, jitter: 0 },
-      }),
-    });
-    if (!res.ok) throw new Error(`Failed to add latency toxic: HTTP ${res.status} ${await res.text()}`);
-    log(`DB latency toxic enabled: ${latencyMs}ms per round-trip`);
-  } else {
-    await removeDbLatency();
-    log('DB latency toxic removed');
-  }
-}
 
 async function main() {
   const db = await connectDb();
@@ -81,7 +54,7 @@ async function main() {
     log('Seed complete: player_data row exists, offline');
 
     // --- Phase 1: disconnect mid-sync, then race the revert against a move to server B ---
-    await setDbLatency(DB_LATENCY_MS);
+    await setDbLatency(SERVER_A, DB_LATENCY_MS);
     try {
       const raceBot = await join(SERVER_A, BOT_NAME);
       await sleep(DISCONNECT_AFTER_MS);
@@ -126,7 +99,7 @@ async function main() {
       }
       log("Server B's session intact: server A's stale revert did not clobber online");
     } finally {
-      await setDbLatency(0);
+      await setDbLatency(SERVER_A, 0);
     }
   } finally {
     await db.end();
@@ -139,7 +112,7 @@ async function main() {
 startWatchdog(5 * 60_000);
 
 main().catch(async (err) => {
-  try { await setDbLatency(0); } catch (ignored) { /* already gone */ }
+  try { await setDbLatency(SERVER_A, 0); } catch (ignored) { /* already gone */ }
   console.error(`[e2e-owner] FAIL: ${err.stack || err}`);
   process.exit(1);
 });
