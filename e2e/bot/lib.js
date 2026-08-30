@@ -285,6 +285,11 @@ function createHarness(tag) {
       bot.on('error', (err) => {
         if (!settle(err)) log(`Post-settle error on ${server.name}: ${err && err.message ? err.message : err}`);
       });
+      // Warn when a bot dies: it drops its whole inventory, which can turn a later assertion
+      // about stored items into a data-loss failure.
+      bot.on('death', () => {
+        log(`WARNING: ${username} died on ${server.name}. The inventory has been dropped on the ground`);
+      });
       bot.once('spawn', () => {
         if (settle(null, bot)) {
           log(`Spawned on ${server.name}`);

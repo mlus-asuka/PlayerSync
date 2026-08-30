@@ -78,6 +78,12 @@ services:
       MEMORY: 2G
       VIEW_DISTANCE: "4"
       LEVEL_TYPE: "minecraft:flat"
+      # No scenario needs a hostile mob, and a slime can kill a bot standing still for a while.
+      # The bot then drops the inventory the scenario asserts on, which the scenario reports as
+      # data loss the mod never caused.
+      SPAWN_MONSTERS: "false"
+      # Pin the seed to keep runs reproducible.
+      SEED: "1"
       MAX_TICK_TIME: "-1"
       RCON_PASSWORD: e2e-rcon
       COPY_CONFIG_DEST: /data/config
