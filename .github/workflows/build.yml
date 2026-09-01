@@ -72,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Reuse the jar the build job already produced instead of compiling it a second time.
       - name: Download mod jar
