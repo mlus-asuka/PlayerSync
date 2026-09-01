@@ -72,6 +72,9 @@ refusal with any other stated reason fails the test.
   `mariadb` (`:3306`) for server-a, `mariadb-b` (`:3307`) for server-b. So a toxic slows only
   one server's DB traffic. A scenario that injects a fault must name the proxy of
   the server it means to slow.
+- `docker-compose.kickoff.yml` — an overlay that swaps server-b's config mount for
+  `config/server-b-kickoff` (already-online kick disabled). Layered by the scenario that
+  recreates server-b mid-run, which restores server-b's own config afterwards.
 - `Dockerfile` — builds `playersync-e2e-forge:1.20.1-47.4.0` on top of the pinned
   `itzg/minecraft-server` base, baking the Forge install into a layer. Both servers run
   that one image, so Forge is downloaded once at image build instead of by each server on

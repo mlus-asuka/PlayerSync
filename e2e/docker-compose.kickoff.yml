@@ -1,0 +1,14 @@
+# Overlay for test-late-logout-writes-after-hop.js: gives server-b a config with
+# kick_when_already_online disabled, so a player can join B while the database still says they
+# are online on A. That is the state the scenario needs — with the kick enabled B refuses the
+# join until A's logout writes have landed, which is precisely the race being tested.
+# Nothing else changes; `volumes` entries merge on their mount path, so this replaces
+# server-b's /config mount and leaves the mod jar mount from docker-compose.yml alone.
+#
+# Layered by the scenario only:
+#   docker compose -f docker-compose.yml -f docker-compose.kickoff.yml \
+#       up -d --no-deps --force-recreate --renew-anon-volumes server-b
+services:
+  server-b:
+    volumes:
+      - ./config/server-b-kickoff:/config:ro

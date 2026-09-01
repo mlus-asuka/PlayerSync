@@ -25,6 +25,10 @@ export PLAYERSYNC_JAR
 echo "Using mod jar: ${PLAYERSYNC_JAR}"
 
 # Scenarios run in order. Each is a node script in bot/ that exits 0 on pass.
+# test-late-logout-writes-after-hop.js runs last: it recreates server-b to stand up a
+# configuration this compose file does not have (the already-online kick disabled), so it runs
+# after everything that expects the stack as booted. It restores server-b's own config
+# afterwards.
 SCENARIOS=(
     test-sync-across-servers.js
     test-already-online.js
@@ -33,6 +37,7 @@ SCENARIOS=(
     test-data-loss-on-failed-sync.js
     test-revert-respects-owner.js
     test-stale-synced-tag-on-rejoin.js
+    test-late-logout-writes-after-hop.js
 )
 
 # Toolchain baseline: mineflayer and the harness scripts assume a modern Node.

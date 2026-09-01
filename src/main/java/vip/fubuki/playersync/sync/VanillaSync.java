@@ -382,10 +382,9 @@ public class VanillaSync {
         }
     }
 
+    // Clears online, but only while this server still owns the session: these writes queue on a
+    // bounded executor, so by the time one runs the player may be online on another server.
     private static void markOffline(String player_uuid) throws SQLException {
-        // Only clear online if this server still owns the session. A late revert from our own
-        // stale sync task must not clobber a newer session the player has since opened on
-        // another server, which would have set last_server to its own id.
         JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "' AND last_server=" + JdbcConfig.SERVER_ID.get());
     }
 
@@ -626,7 +625,7 @@ public class VanillaSync {
 
     public static void doPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) throws SQLException, IOException {
         String player_uuid = event.getEntity().getUUID().toString();
-        JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+        markOffline(player_uuid);
         store(event.getEntity(), false);
     }
 
@@ -635,11 +634,12 @@ public class VanillaSync {
         String player_uuid = event.getEntity().getUUID().toString();
         if (deadPlayerWhileLogging.contains(player_uuid)) {
             PlayerSync.LOGGER.warn("A dead or dying player was kicked,which uuid is:{}", player_uuid);
-            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+            markOffline(player_uuid);
             deadPlayerWhileLogging.remove(player_uuid);
         } else if (syncNotCompletedPlayer.contains(player_uuid)) {
             PlayerSync.LOGGER.warn("A player logged out with uncompleted sync data,which uuid is:{}.For the safety,the new data won't be saved", player_uuid);
-            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '0' WHERE uuid='" + player_uuid + "'");
+            // A no-op if our claim never landed: the row was never ours to clear.
+            markOffline(player_uuid);
             syncNotCompletedPlayer.remove(player_uuid);
         } else {
             // Mod support
@@ -763,7 +763,13 @@ public class VanillaSync {
         if (init) {
             JDBCsetUp.executeUpdate("INSERT INTO player_data (uuid,armor,inventory,enderchest,advancements,effects,xp,food_level,health,score,left_hand,cursors,online) VALUES ('" + player_uuid + "','" + equipment + "','" + inventoryMap + "','" + ender_chest + "','" + json + "','" + effectMap + "','" + XP + "','" + food_level + "','" + health + "','" + score + "','" + left_hand + "','" + cursors + "',online=true)");
         } else {
-            JDBCsetUp.executeUpdate("UPDATE player_data SET inventory = '" + inventoryMap + "',armor='" + equipment + "' ,xp='" + XP + "',effects='" + effectMap + "',enderchest='" + ender_chest + "',score='" + score + "',food_level='" + food_level + "',health='" + health + "',advancements='" + json + "',left_hand='" + left_hand + "',cursors='" + cursors + "' WHERE uuid = '" + player_uuid + "'");
+            // Only write while this server still owns the session: a queued logout save can land
+            // after the player has joined elsewhere, rolling that session back to our stale copy.
+            int updated = JDBCsetUp.executeUpdateCount("UPDATE player_data SET inventory = '" + inventoryMap + "',armor='" + equipment + "' ,xp='" + XP + "',effects='" + effectMap + "',enderchest='" + ender_chest + "',score='" + score + "',food_level='" + food_level + "',health='" + health + "',advancements='" + json + "',left_hand='" + left_hand + "',cursors='" + cursors + "' WHERE uuid = '" + player_uuid + "' AND last_server = " + JdbcConfig.SERVER_ID.get());
+            if (updated == 0) {
+                // The one place that knows the data went nowhere; silence here is undebuggable.
+                PlayerSync.LOGGER.info("Dropping save for player {}: the session is owned by another server", player_uuid);
+            }
         }
     }
 

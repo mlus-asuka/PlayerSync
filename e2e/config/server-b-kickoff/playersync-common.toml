@@ -1,0 +1,27 @@
+[general]
+	host = "toxiproxy"
+	#server-b's own proxy listener, as in config/server-b (this file only changes
+	#kick_when_already_online).
+	db_port = 3307
+	use_ssl = false
+	user_name = "playersync"
+	password = "pleaseChangeThisPassword"
+	db_name = "playersync"
+	#Server_id must differ between the two test servers and be stable across restarts
+	#(the mod defaults to a random id when the key is missing!)
+	Server_id = 2
+	sync_world = []
+	sync_advancements = true
+	sync_chat = false
+	IsChatServer = false
+	#Deliberately off: this is server-b's config with only the already-online kick disabled, so a
+	#player can hop A -> B before A's logout writes have landed. With the kick on, B correctly
+	#refuses the join while the row still says online on A, which hides the late-write race that
+	#test-late-logout-writes-after-hop.js is about. Mounted over server-b's own config by
+	#docker-compose.kickoff.yml for that scenario only.
+	kick_when_already_online = false
+	ChatServerIP = "127.0.0.1"
+	ChatServerPort = 7900
+	use_legacy_serialization = false
+	item_placeholder_title_override = ""
+	item_placeholder_description_override = ""

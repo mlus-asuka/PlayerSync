@@ -72,6 +72,16 @@ public class JDBCsetUp {
         executeUpdate(true, sqlFormatString, args);
     }
 
+    /** Executes an update and returns the number of rows it changed, for compare-and-set callers. */
+    public static int executeUpdateCount(String sqlFormatString, Object... args) throws SQLException {
+        String sql = String.format(sqlFormatString, args);
+        LOGGER.trace(sql);
+        try (Connection connection = getConnection();
+             PreparedStatement updateStatement = connection.prepareStatement(sql)) {
+            return updateStatement.executeUpdate();
+        }
+    }
+
     /**
      * Executes an update using a connection that does NOT include a default database.
      * This method is used for commands like "CREATE DATABASE IF NOT EXISTS ..."
