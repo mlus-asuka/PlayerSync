@@ -1,0 +1,7 @@
+# Overlay for test-server-id-collision.js: gives server-b a config whose Server_id duplicates
+# server-a's. Volume entries merge on their mount path, so this replaces server-b's /config
+# mount and leaves the mod jar mount from docker-compose.yml alone.
+services:
+  server-b:
+    volumes:
+      - ./config/server-b-collide:/config:ro

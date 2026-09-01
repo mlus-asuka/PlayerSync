@@ -18,6 +18,7 @@ import vip.fubuki.playersync.config.JdbcConfig;
 import vip.fubuki.playersync.sync.ChatSync;
 import vip.fubuki.playersync.sync.VanillaSync;
 import vip.fubuki.playersync.util.JDBCsetUp;
+import vip.fubuki.playersync.util.ServerIdentity;
 
 import java.sql.*;
 
@@ -25,6 +26,9 @@ import java.sql.*;
 public class PlayerSync {
     public static final String MODID = "playersync";
     public static final Logger LOGGER = LogUtils.getLogger();
+
+    /** MySQL/MariaDB ER_DUP_FIELDNAME, "Duplicate column name". */
+    private static final int ER_DUP_FIELDNAME = 1060;
 
     public PlayerSync(FMLJavaModLoadingContext context) {
         IEventBus modEventBus = context.getModEventBus();
@@ -122,6 +126,24 @@ public class PlayerSync {
         );
         // do not modify the create table statement to make sure this code is compatible with older database versions
         addColumnIfNotExists("server_info", "data_version", "INT NOT NULL DEFAULT 0");
+        // Identifies the server currently owning a row, so the heartbeat notices a second server
+        // started with the same Server_id. addColumnIfNotExists checks and adds in two statements,
+        // so a node booting against the same fresh database can win that race; the column exists
+        // either way, so losing it must not kill the boot.
+        try {
+            addColumnIfNotExists("server_info", "boot_token", "BIGINT NOT NULL DEFAULT 0");
+        } catch (SQLException e) {
+            if (e.getErrorCode() != ER_DUP_FIELDNAME && !"42S21".equals(e.getSQLState())) {
+                throw e;
+            }
+            LOGGER.info("server_info.boot_token was added by another server booting at the same time.");
+        }
+
+        int serverId = JdbcConfig.SERVER_ID.get();
+        LOGGER.warn("Claiming Server_id {} in the shared database. This id must be unique among all"
+                + " servers sharing the database: two servers using the same id defeat every"
+                + " PlayerSync ownership check.", serverId);
+        warnIfServerIdLooksLive(serverId);
 
         long current = System.currentTimeMillis();
         int data_version = SharedConstants.getCurrentVersion().getDataVersion().getVersion();
@@ -131,11 +153,13 @@ public class PlayerSync {
                     id,
                     enable,
                     data_version,
-                    last_update
+                    last_update,
+                    boot_token
                 )
                 VALUES (
                     %d,
                     true,
+                    %d,
                     %d,
                     %d
                 )
@@ -143,15 +167,18 @@ public class PlayerSync {
                     id = %d,
                     enable = true,
                     data_version = %d,
-                    last_update = %d;
+                    last_update = %d,
+                    boot_token = %d;
                 """,
                 dbName,
-                JdbcConfig.SERVER_ID.get(),
+                serverId,
                 data_version,
                 current,
-                JdbcConfig.SERVER_ID.get(),
+                ServerIdentity.bootToken(),
+                serverId,
                 data_version,
-                current);
+                current,
+                ServerIdentity.bootToken());
 
         // Create curios table if the Curios mod is loaded
         if (ModList.get().isLoaded("curios")) {
@@ -202,6 +229,30 @@ public class PlayerSync {
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event){
         ChatSync.shutdown();
+    }
+
+    /**
+     * Logs an error when our server_info row still looks like a running server's, which usually
+     * means a cloned config gave the same Server_id to two servers. A hint only: a clean shutdown
+     * leaves the row looking live for the whole liveness window, so refusing to boot on it would
+     * lock out every quick restart. Real collisions are caught by {@link ServerIdentity#heartbeat}.
+     */
+    private static void warnIfServerIdLooksLive(int serverId) throws SQLException {
+        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executeQuery(
+                "SELECT enable, last_update FROM server_info WHERE id=" + serverId)) {
+            ResultSet rs = qr.resultSet();
+            if (!rs.next() || !rs.getBoolean("enable")) {
+                return;
+            }
+            long age = System.currentTimeMillis() - rs.getLong("last_update");
+            if (age >= ServerIdentity.LIVENESS_WINDOW_MS) {
+                return;
+            }
+            LOGGER.error("Server_id {} was updated {}ms ago and is still marked enabled: another"
+                    + " live server may already be using this id. Starting anyway, because a clean"
+                    + " shutdown leaves the row looking live for {}ms.",
+                    serverId, age, ServerIdentity.LIVENESS_WINDOW_MS);
+        }
     }
 
     private static void addColumnIfNotExists(String tableName, String columnName, String dataTypeDefaultNullness,

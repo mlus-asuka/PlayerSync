@@ -1,0 +1,21 @@
+[general]
+	host = "toxiproxy"
+	#server-b's own proxy listener, as in config/server-b (this file only changes Server_id).
+	db_port = 3307
+	use_ssl = false
+	user_name = "playersync"
+	password = "pleaseChangeThisPassword"
+	db_name = "playersync"
+	#Deliberately server-a's id: server-b's config with only Server_id changed, the
+	#misconfiguration copying a working node's config to the next node produces.
+	Server_id = 1
+	sync_world = []
+	sync_advancements = true
+	sync_chat = false
+	IsChatServer = false
+	kick_when_already_online = true
+	ChatServerIP = "127.0.0.1"
+	ChatServerPort = 7900
+	use_legacy_serialization = false
+	item_placeholder_title_override = ""
+	item_placeholder_description_override = ""
