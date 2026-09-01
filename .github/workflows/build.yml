@@ -76,7 +76,7 @@ jobs:
 
       # Reuse the jar the build job already produced instead of compiling it a second time.
       - name: Download mod jar
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: Player_Sync
           path: build/libs
