@@ -35,6 +35,7 @@ SCENARIOS=(
     test-data-loss-on-failed-sync.js
     test-revert-respects-owner.js
     test-stale-synced-tag-on-rejoin.js
+    test-claim-race-at-join.js
     test-late-logout-writes-after-hop.js
     test-server-id-collision.js
 )

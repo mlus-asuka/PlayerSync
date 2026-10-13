@@ -198,7 +198,7 @@ public class VanillaSync {
                         long last_update = rs2.getLong("last_update");
                         boolean enable = rs2.getBoolean("enable");
                         if (enable && System.currentTimeMillis() < last_update + ServerIdentity.LIVENESS_WINDOW_MS) {
-                            event.getConnection().disconnect(Component.translatableWithFallback("playersync.already_online","You can't join more than one synchronization server at the same time."));
+                            event.getConnection().disconnect(alreadyOnlineMessage());
                             return;
                         }
                         JDBCsetUp.executeUpdate("UPDATE server_info SET enable= '0' WHERE id=" + lastServer);
@@ -248,7 +248,9 @@ public class VanillaSync {
             joinedPlayer.setHealth(1);
             try {
                 JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-                JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+                // The return value is ignored. This login is disconnected below either way, and
+                // a refused claim has already left the owner's row alone.
+                claimSession(player_uuid);
             } catch (SQLException e) {
                 PlayerSync.LOGGER.error("An error occurred while trying to execute a dead or dying player" + e.getMessage());
             }
@@ -275,7 +277,10 @@ public class VanillaSync {
                 if (!rs1.next()) {
                     store(event.getEntity(), true);
                     JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-                    JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+                    if (!claimSession(player_uuid)) {
+                        refuseLostClaim(serverPlayer);
+                        return;
+                    }
                     if (revertIfDisconnectedDuringSync(serverPlayer, player_uuid)) {
                         return;
                     }
@@ -289,7 +294,10 @@ public class VanillaSync {
                     ResultSet rs2 = qr2.resultSet();
 
                     JDBCsetUp.executeUpdate("UPDATE server_info SET last_update=" + System.currentTimeMillis() + " WHERE id=" + JdbcConfig.SERVER_ID.get());
-                    JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + JdbcConfig.SERVER_ID.get() + " WHERE uuid='" + player_uuid + "'");
+                    if (!claimSession(player_uuid)) {
+                        refuseLostClaim(serverPlayer);
+                        return;
+                    }
 
                     if (rs2.next()) {
                         // Restore basic attributes
@@ -381,6 +389,70 @@ public class VanillaSync {
                 PlayerSync.LOGGER.warn("Sync failed for connected player {}; keeping not-synced marker so the partial state is not saved", player_uuid);
             }
         }
+    }
+
+    // Both the negotiation-time check and the login-time claim send this, so the two stay in step.
+    private static Component alreadyOnlineMessage() {
+        return Component.translatableWithFallback("playersync.already_online",
+                "You can't join more than one synchronization server at the same time.");
+    }
+
+    // Claims the row for this server. False means the claim was refused and the row left untouched.
+    //
+    // The already-online check runs at negotiation time and this claim at login time, queued as
+    // separate tasks, so the whole login flow lies between them. A blind UPDATE would let the
+    // loser of that race take a row whose player is live elsewhere, so the claim is conditional
+    // on the same liveness rules the check applies.
+    private static boolean claimSession(String player_uuid) throws SQLException {
+        int serverId = JdbcConfig.SERVER_ID.get();
+        if (!JdbcConfig.KICK_WHEN_ALREADY_ONLINE.get()) {
+            // With the kick off, concurrent sessions are intended, so take the row unconditionally.
+            JDBCsetUp.executeUpdate("UPDATE player_data SET online= '1',last_server=" + serverId
+                    + " WHERE uuid='" + player_uuid + "'");
+            return true;
+        }
+        int claimed = JDBCsetUp.executeUpdateCount(
+                "UPDATE player_data p LEFT JOIN server_info s ON s.id = p.last_server"
+                        + " SET p.online= '1',p.last_server=%d"
+                        + " WHERE p.uuid='%s' AND (p.online IS NULL OR p.online=0 OR p.last_server=%d"
+                        + " OR s.id IS NULL OR s.enable=0 OR s.last_update < %d)",
+                serverId, player_uuid, serverId,
+                System.currentTimeMillis() - ServerIdentity.LIVENESS_WINDOW_MS);
+        if (claimed > 0) {
+            return true;
+        }
+        // Zero rows can also mean the row already read exactly online=1,last_server=<us>, leaving
+        // the UPDATE nothing to change, which a driver not asking for found-rows counts as zero.
+        // Look the owner up to tell that case from a genuine refusal.
+        Integer owner = sessionOwner(player_uuid);
+        if (owner != null && owner == serverId) {
+            return true;
+        }
+        PlayerSync.LOGGER.warn("Refusing the login of player {}: {}. The row is left as it is"
+                        + " rather than taken by a login that lost the race for it.", player_uuid,
+                owner == null ? "its player_data row is gone"
+                        : "server " + owner + " owns the session, having taken it between this"
+                                + " login's already-online check and its claim");
+        return false;
+    }
+
+    /** The server recorded as owning the session, or null if the row is missing or unowned. */
+    private static Integer sessionOwner(String player_uuid) throws SQLException {
+        try (JDBCsetUp.QueryResult qr = JDBCsetUp.executeQuery(
+                "SELECT last_server FROM player_data WHERE uuid='" + player_uuid + "'")) {
+            ResultSet rs = qr.resultSet();
+            if (!rs.next()) {
+                return null;
+            }
+            int owner = rs.getInt("last_server");
+            return rs.wasNull() ? null : owner;
+        }
+    }
+
+    // The caller returns with syncNotCompletedPlayer still holding this player, so logout and
+    // autosave keep refusing to save the unrestored session. onPlayerLogout clears it.
+    private static void refuseLostClaim(ServerPlayer player) {
+        player.connection.disconnect(alreadyOnlineMessage());
     }
 
     // Clears online, but only while this server still owns the session: these writes queue on a
